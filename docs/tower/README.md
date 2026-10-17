@@ -258,6 +258,31 @@ Findings:
 the edited config. The container's `CONTEXT=65536` / `KV=int8` env are not what it runs. If the container is
 recreated, check the engine's start line in the log.
 
+## Pass 5: guess length (`--window`)
+
+`--window N` is the most tokens that go through the model per step: the known one plus guesses (default 8). The
+draft block guesses at most 3 of them (`kBlockWindow = 4`, `src/poly/main.cpp:68`), and lookup guesses can fill the
+rest. The engine already adds a guess only while its own timings say it pays (`guesses.wants`). The Cyber-Tiel card
+found 1 draft token fastest in llama.cpp (1.21x, against 0.57x at 8), which is why this was tried. Config: 256K +
+`--kv q8_0` + `--window W`, three passes each, decode tok/s as the mean of passes 2 and 3. JSONs:
+`/data/bench-cybertiel-w{2,4,8}-{1,2,3}.json`.
+
+| `--window` | short | 3.0K | 11.0K | 32.1K | mean | Guesses right |
+|---|---|---|---|---|---|---|
+| 2 | 62.5 | 62.4 | 64.8 | 51.0 | 60.2 | 79-88% |
+| 4 | 63.1 | 62.5 | 66.0 | 54.7 | 61.6 | 78-91% |
+| 8 (default) | 56.3* | 65.9 | 65.0 | 57.8 | 61.3 | 75-90% |
+
+\* One pass was 50.1, the other 62.5.
+
+Findings:
+
+1. **No window is clearly faster.** The means are within 1.5 tok/s, and single cells move by 4-8 tok/s between passes
+   (the answers also stop at different lengths). Only `--window 2` at 32K looks lower (51 against 55-58), at the edge
+   of the noise. **The default (8) stays**, and the config is unchanged.
+2. The llama.cpp result doesn't carry over, as expected. llama.cpp drafts a fixed `n_max`, while strata-poly already
+   stops guessing when a guess stops paying, and caps the block at 3.
+
 ### Next
 
 1. Upstream: setup could pass `--kv q8_0` for the poly families when `KV=int8` (today it is silently ignored).
