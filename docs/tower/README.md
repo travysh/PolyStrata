@@ -240,14 +240,20 @@ Findings:
    figure.
 5. RAM: about 8 GiB used, iowait at most 4%. The longer context doesn't press on the page cache, because the attention
    caches are in VRAM.
-6. **Not measured: answer quality.** The engine's help says q8_0 gives "slightly different answers". A long-context
-   recall check (a fact placed early in a 100K+ prompt) would be the next thing to run before trusting it for long
-   work.
+6. **Long-context recall with q8_0: 6 of 6.** `docs/tower/needle.py` (also `/data/needle.py` on Tower) hides three
+   access codes at 3%, 50% and 92% depth in the benchmark's manual text, about 107,400 tokens, and asks for all three
+   (temperature 0). Two prompts with different codes: all six were returned word for word, 108-110 s per request.
+   It is a simple test: unique strings in repeated text. It shows that the q8_0 cache holds facts from early in the
+   prompt, not that long-context reasoning is unchanged.
+
+**Tower's config is now 256K + `--kv q8_0`** (2026-10-17). The 64K fp16 original is
+`/data/config/strata-cybertiel-ud-q4_k_xl.json.orig`: copy it back and restart to undo. A container restart keeps
+the edited config. The container's `CONTEXT=65536` / `KV=int8` env are not what it runs. If the container is
+recreated, check the engine's start line in the log.
 
 ### Next
 
-1. Make 256K + `--kv q8_0` Tower's config, after a long-context recall check. Upstream: setup could pass `--kv q8_0`
-   for the poly families when `KV=int8` (today it is silently ignored).
+1. Upstream: setup could pass `--kv q8_0` for the poly families when `KV=int8` (today it is silently ignored).
 2. The CPU-path levers: a smaller quant (check whether the Cyber repo has UD-Q3_K_XL / UD-IQ3_XXS like Tiel's), or
    profiling the CPU expert path on Zen+.
 3. Fork and push the `cybertiel-family` branch (the family commit only; these notes stay local).
