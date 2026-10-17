@@ -1,6 +1,6 @@
 """Long-context recall check: three facts hidden at 3%, 50% and 92% depth of a ~105K-token prompt.
 Run inside the container: cd /opt/strata && .venv/bin/python /data/needle.py [seed ...]"""
-import json, random, sys, time, urllib.request
+import json, os, random, sys, time, urllib.request
 sys.path.insert(0, "/opt/strata")
 from polystrata import long_prompt
 
@@ -12,7 +12,7 @@ def trial(seed: int) -> bool:
     rng = random.Random(seed)
     facts = [(f"{rng.choice(WORDS)}-{rng.randrange(1000, 9999)}", label)
              for label in ("the vault on the first floor", "the vault on the second floor", "the vault on the roof")]
-    body = long_prompt(80000)
+    body = long_prompt(int(os.environ.get("TOKENS", 80000)))   # 80000 = about 107K tokens
     body = body[body.index("\n\n") + 2:body.rindex("\n\nIn three")]          # the manual text alone
     for (code, label), depth in sorted(zip(facts, (0.03, 0.50, 0.92)), key=lambda x: -x[1]):
         at = body.index("\n", int(len(body) * depth)) + 1                     # on a line of its own

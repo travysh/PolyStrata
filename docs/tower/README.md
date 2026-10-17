@@ -246,6 +246,13 @@ Findings:
    It is a simple test: unique strings in repeated text. It shows that the q8_0 cache holds facts from early in the
    prompt, not that long-context reasoning is unchanged.
 
+7. **A nearly full context works: no OOM.** One recall prompt of 247,377 tokens (`TOKENS=185000` for
+   `needle.py`, 94% of 262,144) returned all 3 codes, in 409 s for the whole request (about 600 tok/s of prefill).
+   Sampled every 5 s: GPU memory at most 7,639 of 8,192 MiB. The engine made room by shrinking the expert cache to
+   1,159 experts (2.06 GiB, from 3.6 GiB at load), leaving 524 MiB free. System RAM at most 8.3 GiB used, at least
+   23.7 GiB available. No OOM lines in `dmesg`, and the container did not restart. Memory log:
+   `/data/mem-256k.txt`.
+
 **Tower's config is now 256K + `--kv q8_0`** (2026-10-17). The 64K fp16 original is
 `/data/config/strata-cybertiel-ud-q4_k_xl.json.orig`: copy it back and restart to undo. A container restart keeps
 the edited config. The container's `CONTEXT=65536` / `KV=int8` env are not what it runs. If the container is
