@@ -209,11 +209,61 @@ Findings:
 4. Decode is still far under what an 8 GB card can do with the experts in VRAM. The CPU expert path (Zen+, 12
    threads, about 80% of the experts) is the next lever.
 
+## Pass 4: bigger context, `--kv q8_0`
+
+The container's `KV=int8` never reaches strata-poly. It is the Qwen3.8 engine's setting, setup does not pass
+`--kv q8_0` for the poly families, and so every pass above ran fp16 attention caches. Here `--kv q8_0` and/or
+`--max-context 262144` (the trained length, no rope scaling) were added to the config by hand, with draft on and
+everything else the same. Prompts: short, `--prompt-tokens 24000,80000` = 32,099 and 107,310 tokens. Second pass kept.
+JSONs: `/data/bench-cybertiel-{q8-256k,fp16-256k}-{1,2}.json`. Afterwards the config was put back to 64K fp16.
+
+| Cyber-Tiel UD-Q4_K_XL, draft on | Decode tok/s (short / 32K / 107K) | Prefill tok/s (32K / 107K) | TTFT s (32K / 107K) | Expert cache hits (32K / 107K) |
+|---|---|---|---|---|
+| 64K, fp16 (passes 2 and 3) | 58.4-61.3 / 53.7-58.0 / - | 1,413-1,416 / - | 17 / - | 54% / - |
+| 256K, fp16 | 44.2* / 48.2 / 31.6 | 1,585 / 919 | 20 / 86 | 44% / 33% |
+| **256K, q8_0** | **59.7 / 54.8 / 35.3** | 1,559 / 904 | 21 / 87 | 52% / 50% |
+
+\* The short prompt runs right after a 107K one, while the expert cache is still shrunk (the log: 559 experts, 1.0
+GiB, before it gave back 1.55 GiB). Pass 1's short prompt, after a restart, was 64.4. With q8_0 the dip was smaller
+(59.7, pass 1: 63.5).
+
+Findings:
+
+1. **256K context with `--kv q8_0` costs nothing on short and 32K prompts.** Decode is within the run-to-run spread of
+   the 64K fp16 config (about ±4 tok/s).
+2. **At 107K, q8_0 decodes 12% faster than fp16** (35.3 against 31.6): the cache is half the size, so the expert cache
+   keeps more VRAM (50% hits against 33%). fp16 at 256K is also slower at 32K (48 against 55).
+3. **Long prompts are prefill-bound:** 107K tokens take about 87 s before the first token (about 900 tok/s, falling
+   from about 1,550 at 32K). It is the same with fp16 and q8_0.
+4. TTFT at 32K is 20-21 s here against 17 s at 64K. The 64K runs had prompt-cache reuse between passes (the log:
+   20,480 of 92,634 tokens not read again), so the TTFTs are not directly comparable. Prefill tok/s is the cleaner
+   figure.
+5. RAM: about 8 GiB used, iowait at most 4%. The longer context doesn't press on the page cache, because the attention
+   caches are in VRAM.
+6. **Not measured: answer quality.** The engine's help says q8_0 gives "slightly different answers". A long-context
+   recall check (a fact placed early in a 100K+ prompt) would be the next thing to run before trusting it for long
+   work.
+
 ### Next
 
-1. The CPU-path levers: a smaller quant (check whether the Cyber repo has UD-Q3_K_XL / UD-IQ3_XXS like Tiel's), or
+1. Make 256K + `--kv q8_0` Tower's config, after a long-context recall check. Upstream: setup could pass `--kv q8_0`
+   for the poly families when `KV=int8` (today it is silently ignored).
+2. The CPU-path levers: a smaller quant (check whether the Cyber repo has UD-Q3_K_XL / UD-IQ3_XXS like Tiel's), or
    profiling the CPU expert path on Zen+.
-2. Fork, and commit the `cybertiel` family on a branch.
+3. Fork and push the `cybertiel-family` branch (the family commit only; these notes stay local).
+
+## Shared-load changes (2026-10-17)
+
+With Plex, Deluge and Duplicati running again, the GGUF (22.7 GB) has to stay cached next to them, and about 22.5 GB
+is available. Each container's own file cache counts against its cgroup v2 memory limit, so a cap makes it drop its
+own cached files rather than the model's.
+
+- Plex `--memory=4g`, Deluge `--memory=1g`: added to ExtraParams in the dockerMan templates (backups:
+  `*.xml.pre-memcap`) and applied live with `docker update`.
+- The Docker folder is now `/mnt/cache/system/docker/` instead of `/mnt/user/...`, which skips shfs (backup:
+  `/boot/config/docker.cfg.pre-cachepath`). Restarting Docker autostarts PhotoPrism and does not start
+  `strata-cybertiel`, so fix both by hand afterwards.
+- Plex: periodic library scans are off (folder watching stays on), done by the user. Transcoding stays on the CPU.
 
 ## Cleanup still open
 
