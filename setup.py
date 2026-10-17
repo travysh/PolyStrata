@@ -81,6 +81,7 @@ HF_REVISIONS = {
     "mudler/Ornith-1.5-35B-A3B-APEX-MTP-GGUF": "4c326713c52d13fdb40983a2a09a46cca8e88739",             # 2026-10-05
     "unsloth/gemma-4-26B-A4B-it-GGUF": "c099eb48e663fd284577b04978a94ffccb261841",                     # 2026-10-05
     "peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP": "bbe9e566f39e4fc9652ac66b71968289a03c520a",        # 2026-09-10
+    "peculiar-ragdoll/Cyber-Tiel-Coder-35B-A3B-GGUF-MTP": "fa19d4f33561dc0d107c2a2f8943f1ca2e288109",  # 2026-09-18
     "unsloth/Qwen3.6-35B-A3B-MTP-GGUF": "5bc3e238d916f48a861bac2f8a1990a0e9b7e98d",                  # 2026-10-12
     "unsloth/DeepSeek-V4-Flash-0731-GGUF": "fbbb5b93fb787c21338159b0af3318bb3f4d9768",               # 2026-10-15
     "unsloth/LFM2.5-24B-A2B-GGUF": "faa77113e93335b63423e9e8d33395f86eaf8946",                        # 2026-10-15
@@ -664,6 +665,24 @@ FAMILIES = {
                         (22749880160, "54f46c4ce544c225122b0f066c2336f10404be7bc53b0cc94d1dbbc5e826bdc1"),
                         "mmproj-BF16.gguf":
                         (902822016, "d9ce31026d1cb1f3f8d5152e2e2a014d9d2b302b6c93a7dc07bb0a0487f52837")}},
+    # Tiel Coder abliterated (built on Huihui-Ornith-1.5-35B-A3B-abliterated): the same architecture, template and
+    # mmproj (the same hash).  One size only; its file is 480 bytes larger than Tiel's.
+    "cybertiel": {"title": "Cyber-Tiel-Coder 35B-A3B", "by": "peculiar-ragdoll, from Huihui's abliterated Ornith 1.5",
+                  "about": "Tiel Coder, abliterated; a 23 GB file, ~27 GB of RAM beside an 8 GB card",
+                  "hf": hf("peculiar-ragdoll/Cyber-Tiel-Coder-35B-A3B-GGUF-MTP"),
+                  "file": "Cyber-Tiel-Coder-35B-A3B-MTP-{q}.gguf", "shards": 1, "tag": "cybertiel-",
+                  "name": "cyber-tiel-coder-35b-a3b", "engine": "poly", "vision": True, "experimental": True,
+                  "windows": True, "ran_on_gb": 8, "row_bytes": 26624,
+                  "mmproj_hf": hf("peculiar-ragdoll/Cyber-Tiel-Coder-35B-A3B-GGUF-MTP"), "mmproj": "mmproj-BF16.gguf",
+                  "vision_gb": 0.9, "vision_vram_gb": 1.6,
+                  "models": {"UD-Q4_K_XL": {"about": "4-bit experts, 5- and 6-bit where they write; its draft block "
+                                                     "in the file",
+                                            "download_gb": 22.7, "ram_gb": 27, "arena_gb": 20.0,
+                                            "vram_beside_gb": 4.8, "draft": "own"}},
+                  "sha256": {"Cyber-Tiel-Coder-35B-A3B-MTP-UD-Q4_K_XL.gguf":
+                             (22749880640, "0bbcf3cc9be4c976bad20e641baf629dad9c178d39ebdc9cd72129179943c06a"),
+                             "mmproj-BF16.gguf":
+                             (902822016, "d9ce31026d1cb1f3f8d5152e2e2a014d9d2b302b6c93a7dc07bb0a0487f52837")}},
     # The same architecture as Qwen3.6, OpenBMB's weights: 40 layers of 256 experts, 8 to a token, and a picture
     # encoder of its own: MiniCPM-V 4.6's under the newer name minicpmv4_7, which the pinned llama.cpp answers
     # (#29416).  The files carry no draft block, so no size has "draft"; its answers are one token at a
@@ -6284,7 +6303,7 @@ def poly_setup(a, family, gpu, hip, cuda_tk, multi, ram, data, elsewhere, port, 
     if hip and WIN:
         fail(f"{title} has no AMD engine for Windows: its HIP engine is compiled on Linux",
              "choose another model for this card, or run setup on Linux")
-    if hip and family in ("glm", "deepseek", "lfm25", "gemma4", "tiel"):   # the engine runs on AMD, these models not yet
+    if hip and family in ("glm", "deepseek", "lfm25", "gemma4", "tiel", "cybertiel"):   # the engine runs on AMD, these models not yet
         warn(f"{title} on the AMD card has not been tried: the engine runs there, this model was not")
     if cuda_tk == 12:
         warn(f"{title}'s engine with CUDA 12 is compiled here (the ready-made one is CUDA 13)" +
@@ -7023,7 +7042,7 @@ def main() -> int:
     ap.add_argument("--family", choices=list(FAMILIES) + list(PREVIEW_FAMILIES),
                     help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5, glm = GLM 5.3 Flash (docs/GLM.md), deepseek = "
                          "DeepSeek V4 Flash, lfm25 = LFM2.5-24B-A2B, qwen36 = Qwen3.6-35B-A3B on strata-poly, ornith = "
-                         "Ornith 1.5, gemma4 = Gemma 4 26B-A4B, tiel = Tiel Coder 35B-A3B, minicpmv = MiniCPM-V 4.7 "
+                         "Ornith 1.5, gemma4 = Gemma 4 26B-A4B, tiel = Tiel Coder 35B-A3B, cybertiel = Cyber-Tiel-Coder (abliterated), minicpmv = MiniCPM-V 4.7 "
                          "35B-A3B (docs/BACKENDS.md), qwen36-strata = Qwen3.6-35B-A3B on the Strata project's "
                          "own engine (UD-Q4_K_XL and up, 32 GB of RAM or more; pictures with --vision, several "
                          "requests at once with --parallel; docs/QWEN36.md)")

@@ -163,6 +163,12 @@ FALLBACK_FAMILIES = {
                                        "download_gb": 13.6, "ram_gb": 18, "arena_gb": 11.5},
                         "UD-Q4_K_XL": {"about": "4-bit experts, 5- and 6-bit where they write",
                                        "download_gb": 22.7, "ram_gb": 27, "arena_gb": 20.0}}},
+    "cybertiel": {"title": "Cyber-Tiel-Coder 35B-A3B", "about": "Tiel Coder, abliterated; a 23 GB file, ~27 GB of RAM "
+                                                              "beside an 8 GB card", "tag": "cybertiel-",
+                  "engine": "poly", "vision": True, "experimental": True,
+                  "models": {"UD-Q4_K_XL": {"about": "4-bit experts, 5- and 6-bit where they write; its draft block "
+                                                     "in the file", "download_gb": 22.7, "ram_gb": 27,
+                                            "arena_gb": 20.0}}},
     "minicpmv": {"title": "MiniCPM-V 4.7 35B-A3B", "about": "Qwen3.6-35B-A3B's architecture, OpenBMB's weights, and it "
                                                             "reads pictures too; a 22 GB file, ~25 GB of RAM beside an "
                                                             "8 GB card; a smaller and a larger size too",
@@ -1083,7 +1089,7 @@ def tool_defs(models: dict, families: dict, contexts: list) -> list:
                                        "engine: Linux, one NVIDIA card, ~72 GB of RAM beside a 32 GB card, a 91 "
                                        "GB download, no images), lfm25 = LFM2.5-24B-A2B, qwen36 = "
                                        "Qwen3.6-35B-A3B, ornith = Ornith 1.5, gemma4 = Gemma 4 26B-A4B, tiel = "
-                                       "Tiel Coder 35B-A3B (GLM's engine: one NVIDIA card, an 11-25 GB download, "
+                                       "Tiel Coder 35B-A3B, cybertiel = its abliterated version (GLM's engine: one NVIDIA card, an 11-25 GB download, "
                                        "15-31 GB of RAM beside an 8 GB card by setup's estimate; images with "
                                        "vision except LFM2.5)"},
              "model": {"type": "string", "enum": list(dict.fromkeys(
