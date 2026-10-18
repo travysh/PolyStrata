@@ -433,6 +433,96 @@ Measuring build: image `strata-cybertiel:p9` on Tower (`/mnt/user/appdata/polyst
    profiling the CPU expert path on Zen+.
 3. Fork and push the `cybertiel-family` branch (the family commit only; these notes stay local).
 
+## Pass 10: flash attention for prompt reading (2026-10-18)
+
+**Profile.** Nsight Systems 2026.3.2 (`nsys launch` in a container `strata-nsys`, CUDA trace only), the server on its
+normal config with `strata-cybertiel` stopped. A ~138K-token conversation was filled first (137,863 tokens read in
+153.7 s, not captured). Then two captures: a ~4K-token follow-up read at ~138K of context (4,082 tokens read in
+9.9 s), and the same ~4K tokens as a conversation of their own, at ~0 of context (4,258 tokens in 4.9 s). Each
+reply was 8 tokens with thinking off, so the captures are almost all prompt reading. GPU time per kernel, ms:
+
+| Kernel | ~138K | ~0 | Grows by |
+|---|---|---|---|
+| cuBLAS PV product (`cutlass_80_tensorop_s16816gemm_f16_256x128`, "nn") | 1,925 | 32 | 1,894 |
+| `attn_softmax_block_kernel` | 1,738 | 28 | 1,710 |
+| cuBLAS QK product (`ampere_s1688gemm_fp16_256x64`, "tn") | 1,716 | 31 | 1,685 |
+| `dequant_q8_kernel` | 166 | 3 | 162 |
+| `attn_scale_kernel` | 147 | 7 | 140 |
+| the decode attention of the 8 answer tokens (`attn_score_reg`, `attn_softmax`, `attn_value*`) | 78 | 2 | 76 |
+| MMQ (`mul_mat_q`, experts and projections) | 878 | 862 | 15 |
+| `gdn_state_reg_kernel` (the 30 linear-attention layers) | 342 | 356 | -15 |
+| `gemm_small_kernel` | 203 | 210 | -6 |
+| everything else | 313 | 316 | -3 |
+| **all kernels** | **7,506** | **1,847** | **5,660** |
+
+Which product is QK and which is PV is read from their transpose flags (`attend_batch()` calls QK as T,N and PV as
+N,N). So the prompt attention (the two products, the softmax, the scaling and the dequantization) grows by 5,590 ms
+from ~0 to ~138K, which is all of the growth. At ~138K it is 5.7 s of the 7.5 s of GPU time, in a 9.9 s read.
+The softmax kernel takes as long as either product: it reads and writes the fp32 scores the QK product left in
+memory. The products themselves ran at about 26 TFLOPS. A fused kernel removes the softmax's memory traffic.
+
+**The port.** `src/poly/fattn_mma.cuh` is llama.cpp's `fattn-mma-f16.cuh` (MIT) from the pinned llama.cpp commit,
+with three marked changes: the causal mask is computed from the positions instead of read from memory, and a tile
+writes its softmax max and sum for each token and head. `src/poly/fattn.cu` launches the D=256 kernel with 8 tokens
+of a group's 8 heads per tile (GQA 8:1, Ampere or later), one CUDA block per tile. The keys go in blocks. Each
+block's K and V rows are dequantized from the q8_0 cache to fp16, the kernel attends to them, and each block's
+results are merged into the ones before it by log-sum-exp. The last block holds the batch's own rows and starts at
+or before the batch's first position. Everything lives in the attention's existing score scratch (64 MiB: a
+block's results plus 24K rows of K and V for a 1,024-token batch), so no VRAM is added. The server loaded with
+1,987 experts in VRAM. It is opt-in: `STRATA_FATTN=1` in the environment, and the server logs
+`STRATA_FATTN: prompt attention through llama.cpp's flash-attention kernel`. Without it nothing changes. Decode
+(fewer than `kStageRows` tokens) keeps its own attention kernels.
+
+**Numerics.** `poly_fattn_test` (`src/poly/fattn_test.cu`) runs on the 3070 with random q8_0 caches of
+Qwen3.6's shape. It compares the new path with `attend_batch()` and both with the arithmetic in doubles (three tokens
+a case). The cases run from 16 tokens at position 0 to 1,024 at 120,000, plus two with a small scratch that forces 8
+and ~190 key blocks. All pass. The largest difference from `attend_batch()` is 1.9e-2 on results up to 2.9 (mean
+1.3-2.9e-4). Against the doubles the new path is within 7.7e-3, `attend_batch()` within 2.3e-3. The new path is
+further off because llama.cpp's kernel adds the value products up in halves (`attend_batch()` uses floats). Smaller
+key blocks bring it closer (6.0e-3 with 4K-key blocks against 1.9e-2 with 24K). On the model: the 107K recall
+test passed (3 of 3 facts). Greedy answers (thinking off, 300 tokens) to a ~27K and a ~107K prompt part from the
+old path's after 14 and 72 characters. Both answers are coherent and on topic. The old path run twice parts from
+itself at the same two places, so these are near-ties that flip between runs anyway.
+
+**Speed.** The kernel alone, one layer, a 1,024-token batch (the test, with the idle server sharing the card): 0.27
+ms against 1.91 at position 0, 11.1 against 31.4 at 30,000, 42.7 against 122.3 at 120,000 (about 47 TFLOPS against
+16; above the ~40 of FP32 sums because the value products sum in halves, which the tensor cores do twice as fast). On the model, the Pass 8 sequence (restart, the 107K recall warm-up, `multiturn.py fwd 5`), RAM 3200, Plex and
+the add-on generator running. The control is Pass 9's control run (the measuring build without changes, earlier the
+same day). At the user's choice no second control was run:
+
+| Turn, context | Read tok/s, Pass 9 control (range of Pass 9 runs) | Read tok/s, `STRATA_FATTN=1` | Prompt s, control / flash | Decode tok/s, control / flash |
+|---|---|---|---|---|
+| 1, 32K | 1,437 (1,437-1,586) | 1,824 (+15-27%) | 22.0 / 17.4 | 52.3 / 52.8 |
+| 2, 72K | 1,022 (988-1,094) | 1,465 (+34-48%) | 39.8 / 27.9 | 41.5 / 41.2 |
+| 3, 103K | 749 (728-769) | 1,268 (+65-74%) | 40.6 / 24.2 | 35.1 / 34.6 |
+| 4, 143K | 610 (577-625) | 1,066 (+71-85%) | 65.2 / 37.3 | 30.6 / 29.5 |
+| 5, 174K | 496 (466-511) | 1,052 (see below) | 63.4 / 64.6 | 26.7 / 26.2 |
+
+Turn 5 read 67,929 tokens this time, against about 31K in every earlier run. About 36K tokens were read again, as in
+Pass 7's run A turn 6 (the prompt cache's checkpoint was far back). So it read twice the tokens in the same time,
+starting from 106K. Its rate is over a lower average context than the control's, and its time isn't comparable.
+The answers differ from the control's from turn 1 on (greedy near-ties, above), so the prompt sizes differ by a few
+hundred tokens. Decode is the same within 1 tok/s. The recall warm-up passed.
+
+So the 30-40K-token follow-ups at 100-145K read in 24-37 s instead of 41-65 s. The gain grows with the context,
+as the profile says it should.
+
+Measuring build: image `strata-cybertiel:p10` on Tower (`/mnt/user/appdata/polystrata/pass10/`: the changed
+sources, `p10run.sh`; results `/data/pass10-fattn.txt`, `/data/pass10-cmp.py`, `/data/pass10-*-answers.json`;
+profile `/data/profile/p9-*`). `strata-cybertiel:p9` is removed. Tower runs its normal image and config, without
+`STRATA_FATTN`.
+
+Not tested: the fp16 KV cache (the new path takes q8_0 only), other models, Turing (the kernel has no 64-column tile
+there, and the old path runs), a HIP build (`fattn.cu` is compiled out there and the old path runs; not built here),
+and a same-day control run.
+
+### Next
+
+1. Turn it on for Tower: rebuild `strata-cybertiel:latest` from the branch and add `STRATA_FATTN=1` to the
+   container.
+2. If the halves' error matters for some use, cap the key blocks (4K keys gave 6.0e-3 against 1.9e-2) and measure
+   the cost of the extra merges.
+
 ## Shared-load changes (2026-10-17)
 
 With Plex, Deluge and Duplicati running again, the GGUF (22.7 GB) has to stay cached next to them, and about 22.5 GB

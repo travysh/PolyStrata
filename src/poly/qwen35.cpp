@@ -2,6 +2,8 @@
 // llama.cpp's qwen35moe graph.
 #include "qwen35.hpp"
 
+#include "fattn.hpp"
+
 #include "runtime.hpp"
 #include "strata/poly/kernels.hpp"
 #include "strata/kernels/native_mmvq.hpp"
@@ -9,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <stdexcept>
 
 namespace strata::poly {
@@ -182,6 +185,12 @@ void Qwen35::assign_scratch() {
         // the K and V blocks a q8 prompt batch dequantizes, side by side; work_halves_ halves each
         work_halves_ = kQ8WorkRows * (size_t) n_kv_ * head_dim_;
         q8w_ = fbuf((2 * work_halves_ + 1) / 2);
+        // STRATA_FATTN=1: llama.cpp's flash-attention kernel instead, in score_ (fattn.hpp)
+        const char* fa = std::getenv("STRATA_FATTN");
+        fattn_ = fa && std::atoi(fa) == 1 && fattn_q8_fits(head_dim_, n_head_, n_kv_);
+        if (fa && std::atoi(fa) == 1)
+            std::fprintf(stderr, "strata-poly: STRATA_FATTN: prompt attention %s\n",
+                         fattn_ ? "through llama.cpp's flash-attention kernel" : "unchanged (no kernel for it here)");
     }
 }
 
@@ -396,10 +405,12 @@ void Qwen35::attn(Block& B, int64_t pos, int n) {
         const uint16_t* vc = q8 ? nullptr : B.vals;
         uint16_t* kw = q8 ? (uint16_t*) q8w_ : nullptr;
         uint16_t* vw = q8 ? kw + work_halves_ : nullptr;
-        attend_batch(blas_, q_, kc, vc, pos, n, score_, (size_t) chunk_ * n_head_ * opt_.max_context, awork_,
-                     att_, head_dim_, n_head_, n_kv_, scale, st_, 0, 0, false,
-                     q8 ? Kvq8{B.k_codes, B.k_scales} : Kvq8{}, q8 ? Kvq8{B.v_codes, B.v_scales} : Kvq8{}, kw, vw,
-                     q8 ? work_halves_ : 0);
+        const size_t score_floats = (size_t) chunk_ * n_head_ * opt_.max_context;
+        if (!(fattn_ && fattn_q8(q_, Kvq8{B.k_codes, B.k_scales}, Kvq8{B.v_codes, B.v_scales}, pos, n, att_, head_dim_,
+                                 n_head_, n_kv_, scale, score_, score_floats, st_)))
+            attend_batch(blas_, q_, kc, vc, pos, n, score_, score_floats, awork_, att_, head_dim_, n_head_, n_kv_, scale,
+                         st_, 0, 0, false, q8 ? Kvq8{B.k_codes, B.k_scales} : Kvq8{},
+                         q8 ? Kvq8{B.v_codes, B.v_scales} : Kvq8{}, kw, vw, q8 ? work_halves_ : 0);
     } else
         attend(q_, q8 ? nullptr : B.keys, q8 ? nullptr : B.vals, pos, n, score_, chunk_, att_, head_dim_, n_head_,
                n_kv_, scale, st_, 0, 0, false, at, at ? room(n) : 0, /*score_floats*/ 0,

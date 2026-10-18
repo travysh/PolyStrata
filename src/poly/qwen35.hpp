@@ -94,6 +94,7 @@ private:
     float* awork_ = nullptr;   ///< a prompt batch's attention (attend_batch)
     float* q8w_ = nullptr;             ///< a q8 prompt batch's K and V blocks, dequantized to fp16 (kwork | vwork)
     size_t work_halves_ = 0;           ///< the halves of each of q8w_'s two halves (kQ8WorkRows rows at most)
+    bool fattn_ = false;               ///< a q8 prompt batch through fattn_q8() (STRATA_FATTN=1)
 
 };
 
