@@ -698,15 +698,40 @@ swap file (above) raises `MemAvailable`, which makes the flip likelier. So the A
 Measuring build: image `strata-cybertiel:fdec` (`strata-cybertiel:latest` plus the changed `src/poly/`, engine
 rebuilt; `/mnt/user/appdata/polystrata/pass12/`: `Dockerfile`, `p12ab.sh`, `p12test.sh`, `repo/`).
 
+**On the upstream branch.** The kernel was then moved onto `strata-poly/fattn-prompt` (the prompt kernel prepared for
+upstream, with the fp16 cache and the per-card checks), as branch `strata-poly/fdec-decode` (commit `6b977223`, not
+pushed). There Qwen35 decides once whether it runs (`fdec_fits()`: the card, and the scratch for the whole context)
+and says so, as that branch does for `STRATA_FATTN`. `poly_fattn_test dec` gives the same errors and times, and the
+branch's prompt cases pass for q8_0 and fp16. Image `strata-cybertiel:fdec-b` (`latest` plus that branch's
+`src/poly/` and `CMakeLists.txt`: the engine is that branch's, setup and server stay this branch's). One pair,
+`/data/pass12-ab-b.txt`, base being that branch's build without `STRATA_FDEC`:
+
+| Turn, context | Base | `STRATA_FDEC=1` |
+|---|---|---|
+| short (3 requests, ~1,160 tokens of prompt) | 61.6 / 75.5 / 77.7 | 64.3 / 72.6 / 69.1 |
+| 1, 32K | 52.4 | 49.9 |
+| 2, 72K | 40.5 | 52.8 |
+| 3, 103K | 35.9 | 52.8 |
+| 4, 143K | 30.2 | 48.5 |
+| 5, 174K | 25.9 | 45.3 |
+
+Turns 2-5 match the runs above within 2.5 tok/s. Turn 1 came out at 49.9, where both runs above gave 64: the hit
+rate was the same as base's (51%), and turn 1 is the one that varies most between runs (Pass 8), but this is one run
+and it isn't explained. The 107K recall test passed in both; 1,987 experts and 511 MiB free in both.
+
 Not tested: Turing (the `mma` shape needs Ampere: the old kernels run), the fp16 KV cache, other head shapes, a HIP
 build (compiled out there), the multi-sequence path (`attn_rows()` takes the kernel too, but no run used it), more
 than one run per variant per day.
 
 ### Next
 
-1. Go live (waiting for the user's go-ahead): tag `strata-cybertiel:latest` as `:pre-fdec`, tag `:fdec` as
-   `:latest`, add `"--vram-reserve-mib", "512"` to the config and the `.q8-256k` reference (old one kept as
-   `.q8-256k.pre-r512`), add `-e STRATA_FDEC=1` to `recreate.sh`, recreate, and run the 247K needle.
+1. Go live (waiting for the user's go-ahead), from the upstream branch's build: tag `strata-cybertiel:latest` as
+   `:pre-fdec`, tag `:fdec-b` as `:latest`, add `"--vram-reserve-mib", "512"` to the config and the `.q8-256k`
+   reference (old one kept as `.q8-256k.pre-r512`), add `-e STRATA_FDEC=1` to `recreate.sh`, recreate, and run the
+   247K needle. Until then Tower runs `:fdec-b` without `STRATA_FDEC` (the A/B's last state: the prompt kernel of
+   the upstream branch, the old decode kernels) on `.q8-256k`.
+2. Turn 1 of the `:fdec-b` pair: one more run would tell whether it was noise.
+3. The decode kernel takes q8_0 caches only; an fp16 cache keeps the old decode kernels.
 
 ## Shared-load changes (2026-10-17)
 
