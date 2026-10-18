@@ -621,6 +621,93 @@ more experts at no prompt-reading cost need code:
 Both are worth at most a few percent of decode on this card. The larger effect seen in this pass is outside the
 engine: other disk traffic on Tower evicts the model from the page cache.
 
+## Pass 12: a decode attention kernel (2026-10-18)
+
+At long context a coding turn's answer was the slow part after Pass 10: decode fell from about 52 tok/s at 32K to 27
+at 174K.
+
+**Profile.** Nsight Systems as in Pass 10, but with CUDA graphs traced per kernel (`--cuda-graph-trace=node`:
+decode runs in recorded graphs, and Pass 10's capture counted only the launches outside them). A ~138K and a ~170K
+conversation (`long_prompt`), then the same prompt again, all from the prompt cache, with 300 tokens of answer,
+thinking on; only that answer captured. The server on its normal config (`STRATA_FATTN=1`), `strata-cybertiel`
+stopped meanwhile. Scripts `/mnt/user/appdata/polystrata/pass12/{nsys12.sh,cap12.py}`, captures
+`/data/profile/p12-{140,170}.*`.
+
+| | ~138K | ~170K |
+|---|---|---|
+| answer | 161 tokens at 25.1 tok/s, 1.8 tokens a pass (70 of 86 guesses right) | 156 tokens at 26.8 tok/s |
+| capture, GPU busy | 6,463 ms, 3,498 ms | 5,864 ms, 3,645 ms |
+| `attn_value_t_kernel` | 954 ms (862 us a launch) | 1,038 ms (1,067 us) |
+| `attn_softmax_kernel` | 686 ms (588 us) | 770 ms (753 us) |
+| `attn_score_reg_kernel` | 547 ms (469 us) | 621 ms (607 us) |
+| `attn_value_kernel` (4-token windows) | 205 ms (3,411 us) | 212 ms (4,230 us) |
+| **decode attention, share of the capture** | **2,392 ms, 37%** | **2,641 ms, 45%** |
+| the expert products (`native_mmvq_*`) | 811 ms | 742 ms |
+
+About 20 ms of a ~55 ms pass at 138K. A pass's 10 attention layers read 10 x 138K rows x 1,088 bytes (K and V,
+q8_0) = 1.5 GB, 3.4 ms at the 3070's 448 GB/s, so the old kernels ran about 6x off the bandwidth bound. They write
+every score as a float, read them back for the softmax and again for the values, and the value kernel runs 16 to 32
+CUDA blocks on the 46 multiprocessors.
+
+**The change.** `fdec_q8()` in `src/poly/fattn.cu`, a kernel of this project's own (llama.cpp's `fattn-vec` packs
+no GQA heads, so it would read the cache once per head). One CUDA block takes 1,024 keys of a KV head's group for all
+of the call's tokens (up to 4: 32 query rows, the group's 8 heads per token), as flash attention: per 64 keys the
+scores on the tensor cores (`mma.sync` m16n8k16; queries as halves, key codes exact as halves, each 32-value block's
+scale applied to its sum in floats), the softmax max and sum carried along per row, and the values' products on the
+tensor cores (weights and dequantized values as halves, sums in floats). The keys are read once per 4 tokens. A second
+kernel merges the 1,024-key splits. The splits are counted from the cache's first row and no row's arithmetic
+depends on the others, so a token gets the same bits alone or in a window, as with the old kernels. The splits'
+results live in the attention's existing score scratch: no VRAM is added (both variants below held 1,987-1,988
+experts with 511 MiB free). Opt-in: `STRATA_FDEC=1` in the environment (q8_0 cache, heads of 256, 8 heads a group,
+Ampere or later); the log says `STRATA_FDEC: decode attention through fdec_q8()`. Without it nothing changes.
+
+**Numerics.** `poly_fattn_test dec` on the 3070 (random q8_0 caches of this shape, 172K rows): fdec_q8() against
+attend() and both against doubles, for 1 to 6 tokens at positions 0 to 170,000, including the split edges (1,022 to
+2,047). All pass: at most 1.8e-3 from the doubles on results up to 4 (attend(): about 1e-6), from the halves. Each
+token alone, in a window, and with its position read from the card (the recorded path) gives the same bits. On the
+model: the 107K recall test passed in all runs below. Not run: the 247K needle (see Next).
+
+**Speed.** The kernel alone, one layer (attend() in brackets): 0.45 ms (1.92) for 1 token at 140,000, 0.51 (4.91)
+for 3 tokens, 0.67 (6.33) for 4 at 170,000. That is about 340 GB/s, 76% of the bandwidth. Splits of 512 and 256 keys
+were 7-60% slower at long context. Below about 4K of context the new kernel is the slower one (0.06 against 0.03 ms
+a layer at 1-2K: too few splits to fill the card), which the short requests below don't show.
+
+On the model, the Pass 8 sequence with 3 short requests first (~900 tokens of prompt, 400 of answer, thinking off),
+Plex, Deluge and the add-on generator running, two runs of each, alternating. Both variants ran `--vram-reserve-mib
+512` (below). Results `/data/pass12-ab.txt` (`pass12-ab-1.txt`: the first attempt). Decode tok/s:
+
+| Turn, context | Base (2 runs) | `STRATA_FDEC=1` (2 runs) | Change of the means |
+|---|---|---|---|
+| short (3 requests each) | 66.1-77.7 | 61.8-77.2 | none (first request of a run 62-68 in both) |
+| 1, 32K | 52.0 / 55.6 | 64.0 / 63.7 | +19% |
+| 2, 72K | 40.6 / 36.0 | 55.1 / 55.3 | +44% |
+| 3, 103K | 34.4 / 35.7 | 52.6 / 53.4 | +51% |
+| 4, 143K | 29.3 / 29.3 | 49.7 / 47.7 | +66% |
+| 5, 174K | 27.0 / 26.2 | 45.1 / 46.0 | +71% |
+
+Prompt reading is unchanged (it doesn't use this path). A ~1,000-token answer at 140-175K now takes about 20 s
+instead of about 35-40. Turn 5 read ~68K tokens again in one run of each (the prompt-cache checkpoint of Pass 10).
+
+**The reserve flips.** The first A/B attempt failed: the fdec run loaded with 2,128 experts, not 1,988, and its
+first request ended in `cudaGraphInstantiate: out of memory` (177 MiB free). That was not the kernel. The engine
+keeps 512 MiB free when RAM is "tight" for the model and 256 otherwise (Pass 11), and Tower sits on that line: this
+load came out not tight (24 GiB available). Pass 11 saw 256 MiB fail graph recording with the old kernels too. The
+swap file (above) raises `MemAvailable`, which makes the flip likelier. So the A/B pinned `--vram-reserve-mib 512`
+(with a reserve named, the engine keeps all of it, as when RAM is tight).
+
+Measuring build: image `strata-cybertiel:fdec` (`strata-cybertiel:latest` plus the changed `src/poly/`, engine
+rebuilt; `/mnt/user/appdata/polystrata/pass12/`: `Dockerfile`, `p12ab.sh`, `p12test.sh`, `repo/`).
+
+Not tested: Turing (the `mma` shape needs Ampere: the old kernels run), the fp16 KV cache, other head shapes, a HIP
+build (compiled out there), the multi-sequence path (`attn_rows()` takes the kernel too, but no run used it), more
+than one run per variant per day.
+
+### Next
+
+1. Go live (waiting for the user's go-ahead): tag `strata-cybertiel:latest` as `:pre-fdec`, tag `:fdec` as
+   `:latest`, add `"--vram-reserve-mib", "512"` to the config and the `.q8-256k` reference (old one kept as
+   `.q8-256k.pre-r512`), add `-e STRATA_FDEC=1` to `recreate.sh`, recreate, and run the 247K needle.
+
 ## Shared-load changes (2026-10-17)
 
 With Plex, Deluge and Duplicati running again, the GGUF (22.7 GB) has to stay cached next to them, and about 22.5 GB

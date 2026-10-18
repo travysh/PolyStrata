@@ -2101,7 +2101,8 @@ if(STRATA_NATIVE_EXPERTS AND (STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP) AND NOT S
   target_include_directories(poly_attend_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
                                                      ${_strata_gpu_include_directories})
   target_link_libraries(poly_attend_test PRIVATE ${_strata_gpu_blas_target} ${_strata_gpu_runtime_target})
-  # fattn_q8() (llama.cpp's flash-attention kernel) against attend_batch() on a q8 cache; needs a card, run by hand
+  # fattn_q8() (llama.cpp's flash-attention kernel) against attend_batch() on a q8 cache, and with `dec` fdec_q8()
+  # against attend(); needs a card, run by hand
   add_executable(poly_fattn_test src/poly/fattn_test.cu src/poly/kernels.cu)
   target_include_directories(poly_fattn_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/src/poly
                                                     ${_strata_gpu_include_directories})

@@ -192,6 +192,14 @@ void Qwen35::assign_scratch() {
             std::fprintf(stderr, "strata-poly: STRATA_FATTN: prompt attention %s\n",
                          fattn_ ? "through llama.cpp's flash-attention kernel" : "unchanged (no kernel for it here)");
     }
+    // STRATA_FDEC=1: a few tokens' attention over a q8 cache through fdec_q8(), in score_ (fattn.hpp)
+    const char* fd = std::getenv("STRATA_FDEC");
+    const bool fdec = fd && std::atoi(fd) == 1 && opt_.kv_format == KvFmt::kQ8_0;
+    if (fdec && !fdec_) {
+        fdec_ = fdec_q8_fits(head_dim_, n_head_, n_kv_);
+        std::fprintf(stderr, "strata-poly: STRATA_FDEC: decode attention %s\n",
+                     fdec_ ? "through fdec_q8()" : "unchanged (no kernel for it here)");
+    }
 }
 
 // A recurrent layer's convolution and delta-rule state lie one behind the other in state_ (alloc_caches()).
@@ -411,7 +419,9 @@ void Qwen35::attn(Block& B, int64_t pos, int n) {
             attend_batch(blas_, q_, kc, vc, pos, n, score_, score_floats, awork_, att_, head_dim_, n_head_, n_kv_, scale,
                          st_, 0, 0, false, q8 ? Kvq8{B.k_codes, B.k_scales} : Kvq8{},
                          q8 ? Kvq8{B.v_codes, B.v_scales} : Kvq8{}, kw, vw, q8 ? work_halves_ : 0);
-    } else
+    } else if (!(fdec_ && fdec_q8(q_, Kvq8{B.k_codes, B.k_scales}, Kvq8{B.v_codes, B.v_scales}, pos, n, at,
+                                  at ? room(n) : 0, att_, head_dim_, n_head_, n_kv_, scale, score_,
+                                  (size_t) chunk_ * n_head_ * opt_.max_context, st_)))
         attend(q_, q8 ? nullptr : B.keys, q8 ? nullptr : B.vals, pos, n, score_, chunk_, att_, head_dim_, n_head_,
                n_kv_, scale, st_, 0, 0, false, at, at ? room(n) : 0, /*score_floats*/ 0,
                q8 ? Kvq8{B.k_codes, B.k_scales} : Kvq8{}, q8 ? Kvq8{B.v_codes, B.v_scales} : Kvq8{});
@@ -454,8 +464,10 @@ void Qwen35::attn_rows(Block& B, int n) {
         pos_ = r.pos;
         const int sized = room(1);
         pos_ = keep;
-        attend(q_ + i * hq, kc, vc, r.pos, 1, score_, chunk_, att_ + i * hq, head_dim_, n_head_, n_kv_, scale, st_, 0, 0,
-               false, ai, sized, 0, kq, vq);
+        if (!(fdec_ && fdec_q8(q_ + i * hq, kq, vq, r.pos, 1, ai, sized, att_ + i * hq, head_dim_, n_head_, n_kv_,
+                               scale, score_, (size_t) chunk_ * n_head_ * opt_.max_context, st_)))
+            attend(q_ + i * hq, kc, vc, r.pos, 1, score_, chunk_, att_ + i * hq, head_dim_, n_head_, n_kv_, scale, st_,
+                   0, 0, false, ai, sized, 0, kq, vq);
     }
     mul_sigmoid(att_, qg_ + head_dim_, head_dim_, n * n_head_, 2 * head_dim_, false, st_);
     lin(B.wo, att_, ao_, n);
