@@ -353,6 +353,32 @@ and a 30K-token turn reads in about 40 s or less. Past it, both get steadily wor
 (`reasoning_budget_tokens`, per request or in the config for all requests). At `max_tokens` alone, a reply can end
 while still thinking and come back with no answer.
 
+## Pass 8: RAM speed (2400 / 2800 / 3200 MT/s)
+
+The BIOS fell back to 2400 MT/s after a reboot (probably a failed memory training at 2800: four DIMMs from two
+Ballistix 3000 CL15 kits on Zen+). It was then set to 3200 MT/s at 1.36 V. (SMBIOS reports 1.2 V; this board reports
+the default there.) The same sequence after each boot: the 107K recall prompt as a warm-up (it passed every time),
+then `multiturn.py fwd 5` with the thinking budget. The 2800 column is Pass 7's run A, which was not right after a
+boot. Plex and the add-on generator ran in all three. Decode tok/s (read tok/s):
+
+| Turn, context | 2400 | 2800 | 3200 |
+|---|---|---|---|
+| 1, 32K | 46.2 (1,411) | 53.5 (1,544) | 51.5 (1,540) |
+| 2, 72K | 37.6 (1,020) | 39.8 (982) | 40.2 (988) |
+| 3, 103K | 33.1 (747) | 35.2 (747) | 35.1 (761) |
+| 4, 143K | 28.6 (609) | 29.3 (586) | 29.1 (592) |
+| 5, 174K | 25.4 (493) | 25.6 (473) | 26.3 (497) |
+
+Findings:
+
+1. **3200 is the same as 2800, within noise** (decode within about 1 tok/s from turn 2 on, and reading the same). 2400
+   is 1-6% slower on decode from turn 2 on, with the same reading speed. Turn 1 varies most between runs.
+2. Memory bandwidth (dual channel: 38.4 / 44.8 / 51.2 GB/s) is not what limits decode on this machine above 2800.
+   That fits the profiling session's finding that decode waits mostly on synchronisation. So choose the RAM speed for
+   stability, not for Strata: anything from 2800 to 3200 runs it the same.
+3. Stability at 3200 during this run: no new kernel errors, no container restarts, GPU at most 66 C. That is about 10
+   minutes of load, not a memory test. MemTest86 is still to be run.
+
 ### Next
 
 1. Upstream: offer `24aadb56` (`--kv int8` gives the poly families q8_0), with the numbers above. Kept local for now.
