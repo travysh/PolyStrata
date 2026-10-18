@@ -6545,6 +6545,14 @@ def poly_setup(a, family, gpu, hip, cuda_tk, multi, ram, data, elsewhere, port, 
            "that much less)")
     if fam.get("tail_skip"):
         args += ["--tail-skip", str(fam["tail_skip"])]
+    # strata-poly's attention caches are fp16 (its default) or q8_0.  Only an asked --kv int8 turns q8_0 on, so the
+    # default config stays as it was; q4_0 / k8v4 are the Qwen3.8 engine's.  Measured on an RTX 3070 8 GB
+    # (docs/tower): 256K of context in q8_0 decoded as fast as 64K in fp16 up to 32K prompts, and 12% faster at 107K.
+    if a.kv == "int8":
+        args += ["--kv", "q8_0"]
+        ok("attention caches in 8 bits (--kv q8_0: half the VRAM of fp16, slightly different answers)")
+    elif a.kv:
+        warn(f"--kv {a.kv} is for the Qwen3.8 engine; this one keeps its attention caches in fp16 (--kv int8: q8_0)")
     if not multi and poly_batch(fam, d, vram, ctx):
         args += ["--prompt-batch", "2048"]
         ok("prompts are read 2,048 tokens at a time (--prompt-batch in the config)")

@@ -170,6 +170,21 @@ class Main(unittest.TestCase):
             self.assertEqual(code, 0, out)
             self.assertNotIn("--threads", cfg["args"])
 
+    def test_kv_int8_is_q8_0(self):
+        """--kv int8 asks strata-poly for its q8_0 attention caches; without --kv the config is as before."""
+        code, out, cfg = self.main(["--kv", "int8"], family="qwen36", ram=32.0, vram=8.0)
+        self.assertEqual(code, 0, out)
+        args = cfg["args"]
+        self.assertEqual(args[args.index("--kv") + 1], "q8_0")
+        self.assertEqual(args.count("--kv"), 1)
+        code, out, cfg = self.main(family="qwen36", ram=32.0, vram=8.0)
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("--kv", cfg["args"])
+        code, out, cfg = self.main(["--kv", "q4_0"], family="qwen36", ram=32.0, vram=8.0)
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("--kv", cfg["args"])
+        self.assertIn("--kv q4_0 is for the Qwen3.8 engine", out)
+
     def test_images(self):
         for family, (size, file, _repo, _n) in NEW.items():
             fam = setup.FAMILIES[family]
