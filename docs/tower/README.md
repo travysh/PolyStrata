@@ -518,8 +518,21 @@ and a same-day control run.
 
 ### Next
 
-1. Turn it on for Tower: rebuild `strata-cybertiel:latest` from the branch and add `STRATA_FATTN=1` to the
-   container.
+1. Done (2026-10-18): Tower runs it. `strata-cybertiel:latest` is now the old `latest` plus the `fcb7c9aa`
+   sources (`CMakeLists.txt`, `src/poly/`) and an engine rebuild (`/mnt/user/appdata/polystrata/fattn/Dockerfile`).
+   The image's other sources match the branch. The old image is tagged `strata-cybertiel:pre-fattn` as a rollback,
+   and `:p10` is kept. The container has no dockerMan template (it was made with `docker create`), so it was
+   recreated with the Pass 7 command plus `-e STRATA_FATTN=1`:
+
+   ```bash
+   docker create --name strata-cybertiel --gpus all -p 8080:8080 --ulimit memlock=-1 --stop-timeout 60 --restart no \
+     -v /mnt/user/appdata/polystrata/data:/data -v /mnt/cache/llm:/gguf \
+     -e FAMILY=cybertiel -e MODEL=UD-Q4_K_XL -e GGUF_DIR=/gguf -e CONTEXT=262144 -e KV=int8 -e VISION=cpu -e GPU=0 \
+     -e STRATA_FATTN=1 strata-cybertiel:latest
+   ```
+
+   The log shows the `STRATA_FATTN` line. The engine loaded in 9.3 s with 1,988 experts in VRAM and the container
+   reports healthy. The 107K recall test passed (3 of 3 facts, 107,399 tokens read in 72 s from cold).
 2. If the halves' error matters for some use, cap the key blocks (4K keys gave 6.0e-3 against 1.9e-2) and measure
    the cost of the extra merges.
 
