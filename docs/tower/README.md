@@ -254,9 +254,15 @@ Findings:
    `/data/mem-256k.txt`.
 
 **Tower's config is now 256K + `--kv q8_0`** (2026-10-17). The 64K fp16 original is
-`/data/config/strata-cybertiel-ud-q4_k_xl.json.orig`: copy it back and restart to undo. A container restart keeps
-the edited config. The container's `CONTEXT=65536` / `KV=int8` env are not what it runs. If the container is
-recreated, check the engine's start line in the log.
+`/data/config/strata-cybertiel-ud-q4_k_xl.json.orig`: copy it back and restart to undo. Since Pass 7, the container's
+env (`CONTEXT=262144 KV=int8`) gives the same config through setup, so a recreate with `REINSTALL=1` writes it too.
+
+**Hand edits to the config survive a restart (checked 2026-10-18).** setup.py writes the config file again on every
+container start, so its time changes each start. The arguments stay as they were, though: a hand-added
+`--window 4` was still in the file and on the engine's start line after `docker restart`, and was removed afterwards.
+`REINSTALL=1` is different: it builds the config from setup's own choices, so hand edits are lost, and the order can
+change (it put `--kv q8_0` at the end). The reference copy `.json.q8-256k` was refreshed from the current config after
+the Pass 7 recreate, so `cmp` against it holds again.
 
 ## Pass 5: guess length (`--window`)
 
