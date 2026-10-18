@@ -536,6 +536,91 @@ and a same-day control run.
 2. If the halves' error matters for some use, cap the key blocks (4K keys gave 6.0e-3 against 1.9e-2) and measure
    the cost of the extra merges.
 
+## Pass 11: VRAM audit for the expert cache (2026-10-18)
+
+Goal: more routed experts in the 3070's VRAM, so that fewer are read by the CPU (Pass 6: 57-66% of a decode token).
+Live config: 256K + `--kv q8_0` + `STRATA_FATTN=1` (Pass 10), 12 threads, RAM 3200. Each measurement is the Pass 8
+sequence (restart, the 107K recall warm-up, `multiturn.py fwd 5`), with Plex, Deluge and the add-on generator
+running. Results: `/data/vram-ab-{1,2,3,4}.txt`. Scripts: `/mnt/user/appdata/polystrata/vab.sh` (A/B, it restores
+`.q8-256k` on exit), `vsweep.sh` (VRAM per setting), `recreate.sh` (the Pass 10 `docker create`, image as argument).
+
+### Where the VRAM goes
+
+At idle the engine holds 7,464-7,526 MiB of the 8,192 (`nvidia-smi`), and 511 MiB is free. From the GGUF and from
+what each setting gives the expert cache when it changes:
+
+| Part | MiB | How it was measured |
+|---|---|---|
+| Expert cache (1,988 experts) | 3,631 | `/metrics` `expert_cache_mib` |
+| Weights the card holds | ~2,080 | GGUF tensor sizes: attention and gate projections 1,041, `output.weight` 515, linear-attention (ssm) 274, shared experts 128, routers 80, the MTP block's dense part 41 |
+| Expert staging buffer (`--stage-mib`, one layer's experts here) | ~560 | `--stage-mib 256` gave the cache 306 MiB more |
+| Prompt-batch buffers (`--prompt-batch 1024`) | ~440 | 512 gave 222 MiB more, 256 gave 333 |
+| Kept free (the reserve) | 511 | `vram_free_mib`. The engine finds RAM "tight" (available RAM within 4 GiB of the model's files: 25.7 GB against 22.7 + 4), which makes the reserve 512 MiB and keeps all of it free (`default_reserve_mib()`, `mind_card_vram()`). |
+| The rest: CUDA context, cuBLAS work space, recorded graphs, attention scratch (64 MiB), short KV, the token table if it is on the card | ~750 | the difference |
+
+Flash attention (Pass 10) reuses the existing attention scratch, so it changed nothing here.
+
+### Freeing VRAM: what it costs and gives
+
+Expert-cache hit rate and decode tok/s for turns 1-5 (32K to 174K), mean of two runs each, first round
+(`vram-ab-2.txt`):
+
+| Setting | Experts in VRAM | Hits | Decode tok/s | Read tok/s |
+|---|---|---|---|---|
+| base | 1,988 | 50 / 41 / 41 / 36 / 31% | 46.2 / 35.8 / 31.2 / 26.9 / 24.8 | 1,740 / 1,527 / 1,222 / 1,108 / 972 |
+| `--stage-mib 256` | 2,155 | 50 / 41 / 44 / 34 / 34% | 44.8 / 36.4 / 31.8 / 26.7 / 24.7 | 509 / 488 / 464 / 438 / 404 |
+| `--prompt-batch 512` | 2,249 | 56 / 48 / 48 / 40 / 38% | 48.8 / 37.5 / 33.5 / 28.5 / 25.2 | 1,467 / 1,238 / 1,038 / 946 / 836 |
+
+- **`--vram-reserve-mib 256`** (256 MiB kept free, +139 experts): the 107K recall test failed with
+  `cudaGraphInstantiate: out of memory`, so the reserve is what recording the launches needs at long context.
+  Out. Combined with the two settings below, prompt reading fell to 250-295 tok/s (`vram-ab-1.txt`).
+- **`--stage-mib 256`** (+167 experts): no decode gain, and prompt reading 3x slower. A layer's uncached experts
+  no longer fit the buffer in one round, so each batch copies them over PCIe 3.0 in several. Out.
+- **`--prompt-batch 512`** (+261 experts; it also kept 255 MiB free, not 511, presumably because RAM was not "tight"
+  at that load): hits +5-7 points, decode +1-7%, prompt reading 14-19% slower. Per turn (wall time) it comes out
+  even. Not kept.
+- So more experts help decode, but by about 1 tok/s per 100 experts at mid context. And the VRAM these settings free
+  is what prompt reading uses.
+
+### Expert swaps
+
+`--expert-swaps N` moves up to N experts at a time into the cache while an answer is written, in place of cached
+ones the answer uses less. Hits for turns 1-5 (`vram-ab-3.txt`, `vram-ab-4.txt`):
+
+| Swaps | Hits |
+|---|---|
+| 0 | 17 / 16 / 16 / 14 / 10% |
+| 32 | 49-53 / 37-42 / 40-41 / 36 / 31-33% |
+| 64 (default) | 50-53 / 38-42 / 41-43 / 35-36 / 28-33% |
+| 128 (a build with the cap at 256) | 46-49 / 40-47 / 41-44 / 35-36 / 31% |
+| 256 (same build) | 50-53 / 36-43 / 39-42 / 34-36 / 28-32% |
+
+1. **Swaps make the hit rate.** The experts the profile picks at load cover 10-17% of this coding traffic's uses.
+   Following the conversation brings it to 30-53%. Decode without swaps was 20-32 tok/s against 25-46 with them.
+2. **The cap of 64 is not the limit.** 32 to 256 give the same hit rates. The engine already swaps in what the
+   answer uses more than what it holds (`follow()`: twice as much recent use, plus a minimum). The 256 build was a
+   one-line change to the check in `Engine::load()` (0 to 64), rebuilt as image `strata-cybertiel:swaps`. It was not
+   kept, and the image is removed.
+3. Decode in `vram-ab-4.txt` is not comparable between rows: during those runs an `rsync` read through `/mnt/user`
+   (`shfs` at 153 MB/s), `kswapd0` and `kcompactd` were busy, and strata-poly read 190 MB/s from disk to bring its
+   evicted pages back. The base runs there decoded at 20-35 tok/s and read prompts at 1,244-1,674 tok/s.
+4. The expert profile is written back after each request (the file's time on the host is Pacific, in the container
+   UTC). It holds lifetime counts, most of them from the benchmark's repeated manual text, but with swaps doing the
+   work this matters little: the load-time pick is worth 10-17% of the hits.
+
+### Verdict
+
+Nothing kept; Tower runs as before (`strata-cybertiel:latest`, `.q8-256k`, `STRATA_FATTN=1`). The levers left for
+more experts at no prompt-reading cost need code:
+
+- Prompt-batch buffers that the expert cache borrows outside a prompt read (about 440 MiB, 240 experts; Pass 11's
+  `--prompt-batch 512` row is what about half of it bought: +1-7% decode). Like PR #46 (VecSzn/PolyStrata) does for
+  the staging buffer. The staging buffer itself (#46's case) gave no decode gain here.
+- A reserve that is only kept while launches are being recorded, if graph recording can be made to happen once.
+
+Both are worth at most a few percent of decode on this card. The larger effect seen in this pass is outside the
+engine: other disk traffic on Tower evicts the model from the page cache.
+
 ## Shared-load changes (2026-10-17)
 
 With Plex, Deluge and Duplicati running again, the GGUF (22.7 GB) has to stay cached next to them, and about 22.5 GB
