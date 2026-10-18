@@ -634,6 +634,26 @@ own cached files rather than the model's.
   `strata-cybertiel`, so fix both by hand afterwards.
 - Plex: periodic library scans are off (folder watching stays on), done by the user. Transcoding stays on the CPU.
 
+## Swap on the cache SSD (2026-10-18)
+
+Tower had no swap. The model's pages never go to swap (they are a file's: the kernel drops them and reads them
+again), but about 4.5 GB of program memory sits idle (`Inactive(anon)`, much of it Unraid's in-RAM root file
+system). With swap the kernel can move that out and give the RAM to the page cache. The model's 21.2 GB sits in about
+25 GB of available RAM, so the margin was 3-4 GB, and Pass 7 saw model pages read again with Plex and the add-on
+generator running.
+
+- `/mnt/cache/system/swapfile`, 8 GiB (`dd`, `mkswap`), `vm.swappiness=10` (only memory that sits idle goes out).
+- It goes on when the disks are mounted and off before they unmount: an active swapfile on `/mnt/cache` would keep the
+  cache from unmounting and the array from stopping. Hooks: `/usr/local/emhttp/webGui/event/disks_mounted/swapfile`
+  and `.../unmounting_disks/swapfile`. They are in RAM, so `/boot/config/go` writes them at boot, before `emhttp`
+  starts (backup: `/boot/config/go.pre-swap`). Both hooks were run by hand once: off, then on again.
+- Not yet measured: whether the model's pages stay cached better with Plex and the add-on generator running.
+
+The photo backup (User Scripts `photo_backup`, an `rsync` through `/mnt/user`) evicts the model whatever the swap: on
+2026-10-18 only 9 of 21.2 GiB were left cached. Reading the file three times (`cat ... > /dev/null`, about 2
+minutes) brought it to 20.6 GiB. The page cache keeps a page read once on its inactive list, so one pass is not
+enough. That could go at the end of the backup script.
+
 ## Cleanup (2026-10-18)
 
 - `strata-old` is gone (it was no longer on Tower).
