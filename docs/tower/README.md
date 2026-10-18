@@ -391,6 +391,11 @@ Findings:
    threads read the 36 KiB chunks 8% faster than 12 (they were equal at 2800), so `--threads 6` is worth testing again.
 3. Stability at 3200 during this run: no new kernel errors, no container restarts, GPU at most 66 C. That is about 10
    minutes of load, not a memory test. MemTest86 is still to be run.
+4. **`--threads 6` against 12 at 3200: 12 stays.** Same sequence (restart, the 107K warm-up, `multiturn.py fwd 5`), 6
+   first, then 12. Decode tok/s for turns 1-5 (32K to 174K), 6 threads: 47.6 / 38.5 / 33.9 / 29.1 / 24.7. 12 threads:
+   52.4 / 41.5 / 34.5 / 30.5 / 25.8. 12 was faster at every turn, by 2-9%. Reading was the same (within 6%). The
+   micro-benchmark's gain for 6 threads on 36 KiB reads doesn't carry over to the engine, where the threads also do
+   the dot-product arithmetic and the 5.5 KiB reads.
 
 ### Next
 
