@@ -397,6 +397,35 @@ Findings:
    micro-benchmark's gain for 6 threads on 36 KiB reads doesn't carry over to the engine, where the threads also do
    the dot-product arithmetic and the 5.5 KiB reads.
 
+## Pass 9: prompt reading at long context (interim, 2026-10-18)
+
+At long context a coding turn waits mostly for its prompt to be read: a ~35K-token follow-up takes ~65 s to read at
+140-175K and its ~1,000-token answer ~30 s. All runs below: RAM 3200 MT/s, 256K + `--kv q8_0`, 12 threads, Plex
+and the add-on generator running, the Pass 8 sequence (restart, the 107K recall warm-up, `multiturn.py fwd 5`).
+Read tok/s per turn (context 32K / 72K / 103K / 143K / 174K):
+
+| Config | Read tok/s | Decode tok/s | Kept? |
+|---|---|---|---|
+| Baseline (Pass 8 and the threads-12 run) | 1,530-1,540 / 988-1,026 / 749-761 / 587-592 / 495-497 | 51.5-52.4 / 40.2-41.5 / 34.5-35.1 / 29.1-30.5 / 25.8-26.3 | |
+| `--prompt-batch 2048` | 1,586 / 1,094 / 752 / 610 / 511 | 51.2 / 39.5 / 34.4 / 29.1 / 25.2 | no: +0-4% read at long context, -1-3% decode (0.4 GiB less expert cache: 1,748 experts) |
+| Measuring build, no change (control) | 1,437 / 1,022 / 749 / 610 / 496 | 52.3 / 41.5 / 35.1 / 30.6 / 26.7 | |
+| `STRATA_ATTEND_MIB=16` (1,024 queries a chunk, not 128) | 1,537 / 1,033 / 728 / 619 / 498 | 52.8 / 39.6 / 35.2 / 28.9 / 26.9 | no: noise |
+| + `STRATA_SCORE_MIB=256` (key blocks back to 2,048) | 1,549 / 1,050 / 769 / 625 / 491 | 50.9 / 40.3 / 33.8 / 29.5 / 26.4 | no: noise (and -105 experts) |
+| `"preserve_thinking": true` (config) | 1,538 / 1,004 / 742 / 577 / 466 | 51.0 / 40.0 / 34.6 / 29.8 / 26.5 | no: each turn read ~350-450 tokens less, but the kept thinking grew the context; turn time same or 1-3 s worse |
+
+Where the time goes (from the numbers, not yet profiled): a 1,024-token batch takes about 0.36 s plus 9.8 ms per 1K
+tokens of context, so at 140K about 80% of a batch grows with the context. That part is attention: 10 of the 40
+layers, 16 heads of 256 (2 KV heads), about 168 GFLOP per batch per 1K of context, i.e. it runs at about 17 TFLOPS
+against about 40 for the 3070's tensor cores (FP16 in, FP32 sums). The prompt path, `attend_batch()` in
+`src/poly/kernels.cu`, is not fused: per block of keys (2,048 under q8_0, `kQ8WorkRows`) it dequantizes K and V,
+writes fp32 scores with cuBLAS, runs a softmax kernel over them, and multiplies by V with cuBLAS, 128 queries at a
+time (`kAttendResults`). Chunk sizes made no difference (above), so the lever left is a fused flash-attention prompt
+kernel. Estimate, if it reaches 60-70% of the tensor-core peak: +15% read at 32K, +29-44% at 140K, +33-50% at 230K.
+
+Measuring build: image `strata-cybertiel:p9` on Tower (`/mnt/user/appdata/polystrata/pass9/`: the patched
+`kernels.cu` / `qwen35.cpp` with the two env variables, `Dockerfile`, `p9run.sh` for A/B in a container `strata-p9`,
+`nsys.sh` + `cap.py` for the profile, not run yet). Results: `/data/pass9-*.txt`.
+
 ### Next
 
 1. Upstream: offer `24aadb56` (`--kv int8` gives the poly families q8_0), with the numbers above. Kept local for now.
