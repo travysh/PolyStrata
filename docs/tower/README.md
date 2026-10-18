@@ -723,6 +723,41 @@ Not tested: Turing (the `mma` shape needs Ampere: the old kernels run), the fp16
 build (compiled out there), the multi-sequence path (`attn_rows()` takes the kernel too, but no run used it), more
 than one run per variant per day.
 
+**Quality.** The server gives no token probabilities, so: 15 questions after a prefix of this repository's C++/CUDA
+source (39K, 115K and 196K tokens; at each size 4 ask a constant's value at 5-90% depth, checked against the code,
+and 1 asks what the last function does), temperature 0, thinking off, 250 tokens. Image `:fdec-b`, the live 256K
+q8_0 config; "old" is both flags off, "new" both on (`q12.sh`, `qual12.py`, results `/data/profile/qual-*.json`,
+log `/data/pass12-qual.txt`). The fourth run (a second "new") failed to start in time (see Next) and was not redone.
+
+| | Right (of 12) | Identical answers (of 15) | Characters alike before the first difference (median) | Similarity (difflib, mean) |
+|---|---|---|---|---|
+| old 1, old 2 | 11, 11 | | | |
+| new | 11 | | | |
+| old 1 against old 2 | | 1 | 58 | 0.60 |
+| old against new | | 0 | 67-71 | 0.56-0.59 |
+
+All three runs miss the same question (`640` for a 64 at 115K) and get the other 11 right. The new kernels' answers
+part from the old ones' no earlier than two runs of the old kernels part from each other (the old path is not
+deterministic from run to run: the CPU experts' sums). That is what the numerics predict, not proof that no answer
+anywhere gets worse.
+
+**fp16 cache.** Branch commit `d7ff87b3` adds `fdec_f16()`: the same kernel reading an fp16 cache where it lies
+(`poly_fattn_test dec`: all cases pass for q8_0 and fp16; one layer at 140,000 with fp16: 0.72 ms against 1.82 for
+one token, 0.78 against 4.55 for three, about 89% of the bandwidth). On the model: image `:fdec-b2`, the config
+without `--kv q8_0` and with `--max-context 131072` (fp16 at 256K leaves the expert cache too little), one run each
+(`f16ab.sh`, `/data/pass12-f16.txt`). Read / decode tok/s:
+
+| Turn, context | Old | `STRATA_FATTN=1` | Both |
+|---|---|---|---|
+| short (3 requests) | - / 68.4-70.7 | - / 72.0-72.2 | - / 67.3-77.2 |
+| 1, 32K | 1,467 / 53.0 | 1,728 / 53.2 | 1,735 / 62.6 |
+| 2, 72K | 997 / 38.3 | 1,491 / 40.5 | 1,487 / 49.6 |
+| 3, 103K | 764 / 32.5 | 1,324 / 33.4 | 1,227 / 43.2 |
+
+So with fp16 the prompt kernel reads 18-73% faster and the decode kernel decodes 18-33% faster than the old path
+(less than with q8_0: twice the bytes, and the old fp16 path was nearer its bound). The 107K recall test passed in
+all three; 1,990 experts and 511 MiB free in all three.
+
 ### Next
 
 1. Done (2026-10-18): Tower runs it, from the upstream branch's build. `strata-cybertiel:latest` is now `:fdec-b`;
@@ -734,7 +769,11 @@ than one run per variant per day.
    7,627 MiB, afterwards 1,987 experts and 511 MiB free, no restart, no error in the log. To roll back:
    `recreate.sh.pre-fdec strata-cybertiel:pre-fdec` and `.q8-256k.pre-r512` as the config.
 2. Turn 1 of the `:fdec-b` pair: one more run would tell whether it was noise.
-3. The decode kernel takes q8_0 caches only; an fp16 cache keeps the old decode kernels.
+3. Every new container from an image built this way compiles the Qwen3.8 engine again at its start (~4 minutes):
+   the Dockerfiles rebuild only strata-poly, and setup then finds the engine's source hash changed. It does not
+   touch the measurements (it ends before the server starts), but a recreate takes ~5 minutes; `recreate.sh` now
+   waits up to 10. Building both engines in the Dockerfile would fix it.
+4. Tower runs `:fdec-b` (q8_0 decode only); `:fdec-b2` is the same for q8_0 plus fp16, not deployed.
 
 ## Shared-load changes (2026-10-17)
 
