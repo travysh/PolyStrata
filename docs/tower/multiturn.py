@@ -45,13 +45,17 @@ def main():
         msgs.append({"role": "user", "content": f"Here is more of the codebase:\n\n{code}\n\nIn {names[-1]}, what "
                      "does the main function or class do, and is there a bug or risk in it? Be brief."})
         t0 = time.time()
-        r = call("/v1/chat/completions", {"model": "strata", "messages": msgs, "max_tokens": 400, "temperature": 0})
+        # a thinking budget leaves room to answer: at max_tokens alone a reply can end while still thinking
+        r = call("/v1/chat/completions", {"model": "strata", "messages": msgs, "max_tokens": 1200, "temperature": 0,
+                                          "reasoning_budget_tokens": 600})
         wall = time.time() - t0
-        msgs.append({"role": "assistant", "content": r["choices"][0]["message"].get("content") or ""})
+        answer = r["choices"][0]["message"].get("content") or ""
+        msgs.append({"role": "assistant", "content": answer})
         m = (call("/metrics").get("requests") or [{}])[0]
         read, ms = m.get("prompt_read"), m.get("prompt_ms") or 0
         print(f"{i:4d} {m.get('prompt_total'):7} {read:6} {ms / 1000:8.1f} {read / (ms / 1000) if ms else 0:10.0f} "
-              f"{m.get('output_tokens'):4} {m.get('decode_tok_s'):12} {m.get('hit_rate'):5} {wall:7.1f}", flush=True)
+              f"{m.get('output_tokens'):4} {m.get('decode_tok_s'):12} {m.get('hit_rate'):5} {wall:7.1f}  "
+              f"answer {len(answer)} chars, {r['choices'][0].get('finish_reason')}", flush=True)
         if (m.get("prompt_total") or 0) > STOP_AT:
             break
 

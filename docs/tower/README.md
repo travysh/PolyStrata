@@ -291,48 +291,61 @@ warn. Without `--kv` the config is unchanged. The container was recreated with `
 now agree. It was then recreated without `REINSTALL`.
 
 `docs/tower/multiturn.py` (also `/data/multiturn.py`) builds a conversation like a coding agent's. Each turn adds
-about 30K tokens of PolyStrata's own source and asks about the last file, with 400 tokens of answer at temperature 0.
-The answer goes back into the history and the conversation grows to about 235K. It ran twice with different code
-(file order forward, then reversed), with Plex and the add-on generator **running** (unlike every pass above).
-"Read" is the prompt tokens the engine actually processed. The rest came from its prompt cache.
+about 30K tokens of PolyStrata's own source and asks about the last file. The answer goes back into the history, and
+the conversation grows to about 235K. "Read" is the prompt tokens the engine actually processed. The rest came from
+its prompt cache.
 
-| Run, turn | Prompt tokens | Read | Prompt time s | Read tok/s | Decode tok/s | Expert-cache hits |
-|---|---|---|---|---|---|---|
-| fwd 1 | 31,647 | 31,647 | 28.6 | 1,105 | 24.3 | 60% |
-| fwd 2 | 71,931 | 40,289 | 41.4 | 972 | 35.5 | 40% |
-| fwd 3 | 101,998 | 30,072 | 39.5 | 761 | 34.4 | 35% |
-| fwd 4 | 141,302 | 39,309 | 64.4 | 610 | 28.7 | 29% |
-| fwd 5 | 172,312 | 31,015 | 62.0 | 500 | 28.1 | 28% |
-| fwd 6 | 203,147 | 30,840 | 70.5 | 438 | 24.7 | 23% |
-| fwd 7 | 233,865 | 30,723 | 79.6 | 386 | 22.1 | 15% |
-| rev 1 | 35,229 | 35,229 | 22.9 | 1,536 | 44.5 | 40% |
-| rev 2 | 77,200 | 41,976 | 43.0 | 977 | 41.1 | 31% |
-| rev 3 | 123,269 | 46,074 | 66.2 | 696 | 36.2 | 33% |
-| rev 4 | 203,727 | 80,463 | 164.2 | 490 | 25.1 | 19% |
-| rev 5 | 238,982 | 35,260 | 91.8 | 384 | 20.4 | 10% |
+**Run A** (with an answer each turn): up to 600 tokens of thinking (`reasoning_budget_tokens`) and 1,200 in all,
+temperature 0. Every turn ended with an answer (`finish_reason: stop`, 1,250-1,900 characters). Plex and the add-on
+generator were running.
+
+| Turn | Prompt tokens | Read | Prompt time s | Read tok/s | Out | Decode tok/s | Expert-cache hits |
+|---|---|---|---|---|---|---|---|
+| 1 | 31,647 | 31,647 | 20.5 | 1,544 | 987 | 53.5 | 52% |
+| 2 | 72,308 | 40,662 | 41.4 | 982 | 1,071 | 39.8 | 41% |
+| 3 | 102,836 | 30,529 | 40.9 | 747 | 1,076 | 35.2 | 38% |
+| 4 | 142,606 | 39,771 | 67.9 | 586 | 991 | 29.3 | 31% |
+| 5 | 173,997 | 31,392 | 66.3 | 473 | 1,011 | 25.6 | 27% |
+| 6 | 205,233 | 61,873 | 130.6 | 474 | 667 | 22.6 | 21% |
+| 7 | 236,258 | 31,026 | 84.5 | 367 | 1,067 | 20.8 | 12% |
+
+**Earlier runs B and C** (`max_tokens` 400 and no budget): every reply ran out while still thinking, so the history
+got empty answers. Their decode and read figures match run A's within a few tok/s at each fill:
+
+| Run B (forward) turn: prompt, read, read tok/s, decode, hits | Run C (reversed) turn: prompt, read, read tok/s, decode, hits |
+|---|---|
+| 1: 31,647, 31,647, 1,105, 24.3, 60% | 1: 35,229, 35,229, 1,536, 44.5, 40% |
+| 2: 71,931, 40,289, 972, 35.5, 40% | 2: 77,200, 41,976, 977, 41.1, 31% |
+| 3: 101,998, 30,072, 761, 34.4, 35% | 3: 123,269, 46,074, 696, 36.2, 33% |
+| 4: 141,302, 39,309, 610, 28.7, 29% | 4: 203,727, 80,463, 490, 25.1, 19% |
+| 5: 172,312, 31,015, 500, 28.1, 28% | 5: 238,982, 35,260, 384, 20.4, 10% |
+| 6: 203,147, 30,840, 438, 24.7, 23% | |
+| 7: 233,865, 30,723, 386, 22.1, 15% | |
 
 Findings:
 
-1. **The prompt cache works on follow-up turns.** Each turn read only what was new: the added code and the last
-   answer. A turn that adds 30K tokens never reread the 200K before it.
-2. **Each follow-up still gets slower as the context fills.** Reading new tokens slowed from about 1,100-1,500
-   tok/s near 30K to about 385 tok/s past 230K, because each new token's attention reads the whole history. So a
-   30K-token turn waits about 29 s near the start and about 80-90 s past 200K. (rev 4 added 80K tokens in one turn:
-   164 s.)
-3. **Decode falls with the fill:** about 35-44 tok/s up to 125K, 28 at 140-170K, 20-25 past 200K. Expert-cache
-   hits fall from 40-60% to 10-15% as the attention cache takes the VRAM (the log: the cache was down to 312 experts
-   at one point, then got 2.23 GiB back).
-4. **Real code decodes slower than the benchmark's text.** At 32-35K this decoded at 24-44 tok/s, where the
-   benchmark's 32K prompt decodes at about 55. The benchmark repeats one manual, so its lookup guesses are right far
-   more often than on code. For coding, read these numbers rather than the benchmark's.
-5. **RAM with Plex and the add-on generator running:** mean 31 MB/s read from disk, mean iowait 2%, peaks of 63%.
-   Available RAM was 23.6-25.2 GiB. So some of the model's pages were evicted and reread from the SSD, which never
-   happened with them stopped (under 1 MB/s). It works, but with less margin. This was with the
+1. **The prompt cache works on follow-up turns.** A turn reads about what is new: the added code and the last answer.
+   The one exception is run A's turn 6, which read 61,873 tokens for about 31K new, so about 31K were read again. The
+   cause wasn't looked into. The history drops the thinking the engine had in its cache, so the prompt stops matching
+   at the last answer, and the engine goes back to a checkpoint. Usually that checkpoint is close, but here it wasn't.
+2. **Each follow-up still gets slower as the context fills.** Reading new tokens slowed from about 1,100-1,550 tok/s
+   near 30K to about 370 tok/s past 230K, because each new token's attention reads the whole history. A 30K-token turn
+   takes about 20-29 s to read near the start and about 85 s past 230K.
+3. **Decode falls with the fill:** about 40-54 tok/s up to 75K, about 35 at 100-125K, 26-29 at 140-175K, 21-25 past
+   200K, in all three runs. Expert-cache hits fall from 40-60% to 10-15% as the attention cache takes the VRAM (the
+   log: the cache was down to 312 experts at one point, then got 2.23 GiB back).
+4. **Code against the benchmark's text: no clear difference.** At about 32K, code decoded at 24.3, 44.5 and 53.5 tok/s
+   in the three runs, and the benchmark's 32K prompt at about 55. The spread between runs is too wide to call it.
+5. **RAM with Plex and the add-on generator running:** runs B and C read 31 MB/s from disk on average, with iowait 2%
+   on average and peaks of 63%. Run A, an hour later, read 0.1 MB/s with iowait at most 8%. Available RAM was 23.6-25.2
+   GiB. The evictions come and go, presumably with what Plex and the add-on generator are doing. This was with the
    Plex (4 GB) and Deluge (1 GB) memory caps from "Shared-load changes" below in place.
 
 **For coding:** 256K stays the server's limit, so a long one-off job still fits. A coding agent is best set to
-compact or summarise its history at about **100-130K tokens**. Below that, a turn's answer runs at about 35-44
-tok/s and a 30K-token turn reads in under about 70 s. Past it, both get steadily worse.
+compact or summarise its history at about **100-130K tokens**. Below that, answers decode at about 35 tok/s or more
+and a 30K-token turn reads in about 40 s or less. Past it, both get steadily worse. Give requests a thinking budget
+(`reasoning_budget_tokens`, per request or in the config for all requests). At `max_tokens` alone, a reply can end
+while still thinking and come back with no answer.
 
 ### Next
 
