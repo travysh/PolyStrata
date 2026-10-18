@@ -725,11 +725,14 @@ than one run per variant per day.
 
 ### Next
 
-1. Go live (waiting for the user's go-ahead), from the upstream branch's build: tag `strata-cybertiel:latest` as
-   `:pre-fdec`, tag `:fdec-b` as `:latest`, add `"--vram-reserve-mib", "512"` to the config and the `.q8-256k`
-   reference (old one kept as `.q8-256k.pre-r512`), add `-e STRATA_FDEC=1` to `recreate.sh`, recreate, and run the
-   247K needle. Until then Tower runs `:fdec-b` without `STRATA_FDEC` (the A/B's last state: the prompt kernel of
-   the upstream branch, the old decode kernels) on `.q8-256k`.
+1. Done (2026-10-18): Tower runs it, from the upstream branch's build. `strata-cybertiel:latest` is now `:fdec-b`;
+   the old `latest` (the `fcb7c9aa` prompt kernel) is tagged `:pre-fdec` as the rollback. The config and the
+   `.q8-256k` reference have `"--vram-reserve-mib", "512"` (the old reference is `.q8-256k.pre-r512`).
+   `recreate.sh` adds `-e STRATA_FDEC=1` (old copy `recreate.sh.pre-fdec`), and the container was recreated with
+   it: the log shows both `STRATA_FATTN` and `STRATA_FDEC` lines, 1,987 experts in VRAM, healthy. The 247K needle
+   (`TOKENS=185000`, seed 5) passed, 3 of 3 facts from 247,375 tokens in 213 s (Pass 4: 409 s); GPU memory at most
+   7,627 MiB, afterwards 1,987 experts and 511 MiB free, no restart, no error in the log. To roll back:
+   `recreate.sh.pre-fdec strata-cybertiel:pre-fdec` and `.q8-256k.pre-r512` as the config.
 2. Turn 1 of the `:fdec-b` pair: one more run would tell whether it was noise.
 3. The decode kernel takes q8_0 caches only; an fp16 cache keeps the old decode kernels.
 
