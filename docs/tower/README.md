@@ -758,6 +758,22 @@ So with fp16 the prompt kernel reads 18-73% faster and the decode kernel decodes
 (less than with q8_0: twice the bytes, and the old fp16 path was nearer its bound). The 107K recall test passed in
 all three; 1,990 experts and 511 MiB free in all three.
 
+Again at 256K with 5 turns (`f16ab2.sh`, `CTX=262144 TURNS=5`, `/data/pass12-f16-256k.txt`), to reach 143K and
+174K. Read / decode tok/s:
+
+| Turn, context | Old | `STRATA_FATTN=1` | Both |
+|---|---|---|---|
+| short (3 requests) | - / 64.4-76.9 | - / 66.1-78.2 | - / 66.3-75.9 |
+| 1, 32K | 1,465 / 55.7 | 1,844 / 56.3 | 1,856 / 62.0 |
+| 2, 72K | 1,041 / 39.2 | 1,470 / 35.7 | 1,492 / 50.2 |
+| 3, 103K | 772 / 33.3 | 1,287 / 34.0 | 1,209 / 45.9 |
+| 4, 143K | 597 / 25.6 | 1,109 / 26.0 | 1,116 / 36.9 |
+| 5, 174K | error | error | error |
+
+Turn 5 ended in HTTP 400 in all three, the old path included. The log went with the container, so the cause is not
+confirmed; an fp16 cache at 174K takes ~3.6 GB, and at 143K the expert cache had 3-7% hits (nearly nothing left
+of it). Up to 143K: reading +26-86%, decode with both against the prompt kernel alone +10-42%.
+
 **Qwen3.6-35B-A3B.** The stock model the code is written for (`Qwen3.6-35B-A3B-UD-Q4_K_M.gguf`, Unsloth's file
 without the MTP layer, so every decode step is one token), same image `:fdec-b2`, 256K + q8_0 + reserve 512 +
 its family's `--tail-skip 6`, in a container `strata-q36` with `strata-cybertiel` stopped; its config and expert
