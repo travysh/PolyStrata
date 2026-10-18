@@ -758,6 +758,24 @@ So with fp16 the prompt kernel reads 18-73% faster and the decode kernel decodes
 (less than with q8_0: twice the bytes, and the old fp16 path was nearer its bound). The 107K recall test passed in
 all three; 1,990 experts and 511 MiB free in all three.
 
+**Qwen3.6-35B-A3B.** The stock model the code is written for (`Qwen3.6-35B-A3B-UD-Q4_K_M.gguf`, Unsloth's file
+without the MTP layer, so every decode step is one token), same image `:fdec-b2`, 256K + q8_0 + reserve 512 +
+its family's `--tail-skip 6`, in a container `strata-q36` with `strata-cybertiel` stopped; its config and expert
+profile were put back afterwards (`q36.sh`, `/data/pass12-q36.txt`). One run each. Decode / read tok/s:
+
+| Turn, context | Both flags off | Both on |
+|---|---|---|
+| short (3 requests) | 74.9-82.5 / - | 73.8-81.7 / - |
+| 1, 32K | 55.0 / 1,433 | 65.8 / 1,839 |
+| 2, 72K | 41.2 / 1,035 | 59.7 / 1,502 |
+| 3, 103K | 34.5 / 822 | 53.8 / 1,387 |
+| 4, 143K | 29.1 / 659 | 49.1 / 1,203 |
+| 5, 174K | 25.7 / 537 | 45.1 / 1,069 |
+
+Decode +20% at 32K to +75% at 174K, reading +28% to +99%; the 107K recall test passed in both, 2,143 experts and
+511 MiB free in both. The two models do not both fit in the page cache: the first run started with 17.9 of the
+file's 20.6 GiB cached, the second with 20.2 (hit rates the same, 47-72% in both).
+
 ### Next
 
 1. Done (2026-10-18): Tower runs it, from the upstream branch's build. `strata-cybertiel:latest` is now `:fdec-b`;
