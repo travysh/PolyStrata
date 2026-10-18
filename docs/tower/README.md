@@ -373,9 +373,22 @@ Findings:
 
 1. **3200 is the same as 2800, within noise** (decode within about 1 tok/s from turn 2 on, and reading the same). 2400
    is 1-6% slower on decode from turn 2 on, with the same reading speed. Turn 1 varies most between runs.
-2. Memory bandwidth (dual channel: 38.4 / 44.8 / 51.2 GB/s) is not what limits decode on this machine above 2800.
-   That fits the profiling session's finding that decode waits mostly on synchronisation. So choose the RAM speed for
-   stability, not for Strata: anything from 2800 to 3200 runs it the same.
+2. **Why the RAM speed doesn't show:** the expert reads don't get faster with it. The profiling session's micro-benchmarks
+   (Pass 6, on branch `claude/tower-profiling-3ccd6b`: `/data/profile/scripts/bw.c`, `bw2.c`, built in the container
+   with its gcc 13), run again at 3200 with the engine idle, against Pass 6's figures at 2800 (GB/s):
+
+   | Read pattern | 2800 | 3200 |
+   |---|---|---|
+   | sequential, 6 threads / best (3 threads) | 40.1 / 40.1 | 43.7 / 45.6 |
+   | random 36 KiB chunks (32 rows of gate or up), 12 / 6 threads | 37.9 / 38.0 | 38.5 / 41.6 |
+   | random 5.5 KiB chunks (16 rows of down), 12 / 6 threads | 29.9 / 30.2 | 30.2 / 31.2 |
+
+   Sequential reads gained 9-14% from 2800 to 3200, but the expert-sized random reads at the engine's 12 threads
+   gained 1-2%. So the CPU side is held back by the reads' size and scatter (each chunk is a fresh DRAM access the
+   prefetchers can't run ahead of, with 12 threads contending), not by the RAM's transfer rate. This corrects an
+   earlier line here that put it down to synchronisation: Pass 6 measured synchronisation at 8-9% of a token. Two
+   things follow. Larger down tasks (Pass 6 candidate 3: 64 rows, 22 KiB) matter more than RAM speed. And at 3200, 6
+   threads read the 36 KiB chunks 8% faster than 12 (they were equal at 2800), so `--threads 6` is worth testing again.
 3. Stability at 3200 during this run: no new kernel errors, no container restarts, GPU at most 66 C. That is about 10
    minutes of load, not a memory test. MemTest86 is still to be run.
 
