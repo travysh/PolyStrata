@@ -283,9 +283,60 @@ Findings:
 2. The llama.cpp result doesn't carry over, as expected. llama.cpp drafts a fixed `n_max`, while strata-poly already
    stops guessing when a guess stops paying, and caps the block at 3.
 
+## Pass 7: a growing coding conversation (follow-up turns)
+
+The setup fix (commit `24aadb56`, local only): `--kv int8` now gives the poly families `--kv q8_0`, and other values
+warn. Without `--kv` the config is unchanged. The container was recreated with `CONTEXT=262144 KV=int8` and once with
+`REINSTALL=1`: setup alone wrote `--max-context 262144 ... --kv q8_0`, so the container's settings and the engine
+now agree. It was then recreated without `REINSTALL`.
+
+`docs/tower/multiturn.py` (also `/data/multiturn.py`) builds a conversation like a coding agent's. Each turn adds
+about 30K tokens of PolyStrata's own source and asks about the last file, with 400 tokens of answer at temperature 0.
+The answer goes back into the history and the conversation grows to about 235K. It ran twice with different code
+(file order forward, then reversed), with Plex and the add-on generator **running** (unlike every pass above).
+"Read" is the prompt tokens the engine actually processed. The rest came from its prompt cache.
+
+| Run, turn | Prompt tokens | Read | Prompt time s | Read tok/s | Decode tok/s | Expert-cache hits |
+|---|---|---|---|---|---|---|
+| fwd 1 | 31,647 | 31,647 | 28.6 | 1,105 | 24.3 | 60% |
+| fwd 2 | 71,931 | 40,289 | 41.4 | 972 | 35.5 | 40% |
+| fwd 3 | 101,998 | 30,072 | 39.5 | 761 | 34.4 | 35% |
+| fwd 4 | 141,302 | 39,309 | 64.4 | 610 | 28.7 | 29% |
+| fwd 5 | 172,312 | 31,015 | 62.0 | 500 | 28.1 | 28% |
+| fwd 6 | 203,147 | 30,840 | 70.5 | 438 | 24.7 | 23% |
+| fwd 7 | 233,865 | 30,723 | 79.6 | 386 | 22.1 | 15% |
+| rev 1 | 35,229 | 35,229 | 22.9 | 1,536 | 44.5 | 40% |
+| rev 2 | 77,200 | 41,976 | 43.0 | 977 | 41.1 | 31% |
+| rev 3 | 123,269 | 46,074 | 66.2 | 696 | 36.2 | 33% |
+| rev 4 | 203,727 | 80,463 | 164.2 | 490 | 25.1 | 19% |
+| rev 5 | 238,982 | 35,260 | 91.8 | 384 | 20.4 | 10% |
+
+Findings:
+
+1. **The prompt cache works on follow-up turns.** Each turn read only what was new: the added code and the last
+   answer. A turn that adds 30K tokens never reread the 200K before it.
+2. **Each follow-up still gets slower as the context fills.** Reading new tokens slowed from about 1,100-1,500
+   tok/s near 30K to about 385 tok/s past 230K, because each new token's attention reads the whole history. So a
+   30K-token turn waits about 29 s near the start and about 80-90 s past 200K. (rev 4 added 80K tokens in one turn:
+   164 s.)
+3. **Decode falls with the fill:** about 35-44 tok/s up to 125K, 28 at 140-170K, 20-25 past 200K. Expert-cache
+   hits fall from 40-60% to 10-15% as the attention cache takes the VRAM (the log: the cache was down to 312 experts
+   at one point, then got 2.23 GiB back).
+4. **Real code decodes slower than the benchmark's text.** At 32-35K this decoded at 24-44 tok/s, where the
+   benchmark's 32K prompt decodes at about 55. The benchmark repeats one manual, so its lookup guesses are right far
+   more often than on code. For coding, read these numbers rather than the benchmark's.
+5. **RAM with Plex and the add-on generator running:** mean 31 MB/s read from disk, mean iowait 2%, peaks of 63%.
+   Available RAM was 23.6-25.2 GiB. So some of the model's pages were evicted and reread from the SSD, which never
+   happened with them stopped (under 1 MB/s). It works, but with less margin. This was with the
+   Plex (4 GB) and Deluge (1 GB) memory caps from "Shared-load changes" below in place.
+
+**For coding:** 256K stays the server's limit, so a long one-off job still fits. A coding agent is best set to
+compact or summarise its history at about **100-130K tokens**. Below that, a turn's answer runs at about 35-44
+tok/s and a 30K-token turn reads in under about 70 s. Past it, both get steadily worse.
+
 ### Next
 
-1. Upstream: setup could pass `--kv q8_0` for the poly families when `KV=int8` (today it is silently ignored).
+1. Upstream: offer `24aadb56` (`--kv int8` gives the poly families q8_0), with the numbers above. Kept local for now.
 2. The CPU-path levers: a smaller quant (check whether the Cyber repo has UD-Q3_K_XL / UD-IQ3_XXS like Tiel's), or
    profiling the CPU expert path on Zen+.
 3. Fork and push the `cybertiel-family` branch (the family commit only; these notes stay local).
@@ -303,10 +354,11 @@ own cached files rather than the model's.
   `strata-cybertiel`, so fix both by hand afterwards.
 - Plex: periodic library scans are off (folder watching stays on), done by the user. Transcoding stays on the CPU.
 
-## Cleanup still open
+## Cleanup (2026-10-18)
 
-- `/mnt/disk2/llm/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf` and `/mnt/disk2/llm/mmproj-F16.gguf`: duplicates of the cache
-  copies. They are not kept, so delete them by hand.
-- `strata-cybertiel` and `strata` both map port 8080: stop one before starting the other.
-- `docker rm strata-old` once the SSD-backed `strata` is trusted.
+- `strata-old` is gone (it was no longer on Tower).
+- The disk2 copies of `Qwen3.6-35B-A3B-UD-Q4_K_M.gguf` and `mmproj-F16.gguf` are byte for byte the cache copies
+  (`cmp`). They are kept on purpose.
+- `strata-cybertiel` was recreated with `CONTEXT=262144 KV=int8` (see Pass 7). `strata` (Qwen3.6, 64K fp16) is
+  stopped and kept. `strata-cybertiel` and `strata` both map port 8080: stop one before starting the other.
 - The minecraft_genai runbook still says `/mnt/user/llm:/gguf`. The user is removing that runbook.
