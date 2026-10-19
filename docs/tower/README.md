@@ -816,6 +816,142 @@ file's 20.6 GiB cached, the second with 20.2 (hit rates the same, 47-72% in both
    511 MiB free. The 107K recall test passed; decode 62.2 / 54.8 / 51.7 tok/s at 32K / 72K / 103K
    (`multiturn.py fwd 3`), as the runs above.
 
+## Pass 13: faster CPU expert reads (2026-10-18/19)
+
+[PLAN-cpu-experts.md](PLAN-cpu-experts.md) proposed three ways to speed up the CPU expert reads (57-66% of a decode
+token, Passes 6 and 11): (A) huge pages, (B) software prefetch, (C) repacked Q4_K rows. Upstream PR 36 (Xiaomi2008,
+open) turned out to be B: `_mm_prefetch` two rows ahead and down tasks of 32 rows instead of 16, in
+`src/poly/cpu_experts.cpp`. Its exact change was tested rather than one of our own. **Outcome: none of the three is
+kept.** Tower runs a rebuild with upstream PR 34 and PR 46 and no CPU-expert change. Sources and scripts:
+`docs/tower/p13/` (on Tower `/mnt/user/appdata/polystrata/p13/`), results `/data/pass13-*.txt`.
+
+### Phase 0: rebuild with PR 34 and PR 46
+
+The local `tower` branch (`64f17cc2`: origin/main, which has PR 34 `--skip-weight` and PR 46 `--stage-read-mib`, plus
+PR 50/51 and `prefill`) as image `strata-cybertiel:tower-64f17cc2` (`p13/Dockerfile.tower`: the `Dockerfile.pr51`
+recipe on `tower`'s sources, both engines built). `polystrata:tower` is rebuilt `FROM` it (build dir
+`/mnt/user/appdata/polystrata/tower`, old Dockerfile `Dockerfile.pr51`). The container was recreated from its template
+with `/usr/local/emhttp/plugins/dynamix.docker.manager/scripts/rebuild_container PolyStrata`, then `docker start`
+(it is not autostarted). It was healthy in 6 s, with no compile at start, both kernel lines (`STRATA_FATTN`,
+`STRATA_FDEC`), 1,988 experts and 511 MiB free.
+
+The Pass 12 sequence (restart, 3 short requests, the 107K recall warm-up, `multiturn.py fwd 3`). The control is the
+`:pr51` image, run the same evening just before. Decode tok/s (read tok/s):
+
+| Turn, context | `:pr51` (control) | `tower-64f17cc2` | `tower-64f17cc2` in Phase 3 (2 runs) | + `--skip-weight 0.06` |
+|---|---|---|---|---|
+| short (3 requests) | 65.2 / 72.2 / 70.6 | 66.4 / 68.6 / 71.7 | 62.0-75.1 | 69.0 / 69.1 / 71.9 |
+| 1, 32K | 65.1 (1,703) | 63.6 (1,717) | 66.1 / 66.5 | 67.2 (1,726) |
+| 2, 72K | 55.8 (1,557) | 54.2 (1,551) | 59.5 / 59.3 | 57.2 (1,480) |
+| 3, 103K | 53.4 (1,280) | 49.9 (1,275) | 53.6 / 52.3 | 55.0 (1,283) |
+
+1. **The rebuild matches `:pr51`.** The first run's turn 3 was 7% lower. The two Phase 3 runs of the same image
+   came out at or above the control, so that was run-to-run noise. Both new options leave the default path as it
+   was (with the option at 0, `widen_stage()` and the weight check return at once). The recall test passed in every
+   run.
+2. **`--stage-read-mib` can't do anything here.** It grows the staging buffer for a prompt read, up to one layer's
+   experts, and Tower's buffer already holds a layer (Pass 11: ~560 MiB; a layer's 256 experts are 476 MiB). Not run.
+3. **`--skip-weight 0.06`** (the lowest-KL setting in [BACKENDS.md](../BACKENDS.md), measured there on GLM 5.3 Flash) was run
+   once: +3-10% decode against the same evening's base runs, about the run-to-run spread. It changes the answers
+   (they were shorter here: 900-1,430 characters against 1,350-1,700). It would need a quality check on this model
+   and more runs before it could be called a gain. Not turned on.
+
+### Phase 1: microbenchmark
+
+`p13/cxb.cpp` does a decode token's CPU expert work through the engine's own `cpu_experts()`, linked in, on the
+real GGUF's bytes. That is 40 MoE layers with 8 experts each, every expert on the CPU (which the engine never
+does: about half are in VRAM), 12 threads, drawn at random from 128 experts per layer (9.4 GiB). It is linked
+against ggml-cpu from the image's pinned llama.cpp, built native as the engine's is (`p13/cxb.sh`). `ROWS` is the
+number of tokens in a call. A decode window of the known token plus MTP and lookup guesses gives 1-4. PolyStrata was
+stopped, while Plex, Deluge and the add-on generator ran. Each variant ran 3 times, interleaved, with 20 warm-up
+tokens and 200 timed tokens.
+
+Types in this file: gate and up are Q4_K in 39 of the 40 layers (one is Q5_K), and down is Q5_K in 36 and Q6_K in 4.
+The pinned ggml has an AVX2 `ggml_gemv_*_8x8_q8_K` only for Q4_K (Q5_K and Q6_K have the generic C), so C covers
+gate and up, 62% of the expert bytes. THP on Unraid is `always`, defrag `madvise`.
+
+ms per token, mean of 3 (range):
+
+| Variant | 1 token a call | 2 | 3 | 4 |
+|---|---|---|---|---|
+| today: `vec_dot`, rows from the file's mapping | 19.67 (19.66-19.67) | 42.06 (41.84-42.21) | | |
+| same, second session | 20.47 (19.83-21.48) | 44.07 (42.74-44.82) | 68.45 (66.13-69.82) | 87.15 (85.72-89.96) |
+| anonymous copy, 4 KiB pages | 19.47 | 41.87 | | |
+| **A**: anonymous copy, `MADV_HUGEPAGE` (53-75% of it in 2 MiB pages) | 19.50 | 41.89 | | |
+| **A** at 100% 2 MiB pages (page cache dropped, memory compacted first) / its 4 KiB control | 19.00 / 19.20 | 41.85 / 40.58 | | |
+| **B**: PR 36, from the mapping | 21.31 | 38.72 | | |
+| **B**, second session | 21.89 | 40.58 | 59.27 | 75.77 |
+| PR 36's prefetch alone (down tasks left at 16) | 22.19 | 41.46 | 63.47 | 76.81 |
+| **B** on A | 21.01 | 37.82 | | |
+| **C**: Q4_K gate and up as `block_q4_Kx8`, `ggml_gemv_q4_K_8x8_q8_K`, on A | 19.80 | 43.08 | | |
+
+Today's 19.7 ms for 615 MB is 31 GB/s, against 44-46 GB/s for a sequential read (Pass 8).
+
+1. **A: no gain.** At full 2 MiB coverage it is 1% faster at 1 token a call and 3% slower at 2. So the TLB is not
+   what holds the reads back. On a host up for 23 hours, `MADV_HUGEPAGE` got only 53-75% of the copy into huge pages,
+   even after compaction. An engine using A would see that coverage too.
+2. **C: no gain** (+1% at 1 token, +2% at 2). The plan's reason for C was wrong. A task already reads its 32 rows
+   of gate (or up) as one contiguous 36 KiB block. Interleaving 8 rows reorders the bytes inside that block, so
+   nothing gets more contiguous. Loading the activation once instead of 8 times doesn't matter when the reads set
+   the pace. The repacked results were within 4e-8 of `cpu_experts()` on the file's rows (largest output 0.2).
+3. **B: depends on the tokens per call.** Compared within each round: +6 to +9% (slower) at 1 token, -7 to -10% at
+   2, -12 to -14% at 3, -13% at 4. The prefetch alone does about the same, so the slowdown at 1 token comes from the
+   prefetches, not from the larger down tasks. With one use per expert row, the prefetch instructions cost more than
+   they save. Output is bit-identical to today's: the same FNV hash over every call's output, at 1, 3 and 4 tokens a
+   call (`pass13-bench2.txt`, "parity").
+4. Against the stop rule (10% of the CPU expert time): only B passes, and only at 3-4 tokens a call.
+
+### Phase 2 and 3: PR 36 in the engine
+
+PR 36's commit was cherry-picked onto `tower` (`6ec61d5c`) and built as `strata-cybertiel:tower-6ec61d5c` /
+`polystrata:tower-b36`. There is no flag, since it changes no output. A/B (`p13/p13ab.sh`, `pass13-ab.txt`): a
+container `strata-p13` with the template's settings, PolyStrata stopped meanwhile, and runs alternating base and B.
+Each run was 3 short requests, the 107K recall warm-up, then `multiturn.py fwd 5` or `rev 5`, two runs of each. Plex,
+Deluge and the add-on generator ran throughout. Decode tok/s, mean of 2 (the two runs):
+
+| Turn | fwd context | base | PR 36 | rev context | base | PR 36 |
+|---|---|---|---|---|---|---|
+| short (6 requests) | | 69.8 | 68.1 | | 69.1 | 69.1 |
+| 1 | 32K | 66.3 (66.1 / 66.5) | 62.9 (63.6 / 62.2) | 35K | 61.5 (55.8 / 67.3) | 63.4 (67.5 / 59.3) |
+| 2 | 72K | 59.4 (59.5 / 59.3) | 53.2 (54.4 / 52.0) | 77K | 56.2 (57.1 / 55.2) | 56.6 (55.0 / 58.2) |
+| 3 | 103K | 53.0 (53.6 / 52.3) | 49.9 (51.4 / 48.4) | 123K | 51.2 (50.7 / 51.7) | 51.3 (50.5 / 52.1) |
+| 4 | 142K | 49.0 (49.3 / 48.8) | 46.8 (46.5 / 47.1) | 204K | 42.1 (42.1 / 42.1) | 40.9 (40.5 / 41.2) |
+| 5 | 174K | 47.7 (47.1 / 48.2) | 44.5 (45.5 / 43.5) | 240K | 38.0 (38.2 / 37.8) | 39.1 (37.1 / 41.1) |
+
+1. **PR 36 gives no decode gain in the engine.** On fwd it was slower at every turn in both runs: -4 to -10%, and
+   -10% at 72K, where the two runs of each agree within 2.4 tok/s. On rev it was within 3%. The keep rule (+5%
+   across the turns) fails, so it is not kept, and `tower` reverts it (`4d741b5b`, content = `64f17cc2`). As in
+   Pass 8, the microbenchmark's gain didn't carry over. The engine's calls are a mix of 1-token and longer windows,
+   about half of a token's experts are in VRAM, and the GPU's work overlaps the CPU's. Which of these cancels it was
+   not measured.
+2. Everything else was the same for both: loaded in 2.5 s, 1,988 experts and 511 MiB free after each run, the
+   engine's RSS 24.6-24.7 GB (mostly the mapped file's cached pages), the file 21.2 of 21.2 GiB cached after every
+   run, and every recall test passed. Start-up time and RAM don't change with B, so the cold/warm start-up test the
+   plan asked for (meant for A and C's anonymous copy) was not run.
+3. The 247K needle (`TOKENS=185000`, seed 5) on the live image after the A/B: 3 of 3 facts in 213 s (Pass 12: 213
+   s). GPU memory at most 7,513 MiB. Afterwards 1,988 experts, 511 MiB free, no restart, no error in the log.
+4. Not run: the Pass 12 quality check. B's output is bit-identical in the microbenchmark, and B isn't kept. The live
+   image has PR 34/46 off, so its arithmetic is `:pr51`'s.
+
+### What runs now, and the rollback
+
+- `PolyStrata` (template unchanged) on `polystrata:tower` = `strata-cybertiel:tower-64f17cc2` + serve/ from
+  `tower` (TOWER_COMMIT `64f17cc2`).
+- Rollback: `polystrata:tower-pr51` is the previous `polystrata:tower` (FROM `strata-cybertiel:pr51`). Run
+  `docker tag polystrata:tower-pr51 polystrata:tower`, then `rebuild_container PolyStrata` and `docker start
+  PolyStrata` (or Apply in the UI). `Dockerfile.pr51` in the build dir is the old Dockerfile.
+- Kept for now, removable: `strata-cybertiel:tower-6ec61d5c` and `polystrata:tower-b36` (PR 36).
+
+### Next
+
+1. Comment on PR 36 with the Tower numbers (Ryzen 2600X, DDR4-3200: the AMD result it asked for), only with the
+   user's OK. The microbenchmark gains at 2-4 tokens a call and loses at 1. In the engine on this model there's no
+   gain.
+2. If the CPU expert reads get another try: prefetch only when a call has more than one token (the 1-token loss came
+   from the prefetches). First count how many tokens the engine's CPU calls carry. Expect a few percent at most.
+3. `--skip-weight` on this model: a quality check and more runs, if a few percent of decode is worth changed
+   answers.
+
 ## Shared-load changes (2026-10-17)
 
 With Plex, Deluge and Duplicati running again, the GGUF (22.7 GB) has to stay cached next to them, and about 22.5 GB
