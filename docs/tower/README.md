@@ -803,11 +803,18 @@ file's 20.6 GiB cached, the second with 20.2 (hit rates the same, 47-72% in both
    7,627 MiB, afterwards 1,987 experts and 511 MiB free, no restart, no error in the log. To roll back:
    `recreate.sh.pre-fdec strata-cybertiel:pre-fdec` and `.q8-256k.pre-r512` as the config.
 2. Turn 1 of the `:fdec-b` pair: one more run would tell whether it was noise.
-3. Every new container from an image built this way compiles the Qwen3.8 engine again at its start (~4 minutes):
+3. (Fixed in item 4.) Every new container from an image built this way compiled the Qwen3.8 engine again at its start (~4 minutes):
    the Dockerfiles rebuild only strata-poly, and setup then finds the engine's source hash changed. It does not
    touch the measurements (it ends before the server starts), but a recreate takes ~5 minutes; `recreate.sh` now
    waits up to 10. Building both engines in the Dockerfile would fix it.
-4. Tower runs `:fdec-b` (q8_0 decode only); `:fdec-b2` is the same for q8_0 plus fp16, not deployed.
+4. Done (2026-10-19): Tower runs exactly the code of the upstream PRs (VecSzn/PolyStrata #50 and #51,
+   `strata-poly/fdec-decode` at `67f60c12`). Image `strata-cybertiel:pr51` (`pass12/Dockerfile.pr51`: `:pre-fdec`
+   plus that branch's `CMakeLists.txt`, `cmake/`, `include/` and `src/`; it builds strata-poly and the Strata engine
+   and writes the Strata engine's new source hash, so a new container no longer compiles at its start) is now
+   `:latest`; the previous live build stays as `:fdec-b`, and `:pre-fdec` is the rollback without the kernels.
+   Recreated with `recreate.sh`: healthy in 15 s (was ~5 minutes), both kernel lines in the log, 1,988 experts,
+   511 MiB free. The 107K recall test passed; decode 62.2 / 54.8 / 51.7 tok/s at 32K / 72K / 103K
+   (`multiturn.py fwd 3`), as the runs above.
 
 ## Shared-load changes (2026-10-17)
 
