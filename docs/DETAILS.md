@@ -2230,6 +2230,22 @@ Structured SSE buffers the answer while sending keep-alive comments. It emits co
 then usage/timings and `[DONE]`; failures emit an SSE error and `[DONE]` without invalid content deltas.
 `/v1/status.structured_output` advertises the formats, validation method and buffered streaming behavior.
 
+### Assistant prefill
+
+On `POST /v1/messages`, a trailing message with role `assistant` and text content starts the model's answer. The model
+continues from that text.
+
+On `POST /v1/chat/completions`, the same assistant prefill behavior is enabled only when `continue_final_message: true` is
+set; without it, chat completion requests keep their previous behavior.
+
+The prompt ends with the prefill text encoded as plain text (`parse_special=False`), so special tokens inside the prefill
+stay text. Prefill tokens count as prompt tokens in `usage`. The response body holds only the continuation, not the prefill
+text. With `response_format` JSON, the validator checks `prefill + continuation`, and the response returns the continuation.
+
+Thinking is turned off for prefill requests. Prefill combined with explicit thinking (`enable_thinking: true`,
+`reasoning_effort`, or Anthropic `thinking: {"type": "enabled"}`), tools, `tool_choice` other than `none`, `strata_mcp`
+or non-text content (images, tool blocks) returns **400**.
+
 ### API request monitor
 
 Off by default, since it keeps prompts and answers in memory: turn it on with `"api_monitor": true` in

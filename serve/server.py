@@ -4413,7 +4413,7 @@ class Service:
             self.prompts.forget(ids)
 
 
-    def prepare(self, messages, tools, kwargs, max_new=None, force=None, req=None, cancel=None):
+    def prepare(self, messages, tools, kwargs, max_new=None, force=None, req=None, cancel=None, prefill=None):
         """-> (ids, thinking, max_new). An unset or non-positive max_new (some clients send -1) means "unlimited":
         the rest of the context.  `force` (forced_call): without thinking the reply starts with it, so it ends the
         prompt; with thinking, Service.run writes it once the thinking is over."""
@@ -4426,8 +4426,12 @@ class Service:
         if self.drop_oldest:
             messages, ids = self.drop_oldest_turns(messages, tools, kwargs, ids, max_new)
             encoded_ids = ids
+        if force and prefill:
+            raise ValueError("prefill with forced tool_choice is not supported")
         if force and kwargs.get("enable_thinking", True) is False:
             ids = ids + self.tok.encode(force, parse_special=True)
+        if prefill:
+            ids = ids + self.tok.encode(prefill, parse_special=False)
         self.embeddings.path = None
         self.embeddings.keys = None
         images = images_of(messages)
@@ -5475,7 +5479,7 @@ def openai_collect(chunks) -> dict:
     return out
 
 
-def structured_chunks(chunks, validator):
+def structured_chunks(chunks, validator, prefill=None):
     """Buffer structured streams so a client never receives unvalidated content."""
     buffered = []
     heartbeat = time.monotonic()
@@ -5489,7 +5493,7 @@ def structured_chunks(chunks, validator):
                 yield chunk if progress else None
         result = openai_collect(buffered)
         choice = result["choices"][0]
-        content = validated_json(choice["message"]["content"], validator, choice["finish_reason"])
+        content = validated_json(choice["message"]["content"], validator, choice["finish_reason"], prefill=prefill)
         yield buffered[0]
         delta = {"content": content}
         if choice["message"].get("reasoning_content"):
@@ -6509,7 +6513,20 @@ def make_handler(svc: Service):
         def _openai(self, req):
             req = svc.with_shared(req, "openai")
             bias_api.normalize(req.get("logit_bias"), len(getattr(svc.tok, "tokens", ())) or None)
-            messages, tools, kw = openai_to_messages(req)
+            messages, tools, kw, prefill = openai_to_messages(req, prefill=True)
+            if prefill is not None:
+                if tools or req.get("tools"):
+                    raise ValueError("prefill with tools is not supported")
+                if req.get("tool_choice") and tool_choice_of(req.get("tool_choice"))[0] != "none":
+                    raise ValueError("prefill with tools is not supported")
+                if req.get("strata_mcp"):
+                    raise ValueError("prefill with MCP is not supported")
+                ctk = req.get("chat_template_kwargs") or {}
+                reasoning = req.get("reasoning") if isinstance(req.get("reasoning"), dict) else {}
+                if req.get("enable_thinking") is True or ctk.get("enable_thinking") is True or req.get("reasoning_effort") not in (None, "", "none", False) or reasoning.get("effort") not in (None, "", "none", False):
+                    raise ValueError("prefill with thinking is not supported")
+                kw["enable_thinking"] = False
+
             self._no_local_images(messages)
             if tool_choice_of(req.get("tool_choice"))[0] == "none":   # as the Responses route: no tools are offered
                 tools = None
@@ -6535,13 +6552,13 @@ def make_handler(svc: Service):
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
             check_request_sampling(req)                       # ... and a sampling field of the wrong type
             cancel = self.cancel                             # watched since _post() (#430 #431 #1999)
-            ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel)
+            ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel, prefill=prefill)
             _debug_req("openai", req, messages, tools, max_new, thinking, len(ids))
             run = run_with_mcp(svc, svc.mcp, messages, tools, kw, ids, thinking, max_new, max_req, req, cancel,
                                {t["name"] for t in extra}) if use_mcp else None
             chunks = openai_chunks(svc, req, ids, thinking, tools, max_new, cancel, run=run, force=force)
             if validator is not None:
-                chunks = structured_chunks(chunks, validator)
+                chunks = structured_chunks(chunks, validator, prefill=prefill)
             chunks = self._capture(chunks, "openai")
             if not req.get("stream"):
                 return self._json(200, openai_collect(chunks))
@@ -6753,8 +6770,19 @@ def make_handler(svc: Service):
         def _anthropic(self, req):
             svc.load()
             req = svc.with_shared(req, "anthropic")
-            messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked)
+            messages, tools, kw, prefill = anthropic_to_messages(req, svc.anthropic_think_unasked, prefill=True)
             self._no_local_images(messages)
+            if prefill is not None:
+                if tools or req.get("tools"):
+                    raise ValueError("prefill with tools is not supported")
+                if req.get("tool_choice") and tool_choice_of(req.get("tool_choice"))[0] != "none":
+                    raise ValueError("prefill with tools is not supported")
+                thinking = req.get("thinking")
+                effort = (req.get("output_config") or {}).get("effort") if isinstance(req.get("output_config"), dict) else None
+                if (isinstance(thinking, dict) and thinking.get("type") == "enabled") or (isinstance(thinking, dict) and thinking.get("budget_tokens")) or (effort not in (None, "", "none", False)):
+                    raise ValueError("prefill with thinking is not supported")
+                kw["enable_thinking"] = False
+
             if tool_choice_of(req.get("tool_choice"))[0] == "none":   # Anthropic's {"type": "none"}: no tools offered
                 tools = None
             force = forced_call(req.get("tool_choice"), tools)        # "any" / {"type": "tool", "name": N}
@@ -6763,7 +6791,7 @@ def make_handler(svc: Service):
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
             check_request_sampling(req)                       # ... and a sampling field of the wrong type
             cancel = self.cancel                             # watched since _post() (#430 #431 #1999)
-            ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel)
+            ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel, prefill=prefill)
             _debug_req("anthropic", req, messages, tools, max_new, thinking, len(ids))
             events = anthropic_events(svc, req, ids, thinking, tools, max_new, cancel, force=force, note=self._note)
             events = self._capture(events, "anthropic")

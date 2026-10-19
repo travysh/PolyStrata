@@ -544,7 +544,7 @@ def tool_arguments(raw) -> dict:
     return {"arguments": json.dumps(raw, ensure_ascii=False)}
 
 
-def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
+def openai_to_messages(req: dict, prefill: bool = False) -> tuple[list[dict], list[dict] | None, dict]:
     """OpenAI Chat Completions -> (template messages, template tools, template kwargs)."""
     messages = []
     for i, m in enumerate(_object_list(req.get("messages"), "messages")):
@@ -588,7 +588,26 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
     # #25: earlier turns keep their thinking (Qwen3.6's template), as llama.cpp's --chat-template-kwargs passes it
     if isinstance(ctk.get("preserve_thinking"), bool):
         kwargs["preserve_thinking"] = ctk["preserve_thinking"]
-    return _answers_in_call_order(_env_to_user(_late_system_to_user(messages))), tools, kwargs
+    if not prefill:                     # only the chat route asks: every other caller gets the 3 values it always did
+        return _answers_in_call_order(_env_to_user(_late_system_to_user(messages))), tools, kwargs
+    prefill = None
+    if req.get("continue_final_message") is True:
+        raw_msgs = req.get("messages") or []
+        if not messages or messages[-1].get("role") != "assistant":
+            raise ValueError("continue_final_message is only supported when the last message has role 'assistant'")
+        last_m = messages[-1]
+        raw_last = raw_msgs[-1] if isinstance(raw_msgs, list) and raw_msgs else {}
+        if last_m.get("tool_calls") or _has_image(last_m.get("content")):
+            raise ValueError("continue_final_message does not support tool calls or images")
+        raw_content = raw_last.get("content")
+        if isinstance(raw_content, list) and any(not isinstance(b, dict) or b.get("type") not in TEXT_PARTS for b in raw_content):
+            raise ValueError("prefill content with images or non-text blocks is not supported")
+        text = _text_of(last_m.get("content"))
+        if not text:
+            raise ValueError("continue_final_message requires a non-empty assistant message")
+        prefill = text
+        messages.pop()
+    return _answers_in_call_order(_env_to_user(_late_system_to_user(messages))), tools, kwargs, prefill
 
 
 BILLING_HEADER = "x-anthropic-billing-header:"
@@ -620,7 +639,7 @@ def pin_billing_stamp(system: str) -> str:
     return "".join(s)
 
 
-def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[dict], list[dict] | None, dict]:
+def anthropic_to_messages(req: dict, think_unasked: bool = True, prefill: bool = False) -> tuple[list[dict], list[dict] | None, dict]:
     """Anthropic Messages -> (template messages, template tools, template kwargs).  `think_unasked`: a request
     without "thinking", an effort or a budget gets the template's default (it thinks), as through 0.1.31; False
     renders a request without "thinking" or a budget without thinking, whatever its effort (#278, the config's
@@ -693,7 +712,17 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
         kwargs.update(effort_kwargs(effort))
     elif isinstance(thinking, dict) and thinking.get("budget_tokens"):
         kwargs.update(budget_effort(thinking["budget_tokens"]))
-    return _answers_in_call_order(_env_to_user(_late_system_to_user(messages))), tools, kwargs
+    if not prefill:                     # only the messages route asks: every other caller gets the 3 values
+        return _answers_in_call_order(_env_to_user(_late_system_to_user(messages))), tools, kwargs
+    prefill = None
+    if messages and messages[-1].get("role") == "assistant":
+        last_m = messages[-1]
+        if not (last_m.get("tool_calls") or _has_image(last_m.get("content")) or last_m.get("reasoning_content")):
+            text = _text_of(last_m.get("content"))
+            if text:
+                prefill = text
+                messages.pop()
+    return _answers_in_call_order(_env_to_user(_late_system_to_user(messages))), tools, kwargs, prefill
 
 
 # ------------------------------------------------------------------------------------------------ output parser
