@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <immintrin.h>
 #include <mutex>
@@ -18,6 +20,11 @@ namespace {
 // idle at the end of every layer: 64 rows gave Tiel's 512-row experts 8 tasks each, and its down products 32 tasks.
 constexpr int kRowsPerTask = 32;
 constexpr int kRowsPerDownTask = 16;
+// STRATA_CPU_DOWN_ORDER=1: a down task takes 64 rows and reads them expert by expert, each expert's rows of the task
+// in one piece, where today's loop reads one row of every expert in turn.  The same products and the same sums in
+// the same order, so the same bits.  On a Ryzen 5 2600X with DDR4-3200 (Cyber-Tiel-Coder 35B-A3B UD-Q4_K_XL, RTX
+// 3070) the CPU experts took 7-11% less time a token and decode was 2-12% faster, also with every call one token.
+constexpr int kRowsPerDownRun = 64;
 constexpr int kSpinsBeforeSleep = 20000;   // about a millisecond of pause instructions
 
 const ggml_type_traits_cpu* traits(int type) { return ggml_get_type_traits_cpu((ggml_type) type); }
@@ -28,6 +35,16 @@ void init_once() {
 }
 
 thread_local bool in_task = false;   // this thread is running a task of a batch
+
+bool down_order() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_CPU_DOWN_ORDER");
+        const bool yes = v && std::atoi(v) == 1;
+        if (yes) std::fprintf(stderr, "strata-poly: STRATA_CPU_DOWN_ORDER: CPU experts read down expert by expert\n");
+        return yes;
+    }();
+    return on;
+}
 
 }  // namespace
 
@@ -123,6 +140,7 @@ void Workers::run(int n, const std::function<void(int)>& fn) {
 
 bool cpu_expert_types_ok(int gu_type, int d_type, int n_embd, int n_ff, std::string& err) {
     init_once();
+    down_order();   // says so once, at load
     for (const int type : {gu_type, d_type}) {
         const ggml_type_traits_cpu* t = traits(type);
         const ggml_type_traits_cpu* a = t && t->vec_dot ? traits(t->vec_dot_type) : nullptr;
@@ -208,6 +226,31 @@ void cpu_experts(Workers& workers, const CpuExpert* experts, int n, int rows, in
     const auto hq_from = traits(td->vec_dot_type)->from_float;
     workers.run(n, [&](int j) { hq_from(hp + (size_t) j * n_ff, hqp + (size_t) j * h_bytes, n_ff); });
 
+    if (down_order()) {
+        const int tasks = (n_embd + kRowsPerDownRun - 1) / kRowsPerDownRun;
+        workers.run(tasks, [&](int t) {
+            static thread_local std::vector<float> rs;   // each row's output of every use
+            rs.resize((size_t) kRowsPerDownRun * n);
+            const int r0 = t * kRowsPerDownRun, r1 = std::min(n_embd, r0 + kRowsPerDownRun);
+            for (int u = 0; u < n_run; ++u) {
+                const uint8_t* down = experts[byp[runp[u]]].down;
+                for (int r = r0; r < r1; ++r)
+                    for (int i = runp[u]; i < runp[u + 1]; ++i)
+                        td->vec_dot(n_ff, rs.data() + (size_t) (r - r0) * n + byp[i], 0, down + (size_t) r * d_row, 0,
+                                    hqp + (size_t) byp[i] * h_bytes, 0, 1);
+            }
+            for (int r = r0; r < r1; ++r) {
+                const float* s = rs.data() + (size_t) (r - r0) * n;
+                int j = 0;
+                for (int row = 0; row < rows; ++row) {
+                    float acc = 0.f;
+                    for (; j < n && experts[j].row == row; ++j) acc += experts[j].weight * s[j];
+                    out[(size_t) row * n_embd + r] = acc;
+                }
+            }
+        });
+        return;
+    }
     const int d_tasks = (n_embd + kRowsPerDownTask - 1) / kRowsPerDownTask;
     workers.run(d_tasks, [&](int t) {
         static thread_local std::vector<float> one;   // an output value of every use
