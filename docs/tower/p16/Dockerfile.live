@@ -1,0 +1,28 @@
+# strata-cybertiel on the local tower branch at 4f6270b4 (5ca982fa + strata-poly/ssd-parking: --conversation-park-dir)
+# the kernels plus that branch's engine sources. Both engines are built here and BUILD.json gets the new source
+# hash, so a new container does not compile the Strata engine again at its start.
+FROM strata-cybertiel:tower-5ca982fa
+COPY repo-live/CMakeLists.txt /opt/strata/CMakeLists.txt
+COPY repo-live/cmake/ /opt/strata/cmake/
+COPY repo-live/include/ /opt/strata/include/
+COPY repo-live/src/ /opt/strata/src/
+RUN .venv/bin/python -c "import setup; setup.build_engine_poly({\"arch\": 86, \"archs\": [86]}, True, setup.get_llama_cpp(), \"cpu\", 13)" \
+    && rm -rf build-poly build-vision-poly
+RUN .venv/bin/python - <<'PYEOF'
+import json, shutil
+import setup
+llama = setup.get_llama_cpp()
+nvcc, _ = setup.find_nvcc()
+setup.cmake_build(setup.ROOT, setup.ROOT / "build", "strata",
+    ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_Q6K_EXPERTS=ON", "-DSTRATA_MMQ_KQUANTS=ON", "-DSTRATA_BUILD_TESTS=OFF",
+     "-DCMAKE_CUDA_ARCHITECTURES=86", f"-DCMAKE_CUDA_COMPILER={nvcc}", f"-DSTRATA_GGML_DIR={llama}"], None,
+    "build-strata.bat")
+eng = setup.ROOT / "engine"
+shutil.copy2(setup.ROOT / "build" / setup.EXE, eng / setup.EXE)
+if (setup.ROOT / "build" / setup.KQ_LIB).exists():
+    shutil.copy2(setup.ROOT / "build" / setup.KQ_LIB, eng / setup.KQ_LIB)
+meta = json.loads((eng / "BUILD.json").read_text())
+meta["src"] = setup.source_hash(setup.ENGINE_SOURCES)
+(eng / "BUILD.json").write_text(json.dumps(meta, indent=1))
+PYEOF
+RUN rm -rf build

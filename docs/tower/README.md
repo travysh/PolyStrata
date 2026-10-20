@@ -1124,6 +1124,63 @@ early.** Sources: `docs/tower/p15/`, on Tower `/mnt/user/appdata/polystrata/p15/
   `strata-cybertiel:p15trace` can be removed. If the comment matters to anyone, the cheap fix is the comment's wording
   ("about 20 µs on Zen+, a millisecond on Skylake"), not the code.
 
+## Pass 16: parking conversations on the SSD (2026-10-19)
+
+Parking was off on Tower because RAM is too tight for it (the model's files fill the page cache, and the nightly
+rsync already pushes experts out). Without it, going back to a conversation after another reads its whole prompt
+again: 16.8 s at 32K, 34.5 s at 64K. OpenSpec change `add-poly-ssd-parking`: branch `strata-poly/ssd-parking`
+(`df80232b`, from origin/main `974552f5`) adds `--conversation-park-dir DIR`. Parked conversations go to unnamed
+(`O_TMPFILE`) direct-I/O files there: their rows in 64 MiB pieces and their last two checkpoints, written by a thread
+through a 256 MiB stage. **Outcome: live on Tower. Switching back takes 2.8 s at 32K and 4.7 s at 64K, with no RAM
+held and the page cache untouched. The 64K target (under 3 s) is not met.** Results in `/data/ssd-6*.txt`.
+
+- **Tests** (in `strata-cybertiel:tower-4f6270b4`): `glm_conversations_test` passes its RAM run with the same check
+  count as upstream (54,950 with libstdc++), then again with a park directory (109,911), then with slow writes so that
+  restores race them (164,817), and clean under `-fsanitize=thread`. `poly_park_file_test` passes on `/park` (xfs)
+  and on `/var/tmp` (overlayfs). `/mnt/user` (shfs FUSE) is refused: `open(O_TMPFILE | O_DIRECT): Operation not
+  supported`. On kernel 6.12, `/dev/shm` (tmpfs) takes the files, so the probe does not refuse it. The headers also
+  build with MSVC `/W4 /WX` on the Windows box.
+- **Start-time refusals** (exit 2, before the model loads): a missing directory, a path with a space, `/mnt/user`, and
+  the flag without `--conversation-cache-mib`.
+- **Images:** `strata-cybertiel:tower-4f6270b4` (`p16/Dockerfile.live`, FROM `tower-5ca982fa`, both engines built)
+  and `polystrata:tower` = `polystrata:tower-4f6270b4` (TOWER_COMMIT `4f6270b4` = tower `977eeba5` + this branch).
+  The template has a new volume `/mnt/cache/appdata/polystrata/park` -> `/park` (backup `my-PolyStrata.xml.pre-ssd`).
+  The engine config has `--conversation-park-dir /park --conversation-cache-mib 8192` (backup
+  `strata-cybertiel-ud-q4_k_xl.json.pre-ssd`, which has parking off). The Monitor's `/metrics` gives
+  `where: disk, dir: /park`.
+- **A/B/A** (`/data/aba.py disk 24000 48000`, `ssd-63-aba.txt`), A's second prompt:
+
+  | | back to A at 32K | back to A at 64K |
+  |---|---|---|
+  | parking off | 16.8 s | 34.5 s |
+  | parking in 2 GiB of RAM | 0.5-0.9 s | 0.4 s |
+  | parking on the SSD | 2.8 s (3.7 s wall) | 4.7 s (5.4 s wall) |
+
+  A parked conversation takes 516 MB at 32K and 905 MB at 64K on disk (RAM: 780 MB and 1.17 GB, with all six
+  checkpoints). Parking holds the switch for 0.7 s at 32K and 1.7 s at 64K: the writing that doesn't fit the stage.
+  The restore read 516 MB in 2.5 s and 905 MB in 4.5 s, about 200 MB/s.
+- **Why the restore is slower than the drive** (`p16`'s `readbench.cpp`): 64 MiB direct-I/O reads run at 428 MB/s
+  alone and 334 MB/s with 256 MiB of writes queued (the other conversation's park). Writes run at 409 MB/s. So 905 MB
+  could come back in about 2.7 s. The rest is the restore being serial: read a piece, load it into the engine, read
+  the next. Reading the next piece while one loads (two bounce buffers) would save most of it. That is a change to
+  the design (decision 3), not made.
+- **Memory** (`ssd-63-anon.txt`, `RssAnon` of the engine): 1,005 MB with A live before the first park, 608 MB with A
+  parked, 625 MB after B parked and A came back, 814 MB at the end with A live again. `Cached:` grew 258 MB while A1's
+  prompt was read (model pages), and not at all over the parks and the restore. `df /mnt/cache` grew by the parked
+  bytes.
+- **SIGKILL** (`ssd-64-kill.txt`): with two conversations parked, `/park` listed nothing, and `/mnt/cache` used
+  189,347,389,440 bytes, against 188,183,273,472 before the start. After `kill -9` of the engine: 188,183,265,280, and
+  `/park` still empty.
+- **Decode** (`decode.py`, `ssd-63-decode.txt`): 68.1, 76.7, 81.0, 75.3 tokens/s (73-79 before).
+- **RAM path unchanged** (`ssd-61-old.txt`, `ssd-61-new*.txt`, fixed nonce, `--conversation-cache-mib 2048`): the old
+  and the new image log the same `conversation cache:` lines (tokens and bytes) and the same prompt/cached/read counts.
+  Their answers differ, but two clean runs of the new image differ too, already at A1, before any parking: greedy
+  answers repeat only with `STRATA_FREEZE_EXPERTS=1` (docs/GLM.md). An answer-for-answer check needs that on both.
+- **Not tested:** a switch while Plex streams (the shared SSD), `--batch`, and the answer check above.
+- **Rollback:** restore the config from `strata-cybertiel-ud-q4_k_xl.json.pre-ssd` and restart. For the previous
+  image too: `docker tag polystrata:tower-5ca982fa polystrata:tower`, then `rebuild_container PolyStrata` and
+  `docker start PolyStrata`. The `/park` volume can stay.
+
 ## Shared-load changes (2026-10-17)
 
 With Plex, Deluge and Duplicati running again, the GGUF (22.7 GB) has to stay cached next to them, and about 22.5 GB
