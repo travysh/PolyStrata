@@ -1,0 +1,32 @@
+--- a/src/poly/engine.cpp
++++ b/src/poly/engine.cpp
+@@ -2303,7 +2303,15 @@
+         cpu_experts(*workers_, host, n_host, m, (int) L.gu_type, (int) L.d_type, n_embd_, n_ff_exp_,
+                     h_x_ + (size_t) at * e_row, limit, gelu_, cpu,
+                     n_cached > 0 || (first && at == 0) ? &launch : nullptr);
+-        stats_.cpu_ms += ms_since(t0);
++        const double call_ms = ms_since(t0);
++        stats_.cpu_ms += call_ms;
++        // PASS14 measurement only: STRATA_CPU_TRACE=path, a line per call: layer tokens uses us expert:token...
++        static FILE* trace = [] { const char* p = std::getenv("STRATA_CPU_TRACE"); return p ? std::fopen(p, "a") : nullptr; }();
++        if (trace) {
++            std::fprintf(trace, "%d %d %d %.1f %d", il, m, n_host, call_ms * 1000.0, n_cached > 0 ? 1 : 0);
++            for (int i = 0; i < n_host; ++i) std::fprintf(trace, " %d:%d", host_e[i], host[i].row);
++            std::fputc('\n', trace);
++        }
+     }
+     return any_host;
+ }
+--- a/src/poly/main.cpp
++++ b/src/poly/main.cpp
+@@ -879,6 +879,10 @@
+         // the cache's share of the experts looked up while answering: a prompt batch's go through VRAM either way
+         const long long hits = now.gpu_experts - before.gpu_experts;
+         const long long misses = now.cpu_experts - before.cpu_experts;
++        // PASS14 measurement only
++        std::fprintf(stderr, "PASS14 request: %lld generated, CPU experts %.1f ms, %.2f ms/token, %lld CPU uses, %lld VRAM uses\n",
++                     (long long) r.produced, now.cpu_ms - before.cpu_ms,
++                     (now.cpu_ms - before.cpu_ms) / (double) std::max<long long>(r.produced, 1), misses, hits);
+         std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld %lld %lld 0 0 0.0 %lld 0\n", (long long) r.produced, n,
+                     r.prompt_ms, r.decode_ms, r.finish, (long long) r.guessed_right, (long long) r.guessed,
+                     (long long) r.resume, hits, hits + misses, (long long) r.read);

@@ -933,7 +933,7 @@ Deluge and the add-on generator ran throughout. Decode tok/s, mean of 2 (the two
 4. Not run: the Pass 12 quality check. B's output is bit-identical in the microbenchmark, and B isn't kept. The live
    image has PR 34/46 off, so its arithmetic is `:pr51`'s.
 
-### What runs now, and the rollback
+### What ran after Pass 13 (superseded by Pass 14)
 
 - `PolyStrata` (template unchanged) on `polystrata:tower` = `strata-cybertiel:tower-64f17cc2` + serve/ from
   `tower` (TOWER_COMMIT `64f17cc2`).
@@ -944,13 +944,147 @@ Deluge and the add-on generator ran throughout. Decode tok/s, mean of 2 (the two
 
 ### Next
 
-1. Comment on PR 36 with the Tower numbers (Ryzen 2600X, DDR4-3200: the AMD result it asked for), only with the
-   user's OK. The microbenchmark gains at 2-4 tokens a call and loses at 1. In the engine on this model there's no
+1. (On hold: nothing is posted upstream without the user asking.) Comment on PR 36 with the Tower numbers (Ryzen
+   2600X, DDR4-3200: the AMD result it asked for). The microbenchmark gains at 2-4 tokens a call and loses at 1. In the engine on this model there's no
    gain.
-2. If the CPU expert reads get another try: prefetch only when a call has more than one token (the 1-token loss came
-   from the prefetches). First count how many tokens the engine's CPU calls carry. Expect a few percent at most.
+2. Done in Pass 14, differently: the engine's calls were counted, the loss came from the gate/up prefetch, and reading
+   `down` expert by expert gave the gain without any prefetch.
 3. `--skip-weight` on this model: a quality check and more runs, if a few percent of decode is worth changed
    answers.
+
+## Pass 14: PR 36's gain without its 1-token loss (2026-10-19)
+
+Pass 13 left PR 36 at 7-14% faster CPU experts at 2-4 tokens a call and 7% slower at 1, and found no gain in the
+engine. This pass first measured what the engine's calls actually look like. It then replayed them in the
+microbenchmark, split PR 36 into its parts, and tried other ways to read `down`. **Outcome: a new opt-in,
+`STRATA_CPU_DOWN_ORDER=1`, reads `down` expert by expert in tasks of 64 rows, with no prefetch. CPU expert time per
+token fell 7-11%, decode rose 1-12%, and 1-token calls got faster too. Tower runs it.** Scripts and sources:
+`docs/tower/p14/`, on Tower `/mnt/user/appdata/polystrata/p14/`, results `/data/pass14-*.txt`.
+
+### What the engine's CPU calls look like
+
+A measurement build (`p14/trace.patch` on `tower`: `STRATA_CPU_TRACE=<file>` writes one line per `cpu_experts()`
+call from `Engine::moe()`, with its layer, tokens, experts and time, plus a per-request line with the CPU expert ms
+per generated token) ran the Pass 12 sequence with `multiturn.py fwd 5`. The result was 234,426 calls and 94 s in
+`cpu_experts()` (`p14/tracestat.py`):
+
+| Tokens a call | Calls | Share of the time | µs a call |
+|---|---|---|---|
+| 1 | 76.2% | 58.4% | 309 |
+| 2 | 20.7% | 31.7% | 619 |
+| 3-8 | 3.1% | 9.9% | 840-2,890 |
+
+- 95% of the experts in a call have one use, 5% have two. The windows' tokens rarely share an expert that isn't in
+  VRAM.
+- The MTP draft block (layer 40) is 4% of the time. The main model itself mostly runs 1-token windows on this coding
+  traffic: the engine adds guesses only while they pay.
+- A 1-token call has 1-8 experts on the CPU (about half of the 8 are in VRAM).
+
+So Pass 13's microbenchmark (all 8 experts on the CPU, 1-4 tokens drawn independently) weighted the wrong shapes.
+PR 36 lost 7% exactly where the engine spends 58% of its time.
+
+### Replaying those calls
+
+`p14/cxb.cpp` gained a `trace` mode: the recorded calls (a 60,000-call slice, the same layers, experts and token
+counts) run through `cpu_experts()` from the file's mapping, twice after a warm-up pass, timed by call shape. Its
+19.2-19.5 s for the slice is close to the 21.2 s the engine recorded for the same calls. The variants are
+compile-time switches in `p14/cpu_experts_v.cpp` (today's file when all are off; `p14/build.sh`). All of them gave
+the same output hash as today's code. PolyStrata was stopped; Plex, Deluge and the add-on generator ran. Three
+interleaved rounds, each variant compared with today's runs in the same round (`p14/benchstat.py`):
+
+| Variant | All calls | 1-token calls | Calls of 9-16 experts |
+|---|---|---|---|
+| PR 36 (gate/up and down prefetch, down tasks of 32) | +3.4% (-0.2 to +5.8) | +5.4% | -0.8% |
+| PR 36's gate/up prefetch alone | +6 to +22% | +6 to +24% | +7 to +18% |
+| PR 36's down prefetch alone, down tasks of 16 / 32 | -3.4% / -4.5% (one round disturbed) | | |
+| **down by expert ("swap"), tasks of 32** | -8.3% | -6.0% | -12.9% |
+| swap, tasks of 32, plus 1 KiB of the next expert's rows asked for ahead | -9.0% | -6.8% | -13.4% |
+| swap, tasks of 32, plus all of the next expert's rows asked for ahead | -6.6% | -4.5% | -10.8% |
+| **swap, tasks of 64** | **-9.0 to -9.4%** (3 sessions) | **-6.7 to -7.4%** | **-13.3 to -13.7%** |
+| swap, tasks of 64, plus 1 KiB ahead | -9.7% (a later session: within noise of swap alone) | -7.7% | -14.2% |
+| gate/up: a task reads gate's 32 rows, then up's | ±0.4% | | |
+| gate/up: tasks of 64 rows | +0.3% | | |
+
+1. **The gate/up prefetch was PR 36's loss.** A gate/up task reads one expert's 32 rows as one contiguous 36 KiB
+   block, which the hardware prefetcher follows. Asking for it again only costs instructions and load slots.
+2. **The gain is in `down`'s read order.** Today's down loop goes `for row: for expert`, so each task reads 352
+   bytes from each of its experts in turn, as many strided streams as experts. The new order goes `for expert: for
+   row` over the task's rows, so each expert's rows of the task are one contiguous read (22 KiB at 64 rows). Every
+   product is the same call on the same bytes, and each row's per-use results are kept and summed for each token in
+   the same order as before. So the output is the same bits: the same hash at 1, 3 and 4 tokens a call and on the
+   replay. With that order, prefetching adds about nothing.
+3. **Gate/up changes did nothing**, so gate/up isn't held back by its read pattern here.
+4. **Threads:** with the new order, 10 threads are 1.5% and 8 are 2% slower than 12 on the replay (6 is 11%
+   slower), as with the old order (Pass 8). 12 stays.
+
+The replay's -9.3% is just under the 10% stop rule set for this pass, but the 1-token calls gain rather than lose,
+so it went to the engine.
+
+### The change
+
+`STRATA_CPU_DOWN_ORDER=1` in `src/poly/cpu_experts.cpp` (branch `strata-poly/cpu-down-order` on the fork,
+`81d6dfab`, on origin/main `75b79e60`): with the flag, the down products run in tasks of 64 rows, expert by expert,
+into a per-thread buffer of 64 x uses floats. Without it, the code path is today's. The engine says
+`strata-poly: STRATA_CPU_DOWN_ORDER: CPU experts read down expert by expert` once at load. Built for CUDA (sm_86)
+only; the HIP build was not run.
+
+### In the engine
+
+One image (`polystrata:p14ab`: the change plus the per-request CPU-expert line), with the flag on or off, in the
+test container with the template's settings, PolyStrata stopped meanwhile. ABBA order, two batches the same day
+(`p14/p14ab.sh`, `/data/pass14-ab.txt`, `pass14-ab2.txt`, `p14/abstat.py`). "CPU experts" is the engine's own time in
+`cpu_experts()` per generated token over the whole run (it includes the CPU's share of prompt reading, the same
+for both). Means, with the range of the runs:
+
+| | Flag off | `STRATA_CPU_DOWN_ORDER=1` | Change |
+|---|---|---|---|
+| fwd, 4 runs each: CPU experts ms/token | 14.26 (13.08-15.44) | 12.70 (12.25-13.45) | **-10.9%** |
+| turn 1, 32K | 62.8 (58.6-65.0) | 68.3 (64.6-71.1) | +8.8% |
+| turn 2, 72K | 55.2 (52.6-57.9) | 58.7 (57.6-59.2) | +6.3% |
+| turn 3, 103K | 52.2 (50.4-53.7) | 55.2 (53.7-56.6) | +5.7% |
+| turn 4, 143K | 47.8 (43.8-49.7) | 51.5 (51.0-52.2) | +7.7% |
+| turn 5, 174K | 46.3 (45.3-47.8) | 48.5 (42.5-50.9) | +4.8% |
+| rev, 4 runs each: CPU experts ms/token | 15.21 (14.87-15.85) | 13.96 (13.47-14.43) | **-8.2%** |
+| turn 1, 35K | 65.4 (63.2-66.7) | 73.5 (67.9-76.4) | +12.4% |
+| turn 2, 77K | 56.7 (55.7-57.4) | 59.8 (58.4-61.2) | +5.5% |
+| turn 3, 123K | 50.7 (50.2-51.6) | 55.3 (53.1-58.4) | +9.1% |
+| turn 4, 204K | 41.7 (40.8-42.6) | 45.0 (44.5-45.3) | +7.9% |
+| turn 5, 240K | 38.5 (37.4-40.3) | 39.4 (38.0-40.7) | +2.3% |
+| `--window 1` (every call 1 token), fwd 3, 2 runs each: CPU experts ms/token | 11.29 (11.26-11.32) | 10.50 (10.37-10.63) | **-7.0%** |
+| turns 1-3, 32K / 72K / 103K | 51.6 / 44.4 / 43.6 | 55.3 / 46.3 / 43.9 | +7.2 / +4.3 / +0.7% |
+| short requests (~1,300 tokens of prompt), decode | 54.7-77.5 | 64.7-82.8 | |
+
+1. **CPU expert time per token fell 7-11%,** and decode rose at every turn. The smallest gain is at the longest
+   context, where attention takes more of a token.
+2. **1-token calls lose nothing; they gain** (the `--window 1` rows: -7.0% CPU time, decode +1-7%).
+3. Prompt reading was the same within the runs' spread (1,725-1,886 tok/s at 32K in both). Every 107K recall test
+   passed (24 runs). The 247K needle (`TOKENS=185000`, seed 5) passed with the flag on: 3 of 3 facts in 212 s
+   (Pass 12: 213 s).
+4. Not run: a quality check of answers. The output is bit-identical in the benchmark, and the engine isn't
+   deterministic from run to run anyway (Pass 12). Also not run: other models, other CPUs, and HIP.
+
+### What runs now, and the rollback
+
+- `tower` is `5ca982fa`: `strata-poly/cpu-down-order` merged in. Since that branch is on the newest origin/main, the
+  merge also brought origin/main up to `75b79e60` (setup, tools, docs and benchmark files only). The engine's
+  sources differ from the A/B build only in a comment.
+- Images: `strata-cybertiel:tower-5ca982fa` (`p14/Dockerfile.live` on Tower), and `polystrata:tower` FROM it
+  (TOWER_COMMIT `5ca982fa`). The template has `STRATA_CPU_DOWN_ORDER=1` (backup
+  `my-PolyStrata.xml.pre-cpudown`). Recreated with `rebuild_container PolyStrata` and started: healthy in 6 s, the
+  flag's line in the log, 1,987 experts. The Pass 12 sequence: recall passed, decode 66.6 / 60.7 / 54.6 at 32K / 72K /
+  103K (Phase 0's base: 63.6 / 54.2 / 49.9).
+- Rollback: set the template's `STRATA_CPU_DOWN_ORDER` to 0, or remove it (the flag alone turns it off). For the
+  previous image too: `docker tag polystrata:tower-64f17cc2 polystrata:tower` (build dir `Dockerfile.64f17cc2`),
+  then `rebuild_container PolyStrata` and `docker start PolyStrata`.
+- Measurement images, removable: `polystrata:p14trace`, `strata-cybertiel:p14trace`, `polystrata:p14ab`,
+  `strata-cybertiel:p14ab`, and Pass 13's `polystrata:tower-b36` and `strata-cybertiel:tower-6ec61d5c`.
+
+### Next
+
+1. A HIP build of `cpu_experts.cpp` before the branch goes anywhere else. Nothing is posted upstream (the user's
+   rule).
+2. Other models' expert shapes (GLM 5.3 Flash's down rows are Q2_K/Q3_K, wider experts) were not measured. A
+   replay of their traces would show whether 64-row tasks still suit them.
 
 ## Shared-load changes (2026-10-17)
 
