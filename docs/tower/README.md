@@ -1143,7 +1143,7 @@ held and the page cache untouched. The 64K target (under 3 s) is not met.** Resu
 - **Start-time refusals** (exit 2, before the model loads): a missing directory, a path with a space, `/mnt/user`, and
   the flag without `--conversation-cache-mib`.
 - **Images:** `strata-cybertiel:tower-4f6270b4` (`p16/Dockerfile.live`, FROM `tower-5ca982fa`, both engines built)
-  and `polystrata:tower` = `polystrata:tower-4f6270b4` (TOWER_COMMIT `4f6270b4` = tower `977eeba5` + this branch).
+  and `polystrata:tower` = `polystrata:tower-4f6270b4` (TOWER_COMMIT `4f6270b4` = tower `977eeba5` + this branch; since the read-ahead, `polystrata:tower-13061fe1` from `strata-cybertiel:tower-13061fe1`, previous one kept as `polystrata:tower-4f6270b4`).
   The template has a new volume `/mnt/cache/appdata/polystrata/park` -> `/park` (backup `my-PolyStrata.xml.pre-ssd`).
   The engine config has `--conversation-park-dir /park --conversation-cache-mib 8192` (backup
   `strata-cybertiel-ud-q4_k_xl.json.pre-ssd`, which has parking off). The Monitor's `/metrics` gives
@@ -1157,13 +1157,19 @@ held and the page cache untouched. The 64K target (under 3 s) is not met.** Resu
   | parking on the SSD | 2.8 s (3.7 s wall) | 4.7 s (5.4 s wall) |
 
   A parked conversation takes 516 MB at 32K and 905 MB at 64K on disk (RAM: 780 MB and 1.17 GB, with all six
-  checkpoints). Parking holds the switch for 0.7 s at 32K and 1.7 s at 64K: the writing that doesn't fit the stage.
-  The restore read 516 MB in 2.5 s and 905 MB in 4.5 s, about 200 MB/s.
-- **Why the restore is slower than the drive** (`p16`'s `readbench.cpp`): 64 MiB direct-I/O reads run at 428 MB/s
-  alone and 334 MB/s with 256 MiB of writes queued (the other conversation's park). Writes run at 409 MB/s. So 905 MB
-  could come back in about 2.7 s. The rest is the restore being serial: read a piece, load it into the engine, read
-  the next. Reading the next piece while one loads (two bounce buffers) would save most of it. That is a change to
-  the design (decision 3), not made.
+  checkpoints). The log's `restored ... in 4426 ms` times all of `enter()`, which first parks the conversation that
+  leaves: 0.7 s at 32K and 1.7 s at 64K, the writing that doesn't fit the stage.
+- **Where a 64K switch goes** (`/proc/diskstats` of sdg every 0.25 s, `ssd-65-disk.txt`): 1.6 s of writes only at
+  ~410 MB/s (B's park, up to the stage), 1.5 s of reads and writes together at ~400 MB/s in all (A's restore while
+  B's last 256 MiB is written), then 1.1 s of reads alone at 414-421 MB/s. So the restore's reads run at the drive's
+  speed, and the drive's ~410 MB/s, shared by B's 905 MB out and A's 905 MB in, is the limit. `p16`'s
+  `readbench.cpp` agrees: 64 MiB direct-I/O reads at 428 MB/s alone, 334 MB/s with 256 MiB of writes queued, writes
+  at 409 MB/s.
+- **Read-ahead** (`strata-poly/ssd-parking` 39021181, live in tower `13061fe1`): a thread reads the next piece while the engine loads
+  one, through two bounce buffers. Same times (`ssd-65-aba.txt`): A2 2.74 s at 32K and 4.65 s at 64K, `enter()`
+  2.51 s and 4.43 s (before: 2.54 s and 4.46 s). Loading was never the slow part: a RAM restore of 780 MB takes
+  0.29 s. A 6 s pause before A2 (`aba_pause.py`, `ssd-65-pause.txt`) changes nothing either, since B is parked
+  when A2 comes.
 - **Memory** (`ssd-63-anon.txt`, `RssAnon` of the engine): 1,005 MB with A live before the first park, 608 MB with A
   parked, 625 MB after B parked and A came back, 814 MB at the end with A live again. `Cached:` grew 258 MB while A1's
   prompt was read (model pages), and not at all over the parks and the restore. `df /mnt/cache` grew by the parked
