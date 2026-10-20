@@ -1086,6 +1086,44 @@ for both). Means, with the range of the runs:
 2. Other models' expert shapes (GLM 5.3 Flash's down rows are Q2_K/Q3_K, wider experts) were not measured. A
    replay of their traces would show whether 64-row tasks still suit them.
 
+## Pass 15: how long idle CPU workers spin before they sleep (2026-10-19)
+
+`Workers::loop()` in `src/poly/cpu_experts.cpp` spins 20,000 `_mm_pause` before an idle worker sleeps on
+`posted_.wait()`. The comment calls that "about a millisecond", which fits Intel since Skylake (a pause is ~140
+cycles). The question was whether, on Zen+, the workers fall asleep between layers and pay the wake-up at every call.
+**Outcome: they often do, but the wake-ups cost too little to matter. Spinning by time instead
+(`STRATA_CPU_SPIN_US`, a measurement build only) gave no visible gain in the engine. Not kept, and the A/B was stopped
+early.** Sources: `docs/tower/p15/`, on Tower `/mnt/user/appdata/polystrata/p15/`, results `/data/pass15-*.txt`.
+
+- **Spin length** (`p15/pause.c`, Ryzen 5 2600X): 20,000 pauses take 20-23 µs, 3.6 TSC cycles a pause. So the
+  comment is about 50 times too long for this CPU.
+- **Measurement build** `polystrata:p15trace` (tower `5ca982fa` + `p15/trace15.patch`): per request, how many posted
+  batches found workers asleep, and the time from the post to each worker's first task. It also has the opt-in
+  `STRATA_CPU_SPIN_US=N`, which spins N µs by `steady_clock` (read every 256 pauses). With today's spin, in the
+  Pass 12 sequence (`multiturn.py fwd 3`, `STRATA_CPU_DOWN_ORDER=1`, `p15/p15ab.sh`):
+
+  | | Batches with sleepers | Workers asleep a batch | Post to first task, woken / spinning | CPU busy during multiturn | CPU experts ms/token |
+  |---|---|---|---|---|---|
+  | today (20,000 pauses) | 41-53% | 2.3-2.8 of 11 | 18-29 µs / 2.6 µs | 41.8% | 12.18 |
+  | `STRATA_CPU_SPIN_US=200` | 15-29% | 0.8-1.7 | 22-33 µs / 2.7 µs | 47.0% | 12.49 |
+  | `STRATA_CPU_SPIN_US=1000` | 6-10% | 0.2-0.4 | | 51.1% | 12.24 |
+
+  One run each. Decode at 32K / 72K / 103K: 68.3 / 59.0 / 56.1, 69.6 / 57.2 / 53.1, 62.1 / 56.8 / 53.3, all within
+  the spread of Pass 14's runs.
+- **Why it can't be much:** a call posts about 2.3 batches (37,427 batches over 400 tokens x 41 layers). About 2.5
+  late workers x ~19 µs, shared over 12 threads, is ~4 µs a batch, so at most ~3% of a 309 µs 1-token call. That is
+  under the 5% bar. So the gap between a 1-token call's ~25 GB/s and the 44-46 GB/s of sequential reads is mostly
+  not wake-up latency.
+- **Replay** (`p15/cxb.cpp`, `p15/p15bench.sh`: the Pass 14 trace slice, with `CXB_GAP_US` spinning before each call
+  to stand in for the GPU's part of a layer; one round, PolyStrata stopped): no gap 18.17 s; 150 µs gap 20.05 s
+  (52% of batches with sleepers), 18.79 s with 200 µs spin (-6.3%), 19.20 s with 1000 µs (-4.3%). The replay sleeps
+  more than the engine (4.1 workers a batch against 2.5), so its gain is an upper bound.
+- Not run: the ABBA (`p15ab.sh` fwd 5 / rev 5 / `--window 1`). It was stopped in its second run, because one pass
+  already showed no real gain. Its partial output is in `/data/pass15-ab.txt`.
+- Nothing changed on Tower: PolyStrata runs `polystrata:tower` (5ca982fa) as before. `polystrata:p15trace` and
+  `strata-cybertiel:p15trace` can be removed. If the comment matters to anyone, the cheap fix is the comment's wording
+  ("about 20 µs on Zen+, a millisecond on Skylake"), not the code.
+
 ## Shared-load changes (2026-10-17)
 
 With Plex, Deluge and Duplicati running again, the GGUF (22.7 GB) has to stay cached next to them, and about 22.5 GB

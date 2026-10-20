@@ -1,0 +1,195 @@
+--- a/src/poly/cpu_experts.cpp
++++ b/src/poly/cpu_experts.cpp
+@@ -5,6 +5,8 @@
+ #include "ggml-cpu.h"
+ 
+ #include <algorithm>
++#include <chrono>
++#include <cstdio>
+ #include <cmath>
+ #include <cstdio>
+ #include <cstdlib>
+@@ -25,7 +27,7 @@
+ // the same order, so the same bits.  On a Ryzen 5 2600X with DDR4-3200 (Cyber-Tiel-Coder 35B-A3B UD-Q4_K_XL, RTX
+ // 3070) the CPU experts took 7-11% less time a token and decode was 2-12% faster, also with every call one token.
+ constexpr int kRowsPerDownRun = 64;
+-constexpr int kSpinsBeforeSleep = 20000;   // about a millisecond of pause instructions
++constexpr int kSpinsBeforeSleep = 20000;   // about a millisecond of pause instructions on Intel, 20 us on Zen+
+ 
+ const ggml_type_traits_cpu* traits(int type) { return ggml_get_type_traits_cpu((ggml_type) type); }
+ 
+@@ -36,6 +38,14 @@
+ 
+ thread_local bool in_task = false;   // this thread is running a task of a batch
+ 
++// PASS15 measurement only: per batch posted, how many workers slept; per worker arrival at a batch, whether it had
++// slept, whether it still found a task, and the time from the post to its arrival.
++struct P15 {
++    std::atomic<long long> runs{0}, runs_sleep{0}, asleep{0};
++    std::atomic<long long> ran[2]{}, late[2]{}, ns_ran[2]{};   // [0] spinning, [1] woken
++} p15;
++long long ns_now() { return std::chrono::steady_clock::now().time_since_epoch().count(); }
++
+ bool down_order() {
+     static const bool on = [] {
+         const char* v = std::getenv("STRATA_CPU_DOWN_ORDER");
+@@ -46,8 +56,31 @@
+     return on;
+ }
+ 
++// STRATA_CPU_SPIN_US=N: an idle worker spins N microseconds before it sleeps, by the clock, where today's 20,000
++// pause instructions last what the CPU makes of them.  0 (or unset) is today's count.
++long long spin_ns() {
++    static const long long ns = [] {
++        const char* v = std::getenv("STRATA_CPU_SPIN_US");
++        const long long us = v ? std::max(0LL, std::atoll(v)) : 0;
++        if (us) std::fprintf(stderr, "strata-poly: STRATA_CPU_SPIN_US: idle CPU workers spin %lld us before they sleep\n", us);
++        return us * 1000;
++    }();
++    return ns;
++}
++
+ }  // namespace
+ 
++void pass15_dump() {
++    auto x = [](std::atomic<long long>& a) { return a.exchange(0); };
++    const long long runs = x(p15.runs), rs = x(p15.runs_sleep), as = x(p15.asleep);
++    long long ran[2], late[2], ns[2];
++    for (int i = 0; i < 2; ++i) { ran[i] = x(p15.ran[i]); late[i] = x(p15.late[i]); ns[i] = x(p15.ns_ran[i]); }
++    std::fprintf(stderr, "PASS15 workers: %lld batches, %.1f%% with sleepers, %.2f asleep a batch; spinning: %lld ran "
++                 "(%.1f us post to task), %lld late; woken: %lld ran (%.1f us), %lld late\n", runs,
++                 100.0 * rs / std::max(runs, 1LL), (double) as / std::max(runs, 1LL), ran[0],
++                 ns[0] / 1e3 / std::max(ran[0], 1LL), late[0], ran[1], ns[1] / 1e3 / std::max(ran[1], 1LL), late[1]);
++}
++
+ Workers::Workers(int threads) {
+     for (int i = 1; i < threads; ++i) th_.emplace_back([this] { loop(); });
+ }
+@@ -86,33 +119,49 @@
+ // their time slices, every batch.
+ void Workers::loop() {
+     int idle = 0;
++    const long long spin = spin_ns();
++    std::chrono::steady_clock::time_point idle_from;
++    int slept = 0;   // PASS15
+     uint32_t seen = posted_.load() - 1;   // the count at which this worker last found nothing to do
+     while (!quit_.load(std::memory_order_relaxed)) {
+         const uint32_t now = posted_.load(std::memory_order_acquire);
+         if (now != seen) {
+             // cur_ is set before posted_ counts: the batch of `now` is there, or a later one, or it is done
+             bool ran = false;
++            long long dt = -1;   // PASS15
+             if (cur_.load(std::memory_order_acquire)) {
+                 users_.fetch_add(1);
+                 Batch* b = cur_.load();
+-                if (b) ran = drain(*b);
++                if (b) { dt = ns_now() - b->t_post; ran = drain(*b); }
+                 users_.fetch_sub(1);
+             }
++            if (ran) { p15.ran[slept]++; p15.ns_ran[slept] += dt; } else p15.late[slept]++;   // PASS15
++            slept = 0;
+             if (ran) {
+                 idle = 0;
+                 continue;
+             }
+             seen = now;
+         }
+-        if (++idle < kSpinsBeforeSleep) {
+-            _mm_pause();
+-            continue;
++        if (spin == 0) {
++            if (++idle < kSpinsBeforeSleep) {
++                _mm_pause();
++                continue;
++            }
++        } else {
++            // the clock is read every 256 pauses
++            if (idle == 0) idle_from = std::chrono::steady_clock::now();
++            if ((++idle & 255) != 0 || std::chrono::steady_clock::now() - idle_from < std::chrono::nanoseconds(spin)) {
++                _mm_pause();
++                continue;
++            }
+         }
+         // run() counts posted_ up before it reads sleepers_, and wait() returns at once when posted_ has moved
+         sleepers_.fetch_add(1);
+         if (!quit_.load()) posted_.wait(seen);
+         sleepers_.fetch_sub(1);
+         idle = 0;
++        slept = 1;   // PASS15
+     }
+ }
+ 
+@@ -129,9 +178,12 @@
+     b.fn = &fn;
+     b.n = n;
+     b.left.store(n);
++    b.t_post = ns_now();   // PASS15
+     cur_.store(&b);
+     posted_.fetch_add(1);
+-    if (sleepers_.load() > 0) posted_.notify_all();
++    const int asleep = sleepers_.load();   // PASS15
++    p15.runs++; p15.asleep += asleep; if (asleep) p15.runs_sleep++;
++    if (asleep > 0) posted_.notify_all();
+     drain(b);
+     cur_.store(nullptr);   // every task is taken: a worker that comes now has nothing to find
+     while (b.left.load(std::memory_order_acquire) != 0) _mm_pause();
+@@ -141,6 +193,7 @@
+ bool cpu_expert_types_ok(int gu_type, int d_type, int n_embd, int n_ff, std::string& err) {
+     init_once();
+     down_order();   // says so once, at load
++    spin_ns();
+     for (const int type : {gu_type, d_type}) {
+         const ggml_type_traits_cpu* t = traits(type);
+         const ggml_type_traits_cpu* a = t && t->vec_dot ? traits(t->vec_dot_type) : nullptr;
+--- a/src/poly/cpu_experts.hpp
++++ b/src/poly/cpu_experts.hpp
+@@ -32,6 +32,7 @@
+         const std::function<void(int)>* fn;
+         int n;
+         std::atomic<int> next{0}, left{0};
++        long long t_post = 0;   // PASS15 measurement only
+     };
+     void loop();
+     static bool drain(Batch& b);
+@@ -46,6 +47,8 @@
+     std::atomic<bool> quit_{false};
+ };
+ 
++void pass15_dump();   // PASS15 measurement only: the workers' wake counts since the last call, to stderr
++
+ /// One routed expert of a token: its three matrices in the GGUF, its router weight, and which of the call's tokens
+ /// it is for.
+ struct CpuExpert {
+--- a/src/poly/main.cpp
++++ b/src/poly/main.cpp
+@@ -879,6 +879,11 @@
+         // the cache's share of the experts looked up while answering: a prompt batch's go through VRAM either way
+         const long long hits = now.gpu_experts - before.gpu_experts;
+         const long long misses = now.cpu_experts - before.cpu_experts;
++        // PASS14 measurement only
++        std::fprintf(stderr, "PASS14 request: %lld generated, CPU experts %.1f ms, %.2f ms/token, %lld CPU uses, %lld VRAM uses\n",
++                     (long long) r.produced, now.cpu_ms - before.cpu_ms,
++                     (now.cpu_ms - before.cpu_ms) / (double) std::max<long long>(r.produced, 1), misses, hits);
++        strata::poly::pass15_dump();
+         std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld %lld %lld 0 0 0.0 %lld 0\n", (long long) r.produced, n,
+                     r.prompt_ms, r.decode_ms, r.finish, (long long) r.guessed_right, (long long) r.guessed,
+                     (long long) r.resume, hits, hits + misses, (long long) r.read);
+--- a/src/poly/engine.cpp
++++ b/src/poly/engine.cpp
+@@ -2303,7 +2303,15 @@
+         cpu_experts(*workers_, host, n_host, m, (int) L.gu_type, (int) L.d_type, n_embd_, n_ff_exp_,
+                     h_x_ + (size_t) at * e_row, limit, gelu_, cpu,
+                     n_cached > 0 || (first && at == 0) ? &launch : nullptr);
+-        stats_.cpu_ms += ms_since(t0);
++        const double call_ms = ms_since(t0);
++        stats_.cpu_ms += call_ms;
++        // PASS14 measurement only: STRATA_CPU_TRACE=path, a line per call: layer tokens uses us expert:token...
++        static FILE* trace = [] { const char* p = std::getenv("STRATA_CPU_TRACE"); return p ? std::fopen(p, "a") : nullptr; }();
++        if (trace) {
++            std::fprintf(trace, "%d %d %d %.1f %d", il, m, n_host, call_ms * 1000.0, n_cached > 0 ? 1 : 0);
++            for (int i = 0; i < n_host; ++i) std::fprintf(trace, " %d:%d", host_e[i], host[i].row);
++            std::fputc('\n', trace);
++        }
+     }
+     return any_host;
+ }
