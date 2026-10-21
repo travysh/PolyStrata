@@ -1187,6 +1187,34 @@ held and the page cache untouched. The 64K target (under 3 s) is not met.** Resu
   image too: `docker tag polystrata:tower-5ca982fa polystrata:tower`, then `rebuild_container PolyStrata` and
   `docker start PolyStrata`. The `/park` volume can stay.
 
+## Pass 17: where the CPU expert time goes (2026-10-21)
+
+OpenSpec change `add-poly-faster-cpu-experts`. The replay of Pass 14's trace slice (`p17/cxb.cpp`,
+`p17/cpu_experts_v.cpp`: the engine's `cpu_experts.cpp` from `strata-poly/cpu-down-order` with the down order always
+on) in four builds: **full** (today's code), **arith** (every product reads the call's first expert, so the bytes come
+from L2/L3), **reads** (256-bit loads of the same rows in place of the products), **idle** (the tasks return at once).
+Every build counts, per worker, the time inside tasks by phase (activations, gate/up, h, down) and call shape (1, 2,
+3-8 tokens). A phase's idle share is `1 - busy / (12 threads x its wall time)`. `p17/p17bench.sh`, 3 interleaved
+rounds, PolyStrata stopped. Results `/data/pass17-split.txt`.
+
+**Decision rule, written before the 3-round run:**
+- Idle share of full at least 10% of the CPU expert time: build the one-batch dataflow (`STRATA_CPU_DATAFLOW`).
+- Down arithmetic (arith's down time) at least 70% of full's down time, and down at least 30% of the total: build the
+  multi-row Q5_K/Q6_K down product (`STRATA_CPU_DOWN_DOT`).
+- Both: dataflow first, then measure again. Neither: the reads take the time; write it up and stop.
+- A candidate goes to the engine only if its replay cuts the CPU expert time by 10% or more with the same hash.
+
+**Before the runs.** Tower's kernel marked the TSC unstable at boot (`clocksource: ... 'tsc' skewed 1985153 ns over
+watchdog 'hpet' interval of 494018373 ns`) and runs on HPET, so a `steady_clock` read takes 2.5 µs (`p17/clk.c`;
+`rdtsc` 32 cycles). The counters read the TSC. The engine doesn't suffer from it: sampling
+`/proc/<pid>/task/*/syscall` of `strata-poly` and the server during a 400-token decode found no `clock_gettime` among
+about 43,600 samples (futex, poll, read and clock_nanosleep only). The replay's own per-call timer still reads
+`steady_clock`, so about 0.3 s of each slice (2 reads x 58,713 calls) is the clock in every build alike.
+Counter check (`cxb-full ... idlecheck`): 2,000 batches of 32 tasks of 50 µs on 12 threads measure 50.5 µs a task, and
+158-167 µs a batch where 150 is the work: about 8 µs a batch of posting, late starts and waiting. So the idle share
+there is 15-18%, not the 11% of the tasks alone. One dry round (`/data/pass17-dry.txt`) ran before this rule was
+committed; it is the same rule as in the change's design.md.
+
 ## Shared-load changes (2026-10-17)
 
 With Plex, Deluge and Duplicati running again, the GGUF (22.7 GB) has to stay cached next to them, and about 22.5 GB
