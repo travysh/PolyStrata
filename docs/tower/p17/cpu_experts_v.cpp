@@ -5,6 +5,7 @@
 //              bytes come from L2/L3: an upper bound on the arithmetic
 //   CXB_READS  the products replaced by 256-bit loads of the same rows, XORed into what the row writes
 //   CXB_IDLE   the tasks return at once: posting and waiting only
+//   CXB_DATAFLOW  one batch a call: down tasks of an expert run once its gate/up tasks are done (counted as gate/up)
 // With none of them it is the engine's code with STRATA_CPU_DOWN_ORDER=1.
 #include "cpu_experts.hpp"
 
@@ -49,6 +50,12 @@ thread_local bool in_task = false;   // this thread is running a task of a batch
 #endif
 #ifndef CXB_READS
 #define CXB_READS 0
+#endif
+#ifndef CXB_DATAFLOW
+#define CXB_DATAFLOW 0   // one batch a call (design decision 4)
+#endif
+#ifndef DF_ROWS
+#define DF_ROWS 64       // rows of one expert a dataflow down task
 #endif
 #ifndef CXB_IDLE
 #define CXB_IDLE 0
@@ -256,6 +263,83 @@ void cpu_experts(Workers& workers, const CpuExpert* experts, int n, int rows, in
     const int* runp = run.data();
     const int gu_tasks = (n_ff + kRowsPerTask - 1) / kRowsPerTask;
     const int first = meanwhile ? 1 : 0;   // task 0, so it is taken at once
+#if CXB_DATAFLOW
+    // One batch: every gate/up task, expert by expert, then every down task as (expert, 64 rows), in the same expert
+    // order.  The last gate/up task of an expert quantizes its uses' h and marks it ready; a down task waits for its
+    // expert (its gate/up tasks were all handed out before it, so whoever took them is running them).  A down task
+    // writes each use's products for its rows; the one that finishes a block of rows last sums each token's products
+    // there, in the token's experts' order, as the down order does.
+    {
+        static thread_local std::vector<float> prod;   // each use's product, by use and output row
+        static thread_local std::vector<std::atomic<int>> open, left;
+        const int blocks = (n_embd + DF_ROWS - 1) / DF_ROWS;
+        prod.resize((size_t) n * n_embd);
+        if ((int) open.size() < n_run) open = std::vector<std::atomic<int>>((size_t) n_run);
+        if ((int) left.size() < blocks) left = std::vector<std::atomic<int>>((size_t) blocks);
+        for (int u = 0; u < n_run; ++u) open[(size_t) u].store(gu_tasks, std::memory_order_relaxed);
+        for (int b = 0; b < blocks; ++b) left[(size_t) b].store(n_run, std::memory_order_relaxed);
+        std::atomic<int>* openp = open.data();
+        std::atomic<int>* leftp = left.data();
+        float* pp = prod.data();
+        uint8_t* hqp = hq.data();
+        const auto hq_from = traits(td->vec_dot_type)->from_float;
+        const int n_gu = n_run * gu_tasks;
+        timed(1, first + n_gu + n_run * blocks, [&](int t) {
+            if (t < first) return (*meanwhile)();
+            if (CXB_IDLE) return;
+            t -= first;
+            if (t < n_gu) {
+                const int u = t / gu_tasks, i0 = runp[u], i1 = runp[u + 1];
+                const CpuExpert& e = experts[byp[i0]];
+                const int r0 = (t % gu_tasks) * kRowsPerTask, r1 = std::min(n_ff, r0 + kRowsPerTask);
+                for (int r = r0; r < r1; ++r) {
+                    const uint8_t* gate = e.gate + (size_t) r * gu_row;
+                    const uint8_t* up = e.up + (size_t) r * gu_row;
+                    for (int i = i0; i < i1; ++i) {
+                        const int j = byp[i];
+                        const uint8_t* a = actp + (size_t) experts[j].row * a_bytes;
+                        float g = 0.f, uu = 0.f;
+                        tg->vec_dot(n_embd, &g, 0, gate, 0, a, 0, 1);
+                        tg->vec_dot(n_embd, &uu, 0, up, 0, a, 0, 1);
+                        if (gelu) {
+                            hp[(size_t) j * n_ff + r] =
+                                0.5f * g * (1.f + std::tanh(0.7978845608f * g * (1.f + 0.044715f * g * g))) * uu;
+                            continue;
+                        }
+                        g = std::min(g, limit);
+                        uu = std::clamp(uu, -limit, limit);
+                        hp[(size_t) j * n_ff + r] = g / (1.f + std::exp(-g)) * uu;
+                    }
+                }
+                if (openp[u].fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                    for (int i = i0; i < i1; ++i)
+                        hq_from(hp + (size_t) byp[i] * n_ff, hqp + (size_t) byp[i] * h_bytes, n_ff);
+                    openp[u].store(-1, std::memory_order_release);   // ready
+                }
+                return;
+            }
+            t -= n_gu;
+            const int u = t / blocks, b = t % blocks;
+            while (openp[u].load(std::memory_order_acquire) != -1) _mm_pause();
+            const uint8_t* down = experts[byp[runp[u]]].down;
+            const int r0 = b * DF_ROWS, r1 = std::min(n_embd, r0 + DF_ROWS);
+            for (int r = r0; r < r1; ++r)
+                for (int i = runp[u]; i < runp[u + 1]; ++i)
+                    td->vec_dot(n_ff, pp + (size_t) byp[i] * n_embd + r, 0, down + (size_t) r * d_row, 0,
+                                hqp + (size_t) byp[i] * h_bytes, 0, 1);
+            if (leftp[b].fetch_sub(1, std::memory_order_acq_rel) != 1) return;
+            for (int r = r0; r < r1; ++r) {
+                int j = 0;
+                for (int row = 0; row < rows; ++row) {
+                    float acc = 0.f;
+                    for (; j < n && experts[j].row == row; ++j) acc += experts[j].weight * pp[(size_t) j * n_embd + r];
+                    out[(size_t) row * n_embd + r] = acc;
+                }
+            }
+        });
+        return;
+    }
+#endif
     timed(1, first + n_run * gu_tasks, [&](int t) {
         if (t < first) return (*meanwhile)();
         if (CXB_IDLE) return;

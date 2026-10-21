@@ -1215,6 +1215,57 @@ Counter check (`cxb-full ... idlecheck`): 2,000 batches of 32 tasks of 50 µs on
 there is 15-18%, not the 11% of the tasks alone. One dry round (`/data/pass17-dry.txt`) ran before this rule was
 committed; it is the same rule as in the change's design.md.
 
+**The split** (`/data/pass17-split.txt`, `p17/p17stat.py`; 3 rounds each, PolyStrata stopped, Plex, Deluge and the
+add-on generator running). Phase times are summed over the call shapes; idle share weighted by wall time:
+
+| Build | Slice | vs full | act (idle) | gate/up (idle) | h (idle) | down (idle) |
+|---|---|---|---|---|---|---|
+| full | 17,676 ms | | 281 ms (91%) | 9,626 ms (10.0%) | 211 ms (80%) | 7,318 ms (15.9%) |
+| arith (bytes from cache) | 15,218 ms | -13.9% | 278 ms | 7,862 ms | 203 ms | 6,642 ms |
+| reads (no products) | 15,518 ms | -12.2% | 221 ms | 9,166 ms | 225 ms | 5,677 ms |
+| idle (tasks return at once) | 803 ms | -95.5% | 15 ms | 342 ms | 94 ms | 186 ms |
+
+By call shape, full's idle share is 16.3% at 1 token, 11.8% at 2 and 9.8% at 3-8. Every round of a build gave the same
+hash, and full's is Pass 14's swap-64 hash (`188c06d95b5b4137`; 17.63 s against Pass 14's binary at 17.58 s, the same
+session).
+
+1. **Gate/up is bound by its reads:** with no products it still takes 95% of its time.
+2. **Down is bound by both.** From cache its products take 91% of its time, and its reads alone 78%. They overlap
+   well, so making one of them faster leaves the other.
+3. **Posting and waiting** (the idle build) is 0.8 s of the slice, 4.5%, about 6 µs a call, and about 0.3 s of that
+   is the replay's own clock (above).
+4. **Rule:** idle share 14.6% (>= 10%), and down's arithmetic 91% of down with down at 41% of the slice. Both, so the
+   dataflow went first.
+
+**The dataflow** (`-DCXB_DATAFLOW`, design decision 4: one batch, a down task per expert and block of rows, waiting
+for its expert's h; the task that finishes a block's last expert sums each token's products there in its experts'
+order). Same hash as full on the slice, and at 1, 3 and 4 tokens in the synthetic mode. Slower
+(`/data/pass17-dataflow.txt`):
+
+| Rows a down task | Slice, full / dataflow | Change | Rounds |
+|---|---|---|---|
+| 64 | 17,752 / 18,409 ms | +3.7% (+3.3 to +4.0%) | 3 |
+| 128 | 17,713 / 18,200 ms | +2.7% | 2 |
+| 256 | 17,713 / 17,820 ms | +0.6% | 2 |
+
+The idle share overstated the room. The 12 threads are 6 cores with two threads each, so a thread that idles at the end
+of a phase gives its core to its sibling, and gate/up is waiting on RAM anyway. What the dataflow adds (4x the down
+tasks at 64 rows, workers waiting on an expert's h) costs more than the tails it fills. Not built in the engine.
+
+**The down product, not built.** The reads build is its ceiling: a down product whose arithmetic cost nothing still
+waits for the same rows with the same tasks, 5,677 ms against 7,318. That is at most -9.3% of the slice, under the
+10% bar before any real kernel. A bit-identical kernel can only share the activation's loads, its `bsums` and the
+call itself between rows; every row's own operations stay. A third of the 1,641 ms is about -3%.
+
+**Outcome:** neither path ships. The replay's floor with today's tasks is the reads build, -12% from today, and
+nothing that keeps the output bits reaches it. The CPU experts on this machine are close to what its RAM gives at
+these call shapes. This ends the search for CPU-side gains on Tower within `cpu_experts()`. What is left there changes
+the answers (skipping, lower-bit experts) or moves work off the CPU, which the change ruled out.
+
+Not run: other CPUs (on a CPU with full-width AVX2 and no SMT sharing, the shares differ), GLM's shapes, HIP, and the
+engine ABBA (nothing to compare). Binaries on Tower in `/mnt/user/appdata/polystrata/p17/`; nothing changed in the
+template or the images.
+
 ## Shared-load changes (2026-10-17)
 
 With Plex, Deluge and Duplicati running again, the GGUF (22.7 GB) has to stay cached next to them, and about 22.5 GB
