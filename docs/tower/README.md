@@ -1232,7 +1232,7 @@ session).
 1. **Gate/up is bound by its reads:** with no products it still takes 95% of its time.
 2. **Down is bound by both.** From cache its products take 91% of its time, and its reads alone 78%. They overlap
    well, so making one of them faster leaves the other.
-3. **Posting and waiting** (the idle build) is 0.8 s of the slice, 4.5%, about 6 µs a call, and about 0.3 s of that
+3. **Posting and waiting** (the idle build) is 0.8 s of the slice, 4.5%, about 14 µs a call, and about 0.3 s of that (5 µs a call)
    is the replay's own clock (above).
 4. **Rule:** idle share 14.6% (>= 10%), and down's arithmetic 91% of down with down at 41% of the slice. Both, so the
    dataflow went first.
@@ -1244,7 +1244,7 @@ order). Same hash as full on the slice, and at 1, 3 and 4 tokens in the syntheti
 
 | Rows a down task | Slice, full / dataflow | Change | Rounds |
 |---|---|---|---|
-| 64 | 17,752 / 18,409 ms | +3.7% (+3.3 to +4.0%) | 3 |
+| 64 | 17,752 / 18,409 ms | +3.7% (+3.4 to +4.0%) | 3 |
 | 128 | 17,713 / 18,200 ms | +2.7% | 2 |
 | 256 | 17,713 / 17,820 ms | +0.6% | 2 |
 
