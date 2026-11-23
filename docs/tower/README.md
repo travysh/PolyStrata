@@ -1291,7 +1291,7 @@ answer measured better here: SSD parking (`--conversation-park-dir`), `--prompt-
   | decode, 400 tokens after a short prompt | 64-72 tok/s | 77-88 |
   | read 11K | 7.4-8.1 s | 5.8-6.0 s |
   | read 32K | 17.7-18.0 s | 16.5-16.8 s |
-  | read 64K | 35.7-36.4 s | **40.7-42.2 s** (slower, cause not found) |
+  | read 64K | 35.7-36.4 s | **40.7-42.2 s** (slower: no flash-attention prompt kernel, Pass 19) |
   | back to A after B, 32K / 64K | 3.6 / 5.0 s | 0.5-0.9 / 1.0-1.4 s |
   | add-on sim (`addon_sim.py`): forge prompt after the first, median | 4.45 s (81.5% reused) | 3.04 s (70.8% reused) |
   | engine RssAnon after the set | 0.9 GB | 2.7 GB (17 GB with the mirror) |
@@ -1302,6 +1302,7 @@ answer measured better here: SSD parking (`--conversation-park-dir`), `--prompt-
 - **Threads.** The default is now 70% of the CPUs (8 of 12). `--threads 12` gave the same numbers, with and without
   the mirror. Default kept.
 - **The 64K read** is slower in every variant (mirror, threads); `STRATA_GDN_MMA=0` made it slower still (44.8 s).
+  Cause and fix in Pass 19.
 - **Add-on pattern.** Upstream keeps a checkpoint where the last turn starts and every 2,048 tokens; a new forge
   request went on from 12,288 of ~13.5K system tokens. Live went on from all 14,149 (first-turn checkpoint) but its
   SSD restore cost more than the 1.3K tokens it saved. `"warm_start": "agent.json"` with the forge system prompt
@@ -1310,6 +1311,84 @@ answer measured better here: SSD parking (`--conversation-park-dir`), `--prompt-
   prefill on both APIs, and a -100 bias on `Hello` (9419 -> `Greetings`) all pass on the live container.
 - **Rollback:** `docker tag polystrata:tower-893468a5 polystrata:tower`, copy `my-PolyStrata.xml.pre-0219` over the
   template, `rebuild_container PolyStrata`, `docker start PolyStrata`. The old config is untouched.
+
+## Pass 19: why 0.2.19 reads 64K slower (2026-11-22)
+
+Pass 18 left one regression: a cold 64,620-token prompt took 40.7-42.2 s on 0.2.19 against 35.7-36.4 s on 0.1.45,
+while 11K and 32K got faster. **Cause: the 0.2.19 engine has no flash-attention prompt kernel.** Upstream now builds
+strata-poly without ggml by default (`STRATA_POLY_MMQ` off; the build log says `Strata: no ggml in this build (own CPU
+pool, no MMQ, tests off)`). `fattn.cu` is then compiled with `STRATA_POLY_OWN`, so `fattn_fits()` is false. A prompt's
+attention goes through `attend_batch()`, and the engine says nothing unless `STRATA_FATTN=1` is set. With that set it
+says `prompt attention unchanged (no kernel for it on this card ...)`. 0.1.45 linked llama.cpp's ggml-cuda and used the
+kernel. **Fix: build with the vendored llama.cpp tree**, `-DSTRATA_GGML_DIR=/opt/strata/engine/third_party/strata-llama
+-DSTRATA_POLY_MMQ=ON` (no download). With that build 64K reads in 28.0-28.8 s and 32K in 13.3-13.4 s. Image
+`polystrata:p19-mmq` (`p19/Dockerfile`, on top of `next-c868922e`, 5 minutes). It is not live: the template and the
+`polystrata:tower` tag are unchanged. Sources: `docs/tower/p19/`; on Tower `/mnt/user/appdata/polystrata/p19/`.
+
+**How it was measured.** These runs used the test container on port 5003, with the live container stopped and the
+mirror off. Pass 18's settings: `--kv q8_0`, 262,144 context, 8 threads. The cold reads are `aba.py`'s A1 and B1 at
+sizes 24000 (32,113 tokens) and 48000 (64,620). For a per-layer split, `p19/pplog.py` patches the test container's
+server to log each `PP` progress line the engine sends, with its time. The engine sends one at least every 500 ms
+during a read, and a read goes layer by layer over the whole prompt. At 64K a layer takes over 500 ms, so most lines
+span exactly one layer of the 41 turns (40 layers and the draft block). `p19/split.py` averages those lines: the 10
+full-attention layers (3, 7, ... 39) and the GDN layers. Layer 0 and the last turn are left out.
+
+**Settings tried on 0.2.19** (`p19/all1.sh`, one round each, cold reads in seconds):
+
+| 0.2.19 as live, and | 32K | 64K |
+|---|---|---|
+| nothing (two rounds, an hour apart) | 16.5-16.7 | 40.6-41.7 |
+| `STRATA_FATTN=0` | 16.5-16.6 | 40.7-41.8 (no kernel to turn off) |
+| `--prompt-cache-every 0` | 16.4-16.5 | 40.6-40.8 |
+| `--prompt-cache 0` | 16.1-16.3 | 40.5 |
+
+The checkpoints are not the cause. Upstream's `8acd31d0e` (checkpoints copied aside during a read) changes only the
+path where every expert is in VRAM. This card reads layer by layer, as both builds do at 64K. 0.1.45's 512 MiB
+residual limit holds 65,536 tokens, so it is one read there too.
+
+**Per layer at 64K** (ms, mean of the one-layer lines, both cold reads of a round):
+
+| Build | Cold read 64K | Attention layer (x10) | GDN layer (x29) |
+|---|---|---|---|
+| 0.1.45, FATTN on (as live was) | 35.0-36.2 s | 1,217-1,220 | 727-730 |
+| 0.1.45, `STRATA_FATTN=0` | 48.6-49.9 s | 2,574-2,579 | 728-730 |
+| 0.2.19 as live | 40.8-41.3 s | 2,424 | 525-530 |
+| 0.2.19 with ggml (`p19-mmq`) | 28.0-28.7 s | 1,152-1,154 | 522-526 |
+
+- 0.2.19's GDN layers are 28% faster than 0.1.45's (727 -> 525 ms). Over 29 layers that saves about 6 s at 64K.
+- Its attention layers take what 0.1.45's took with the kernel off (2,424 against 2,574 ms), twice their time with it
+  on. Over 10 layers that costs about 12 s. Net: about +6 s.
+- At 32K the attention layers take 745 ms on 0.2.19, against 287 ms for a GDN layer: a smaller share, so the GDN gain
+  wins there (32K: 0.1.45 16.9-17.3 s this session, 0.2.19 16.5-16.7 s).
+- llama.cpp's MMQ in place of Strata's own prompt products leaves the GDN layers where they were (522-526 ms). All
+  of the gain is the attention kernel.
+
+**The fixed build against today's** (`p19/nx.sh`, two rounds each, interleaved: base, mmq, base, mmq):
+
+| | 0.2.19 as live | `p19-mmq` |
+|---|---|---|
+| read 11K (`bench_11k.py`, 3 runs, one round) | 5.93-5.94 s | 5.57-5.61 s |
+| read 32K | 16.5-16.7 s | 13.3-13.4 s |
+| read 64K | 40.6-41.7 s | 28.0-28.8 s |
+| decode, 400 tokens after a short prompt (runs 2-4 of 4; one round / two) | 73.3-76.8 tok/s | 75.0-87.2 |
+
+The first decode run after a load is slower in both (55.5 and 57.0 tok/s) and is left out, as in Pass 18.
+
+**A second kernel that is off: FDEC.** The tensor-core decode kernel is off in both 0.2.19 builds, for a different
+reason. Its keys now go in splits of 256 (`kSplit`, 1,024 in 0.1.45). Its scratch at 262,144 positions is
+1,024 splits x 2 KV heads x 32 rows x 258 floats = 16.9M floats. The engine gives it `chunk_` (4) x 16 heads x
+262,144 = 16.8M floats, so `fdec_fits()` is false (`STRATA_FDEC=1` prints `no kernel for it on this card`). It fits at
+`--max-context` 209,715 or less, where `chunk_` is 5. This was not measured. FDEC starts from 4,096 positions, so
+`decode.py`'s short prompt never reaches it. The cost shows in long-context decode.
+
+**Not checked:** whether the two 0.2.19 builds give the same answers token for token (the kernels round
+differently), GLM's models, and the add-on pattern on `p19-mmq`.
+
+**To make it live** (not done): `docker tag polystrata:p19-mmq polystrata:tower`, then `rebuild_container PolyStrata`,
+`docker start PolyStrata`. The template already names `polystrata:tower`. Rollback: tag
+`polystrata:tower-c868922e` back. For the next image build, add the two `-D` options to `p18/Dockerfile`'s engine step.
+`setup.build_engine_poly` passes `STRATA_GGML_DIR` from the environment but has no switch for `STRATA_POLY_MMQ`, so
+the build has to call CMake itself, as `p19/Dockerfile` does.
 
 ## Shared-load changes (2026-10-17)
 
