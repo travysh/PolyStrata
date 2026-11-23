@@ -629,6 +629,20 @@ key, MCP and program keys are not editable there.
   only after the strict parse failed, the server doubles the backslashes that are not valid escapes and checks the answer again.
   Valid output is never touched. `\b`, `\f`, `\n`, `\r`, `\t` and `\uXXXX` are valid JSON, so they stay: a `\beta` beside a `\alpha`
   comes back with a backspace. Off by default.
+  **Constrained decoding (opt-in, strata-poly):** with `"constrained_decoding": true` in the model's config (or
+  `serve/server.py --constrained-decoding`), a JSON format on a model that takes grammars (below), with thinking off, is
+  answered under a grammar built from the schema by llama.cpp's `json_schema_to_grammar` (`serve/gbnf_schema.py`). The
+  prompt directive and the validation stay. `/v1/status.structured_output` then reports `constrained_decoding: true` and
+  `method: "grammar_and_validate"`.
+- Grammars (strata-poly): a top-level `grammar` (GBNF text, llama.cpp's dialect; `engine/src/poly/grammar.cpp` is
+  llama.cpp's grammar code) on `/v1/chat/completions` lets a token through only when the grammar accepts the answer so
+  far with it, drafted tokens included. Models with a byte-level BPE tokenizer (the engine reports `grammar=1`); others
+  answer **400**. Refused with **400**: `--batch`, tools or MCP, a prefill, thinking asked for, a `response_format`
+  other than `text`. Thinking is off for such a request. Measured on an RTX 3070 with Cyber-Tiel-Coder 35B-A3B
+  UD-Q4_K_XL: an add-on generator's item grammar parsed in 24 of 24 answers (9 and 16 of 24 without it), at 46.9 and
+  48.7 tok/s against 50.2 and 49.9.
+- Assistant prefill: a last `assistant` message on `/v1/messages`, or one with `"continue_final_message": true` on
+  `/v1/chat/completions`, is the start of the answer, which goes on from it (thinking off; not with tools).
 - `logit_bias` and token/bias pair lists work on CUDA, HIP and Metal engines, also with continuous batching (`--batch` / `--parallel`: each slot keeps its own bias) ([LOGIT_BIAS.md](LOGIT_BIAS.md)).
 - Stop strings (`stop`, `stop_sequences`), `temperature`, `top_p`, `top_k`, `min_p` and `seed` are honored per request.
   `top_k` keeps at most 64 candidates. Penalties (`presence_penalty`, `frequency_penalty`, `repetition_penalty`,

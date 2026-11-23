@@ -74,3 +74,15 @@ restrictive list may reduce draft acceptance. Ordinary MTP was tested. The
 experimental coupled/rejection-sampling combinations and multi-GPU execution
 were not validated in this campaign. There is no startup bias-file option in
 this change: send the field with each request.
+
+## strata-poly (GGUF models)
+
+strata-poly applies the same biases in its sampler (`engine/src/poly/sampler.hpp`), which every picked token goes
+through, drafted ones included; a request with a bias leaves the card's own greedy pick for the host's. The bias is
+added first, before penalties and the pick. A request without `logit_bias` takes the same path as before.
+
+Measured on Tower (RTX 3070, Cyber-Tiel-Coder 35B-A3B UD-Q4_K_XL, KV q8_0, greedy, thinking off), 2026-10-20, with
+the 0.1.45 engine: a -100 bias on the first greedy token of "The capital of France is Paris." (token 760, `The`) gave
+"Paris is the capital of France."; a +100 bias on token 48554 (`Ban`) made every token `Ban`; an ID outside the
+vocabulary returned 400. Decode on a 400-token coding prompt, 3 runs each: no bias 48.4, 47.6, 52.3 tok/s; 228,320
+entries 48.5, 46.1, 49.5. With `--batch` it was built, not measured.
