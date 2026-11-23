@@ -1266,6 +1266,51 @@ Not run: other CPUs (on a CPU with full-width AVX2 and no SMT sharing, the share
 engine ABBA (nothing to compare). Binaries on Tower in `/mnt/user/appdata/polystrata/p17/`; nothing changed in the
 template or the images.
 
+## Pass 18: PolyStrata 0.2.19-poly.1 (2026-11-22)
+
+Upstream moved from `VecSzn/PolyStrata` to `simplexai-labs/PolyStrata` (the old URL redirects) and went from
+`974552f5` (2026-10-19) to `50e42805`, 0.2.19-poly.1 plus one commit: 6,739 commits, most of them the Strata
+project's 0.2.16-0.2.19 merges, and a layout move (`src/` -> `engine/src/`, `serve/` -> `terminal/serve/`, setup in
+`terminal/`). **Outcome: live since 2026-11-22 on `polystrata:tower` = local branch `tower-next` `c868922e`**
+(upstream + our logit_bias, GBNF grammars, constrained JSON and prefill, ported). Not ported, because upstream's own
+answer measured better here: SSD parking (`--conversation-park-dir`), `--prompt-cache-first-turn` and
+`STRATA_CPU_DOWN_ORDER`. Sources: `docs/tower/p18/`; on Tower `/mnt/user/appdata/polystrata/next/`, results
+`/data/upd-*.txt`.
+
+- **Image.** Upstream's Docker image has no strata-poly models, so `p18/Dockerfile` builds one: CUDA 13.0 devel,
+  the repo from `git archive`, `terminal/.venv`, the sampler and grammar tests, then `setup.build_engine_poly` for
+  sm_86 with the CPU image encoder. It starts `terminal/serve/server.py` with `/data/config/strata-cybertiel-next.json`
+  (the old config less `--conversation-park-dir` and `--prompt-cache-first-turn`, paths under
+  `/opt/strata/terminal`). No entrypoint: the template's FAMILY/MODEL/... variables are gone. The image has no `curl`.
+- **Template** (`my-PolyStrata.xml`, backup `.pre-0219`): env `TMPDIR=/park` (upstream spills parked conversations to
+  nameless files in `$TMPDIR`) and `STRATA_POLY_MIRROR=0`; FATTN/FDEC are upstream defaults now (on from 4,096 tokens).
+- **Numbers** (warm, same prompts: the old image's `docs/` and `README.md` copied in for `long_prompt`):
+
+  | | live 0.1.45 (`tower-893468a5`) | 0.2.19 + ours, mirror off |
+  |---|---|---|
+  | decode, 400 tokens after a short prompt | 64-72 tok/s | 77-88 |
+  | read 11K | 7.4-8.1 s | 5.8-6.0 s |
+  | read 32K | 17.7-18.0 s | 16.5-16.8 s |
+  | read 64K | 35.7-36.4 s | **40.7-42.2 s** (slower, cause not found) |
+  | back to A after B, 32K / 64K | 3.6 / 5.0 s | 0.5-0.9 / 1.0-1.4 s |
+  | add-on sim (`addon_sim.py`): forge prompt after the first, median | 4.45 s (81.5% reused) | 3.04 s (70.8% reused) |
+  | engine RssAnon after the set | 0.9 GB | 2.7 GB (17 GB with the mirror) |
+
+- **The mirror.** 0.2.19 copies the experts outside VRAM into pinned RAM at load (14.7 GiB here, 60 s load). On
+  Tower it bought nothing: decode, 11K/32K/64K reads and switches were the same within noise with
+  `STRATA_POLY_MIRROR=0`, which loads in 20-24 s and leaves 25.7 GB available against 10.7. Off.
+- **Threads.** The default is now 70% of the CPUs (8 of 12). `--threads 12` gave the same numbers, with and without
+  the mirror. Default kept.
+- **The 64K read** is slower in every variant (mirror, threads); `STRATA_GDN_MMA=0` made it slower still (44.8 s).
+- **Add-on pattern.** Upstream keeps a checkpoint where the last turn starts and every 2,048 tokens; a new forge
+  request went on from 12,288 of ~13.5K system tokens. Live went on from all 14,149 (first-turn checkpoint) but its
+  SSD restore cost more than the 1.3K tokens it saved. `"warm_start": "agent.json"` with the forge system prompt
+  would pin it whole (not tried).
+- **API checks** (`p18/features.py`): `/v1/status` says `grammar_and_validate`; a yes/no grammar, a json_schema mob,
+  prefill on both APIs, and a -100 bias on `Hello` (9419 -> `Greetings`) all pass on the live container.
+- **Rollback:** `docker tag polystrata:tower-893468a5 polystrata:tower`, copy `my-PolyStrata.xml.pre-0219` over the
+  template, `rebuild_container PolyStrata`, `docker start PolyStrata`. The old config is untouched.
+
 ## Shared-load changes (2026-10-17)
 
 With Plex, Deluge and Duplicati running again, the GGUF (22.7 GB) has to stay cached next to them, and about 22.5 GB
