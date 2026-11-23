@@ -366,6 +366,7 @@ from serve import ready as ready_file  # noqa: E402
 from serve import owner_guard  # noqa: E402
 from serve import launch_identity  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
+from serve import grammar as grammar_api  # noqa: E402
 from serve import lifeline  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json, extract_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
@@ -1458,7 +1459,8 @@ class StrataEngine:
             if ids:
                 # only these ids are printed; the engine's comma-separated list, renormalised below
                 keys += " allowed=" + ",".join(str(i) for i in ids)
-        return keys + StrataEngine.projection_key(sampling) + bias_api.engine_key(sampling.get("logit_bias"))
+        return (keys + StrataEngine.projection_key(sampling) + bias_api.engine_key(sampling.get("logit_bias")) +
+                grammar_api.engine_key(sampling.get("grammar")))
 
     @staticmethod
     def projection_key(sampling: dict) -> str:
@@ -4177,6 +4179,9 @@ class Service:
         # #332: the API request monitor (/api-monitor) keeps the last 100 requests' prompts and answers in memory,
         # so it is off unless the config's "api_monitor" (or --api-monitor) turns it on
         self.api_monitor = False
+        # grammar-enforced response_format JSON (serve/grammar.py for_format): off unless the config's
+        # "constrained_decoding" (or --constrained-decoding) turns it on, and then only on an engine that takes grammars
+        self.constrained_decoding = False
         self.api_requests = collections.deque(maxlen=100)  # bounded I/O in memory; no headers or API keys
         self.request_trace = threading.local()
         self.history = collections.deque(maxlen=500)    # the last finished requests, newest last (GET /metrics)
@@ -5616,11 +5621,13 @@ class Service:
 
         busy, ctx = bool(s.get("busy")), self.reported_ctx()
         images = self.has_vision()
+        constrained = self.constrained_decoding and (getattr(self.engine, "info", None) or {}).get("grammar") == 1
         return {
             "service": "strata", "model": self.model,
             "loaded": self.loaded(), "auto_load": hasattr(self.engine, "restart"),
-            "structured_output": {"formats": ["json_object", "json_schema"], "method": "prompt_and_validate",
-                                  "constrained_decoding": False, "stream_buffered": True},
+            "structured_output": {"formats": ["json_object", "json_schema"],
+                                  "method": "grammar_and_validate" if constrained else "prompt_and_validate",
+                                  "constrained_decoding": constrained, "stream_buffered": True},
             "engine": (getattr(self.engine, "info", {}) or {}).get("version"),
             "started": int(self.started_at), "uptime_s": int(time.time() - self.started_at),
             "cache_max_tokens": ctx,
@@ -5806,7 +5813,7 @@ class Service:
             self.prompts.forget(ids)
 
 
-    def prepare(self, messages, tools, kwargs, max_new=None, force=None, req=None, cancel=None):
+    def prepare(self, messages, tools, kwargs, max_new=None, force=None, req=None, cancel=None, prefill=None):
         """-> (ids, thinking, max_new). An unset or non-positive max_new (some clients send -1) means "unlimited":
         the rest of the context.  `force` (forced_call): without thinking the reply starts with it, so it ends the
         prompt; with thinking, Service.run writes it once the thinking is over."""
@@ -5837,11 +5844,15 @@ class Service:
         if self.drop_oldest:
             messages, ids = self.drop_oldest_turns(messages, tools, kwargs, ids, max_new)
             encoded_ids = ids
+        if force and prefill:
+            raise ValueError("prefill with forced tool_choice is not supported")
         if force and kwargs.get("enable_thinking", True) is False:
             # (Inkling 2: the forced call is the reply's block, in place of the text block render_prompt() opened)
             if self.text_open_ids and ids[-len(self.text_open_ids):] == self.text_open_ids:
                 ids = ids[:-len(self.text_open_ids)]
             ids = ids + self.tok.encode(force, parse_special=True)
+        if prefill:
+            ids = ids + self.tok.encode(prefill, parse_special=False)
         images = images_of(messages)
         if self.truncate_middle and not images:
             ids = self.truncate_prompt_middle(ids, max_new)
@@ -7097,7 +7108,7 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
         raise lost
 
 
-def structured_chunks(chunks, validator):
+def structured_chunks(chunks, validator, prefill=None):
     """Buffer structured streams so a client never receives unvalidated content.  A turn that calls a tool is not the
     final answer: from its first call on, what was held goes out as it is and the rest streams unchecked, as
     /v1/responses does."""
@@ -7123,7 +7134,7 @@ def structured_chunks(chunks, validator):
             return
         result = openai_collect(buffered)
         choice = result["choices"][0]
-        content = validated_json(choice["message"]["content"], validator, choice["finish_reason"])
+        content = validated_json(choice["message"]["content"], validator, choice["finish_reason"], prefill=prefill)
         # logprobs: the entries spell what the model wrote, which this function replaces with the
         # canonical JSON.  `_structured_logprobs` gives back the form the tokens spell, or None.
         content, logprobs = _structured_logprobs(choice, content)
@@ -8436,9 +8447,22 @@ def make_handler(svc: Service):
                 items.close()
 
         def _openai(self, req):
+            client_req = req                                  # the shared thinking default is not the client's ask
             req = svc.with_shared(req, "openai")
             bias_api.normalize(req.get("logit_bias"), len(getattr(svc.tok, "tokens", ())) or None)
-            messages, tools, kw = openai_to_messages(req)
+            messages, tools, kw, prefill = openai_to_messages(req, prefill=True)
+            if prefill is not None:
+                if tools or req.get("tools"):
+                    raise ValueError("prefill with tools is not supported")
+                if req.get("tool_choice") and tool_choice_of(req.get("tool_choice"))[0] != "none":
+                    raise ValueError("prefill with tools is not supported")
+                if req.get("strata_mcp"):
+                    raise ValueError("prefill with MCP is not supported")
+                ctk = req.get("chat_template_kwargs") or {}
+                reasoning = req.get("reasoning") if isinstance(req.get("reasoning"), dict) else {}
+                if req.get("enable_thinking") is True or ctk.get("enable_thinking") is True or req.get("reasoning_effort") not in (None, "", "none", False) or reasoning.get("effort") not in (None, "", "none", False):
+                    raise ValueError("prefill with thinking is not supported")
+                kw["enable_thinking"] = False
             require_messages(messages)                # an empty conversation is a 400, as OpenAI answers it, not a reply to nothing
             self._no_local_images(messages)
             if tool_choice_of(req.get("tool_choice"))[0] == "none":   # as the Responses route: no tools are offered
@@ -8472,6 +8496,14 @@ def make_handler(svc: Service):
                     raise ValueError(f"allowed_token_ids: {bad[0]} is outside the vocabulary "
                                      f"(0..{n_vocab - 1})")
             bias_api.validate_request(req, svc.engine, len(getattr(svc.tok, "tokens", ())) or None)
+            grammar = grammar_api.validate_request(client_req, svc.engine, tools)
+            if grammar is not None:                           # the grammar shapes the answer, so no thinking before it
+                kw["enable_thinking"] = False
+                req = {**req, "grammar": grammar}
+            elif validator is not None and svc.constrained_decoding:
+                grammar = grammar_api.for_format(req.get("response_format"), svc.engine, kw)
+                if grammar is not None:                       # the directive and the validator stay, as without it
+                    req = {**req, "grammar": grammar}
             use_mcp = req.get("strata_mcp") is True and svc.mcp is not None      # the web app's opt-in (serve/mcp.py)
             own = {t.get("name") for t in tools or [] if isinstance(t, dict)}   # #592: a second line of defence
             if use_mcp:
@@ -8487,13 +8519,13 @@ def make_handler(svc: Service):
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
             check_request_sampling(req)                       # ... and a sampling field of the wrong type
             cancel = self.cancel                             # watched since _post() (#430 #431 #1999)
-            ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel)
+            ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel, prefill=prefill)
             _debug_req("openai", req, messages, tools, max_new, thinking, len(ids))
             run = run_with_mcp(svc, svc.mcp, messages, tools, kw, ids, thinking, max_new, max_req, req, cancel,
                                {t["name"] for t in extra}) if use_mcp else None
             chunks = openai_chunks(svc, req, ids, thinking, tools, max_new, cancel, run=run, force=force)
             if validator is not None:
-                chunks = structured_chunks(chunks, validator)
+                chunks = structured_chunks(chunks, validator, prefill=prefill)
             chunks = self._capture(chunks, "openai")
             if not req.get("stream"):
                 return self._json(200, openai_collect(chunks))
@@ -8771,8 +8803,18 @@ def make_handler(svc: Service):
         def _anthropic(self, req):
             svc.load()
             req = svc.with_shared(req, "anthropic")
-            messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked)
+            messages, tools, kw, prefill = anthropic_to_messages(req, svc.anthropic_think_unasked, prefill=True)
             self._no_local_images(messages)
+            if prefill is not None:
+                if tools or req.get("tools"):
+                    raise ValueError("prefill with tools is not supported")
+                if req.get("tool_choice") and tool_choice_of(req.get("tool_choice"))[0] != "none":
+                    raise ValueError("prefill with tools is not supported")
+                thinking = req.get("thinking")
+                effort = (req.get("output_config") or {}).get("effort") if isinstance(req.get("output_config"), dict) else None
+                if (isinstance(thinking, dict) and thinking.get("type") == "enabled") or (isinstance(thinking, dict) and thinking.get("budget_tokens")) or (effort not in (None, "", "none", False)):
+                    raise ValueError("prefill with thinking is not supported")
+                kw["enable_thinking"] = False
             callable_tools, deferred = anthropic_tools(req)     # #4663: the deferred tools are callable, unlisted
             if tool_choice_of(req.get("tool_choice"))[0] == "none":   # Anthropic's {"type": "none"}: no tools offered
                 tools = callable_tools = None
@@ -8783,7 +8825,8 @@ def make_handler(svc: Service):
             check_request_sampling(req)                       # ... and a sampling field of the wrong type
             cancel = self.cancel                             # watched since _post() (#430 #431 #1999)
             try:
-                ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel)
+                ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel,
+                                                     prefill=prefill)
             except ContextOverflow as e:
                 raise ValueError(e.anthropic_text()) from None       # #4838: Anthropic's own wording first, PolyStrata's sentence after it
             _debug_req("anthropic", req, messages, tools, max_new, thinking, len(ids))
@@ -9426,6 +9469,9 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
     ap.add_argument("--api-monitor", action="store_true",
                     help="the API request monitor at /api-monitor: keeps the last 100 requests' prompts and answers in "
                          "memory (also \"api_monitor\": true in the config; off by default)")
+    ap.add_argument("--constrained-decoding", action="store_true",
+                    help="response_format JSON by grammar: the answer is shaped while it is written (strata-poly models "
+                         "that take grammars; also \"constrained_decoding\": true in the config; off by default)")
     ap.add_argument("--idle-unload", type=float, default=None, metavar="SECONDS",
                     help="unload the model after this many seconds without requests, so other programs (games, other "
                          "model servers) can use the VRAM; the next request loads it again (also \"idle_unload_s\" "
@@ -9702,6 +9748,7 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
         print("[strata] Host check off: any name reaches this server (allowed_hosts \"*\")" if "*" in svc.allowed_hosts
               else f"[strata] also answers to the host names {', '.join(svc.allowed_hosts)} (allowed_hosts)", flush=True)
     svc.api_monitor = a.api_monitor or cfg.get("api_monitor") is True
+    svc.constrained_decoding = a.constrained_decoding or cfg.get("constrained_decoding") is True
     if svc.api_monitor:
         print("[strata] API request monitor on (/api-monitor): the last 100 requests' prompts and answers are kept in "
               "memory" + ("" if svc.api_key else "; anyone who can reach this server can read them (no API key)"),

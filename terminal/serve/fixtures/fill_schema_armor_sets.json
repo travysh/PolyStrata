@@ -1,0 +1,1360 @@
+{
+ "type": "object",
+ "properties": {
+  "item_name": {
+   "type": "string"
+  },
+  "item_description": {
+   "type": "string"
+  },
+  "durability": {
+   "type": "integer"
+  },
+  "foil": {
+   "type": "boolean"
+  },
+  "repair_item": {
+   "type": "string"
+  },
+  "theme": {
+   "type": "object",
+   "properties": {
+    "primary": {
+     "type": "string"
+    },
+    "secondary": {
+     "type": "string"
+    },
+    "highlight": {
+     "type": "string"
+    },
+    "guard": {
+     "type": "string"
+    },
+    "handle": {
+     "type": "string"
+    },
+    "aura": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "primary",
+    "secondary",
+    "highlight",
+    "guard",
+    "handle",
+    "aura"
+   ],
+   "additionalProperties": false
+  },
+  "armor_properties": {
+   "type": "object",
+   "properties": {
+    "slot": {
+     "type": "string",
+     "enum": [
+      "head",
+      "chest",
+      "legs",
+      "feet"
+     ]
+    },
+    "protection": {
+     "type": "integer"
+    },
+    "durability": {
+     "type": "integer"
+    }
+   },
+   "required": [
+    "slot",
+    "protection"
+   ],
+   "additionalProperties": false
+  },
+  "script": {
+   "type": "object",
+   "description": "Ability scripting for the item",
+   "properties": {
+    "abilities": {
+     "type": "object",
+     "properties": {
+      "on_tick": {
+       "type": "object",
+       "description": "every 2 seconds while worn (passive aura)",
+       "properties": {
+        "name": {
+         "type": "string"
+        },
+        "description": {
+         "type": "string"
+        },
+        "cooldown_seconds": {
+         "type": "number"
+        },
+        "actionbar_text": {
+         "type": "string"
+        },
+        "sound": {
+         "type": "string",
+         "enum": [
+          "random.explode",
+          "random.orb",
+          "random.levelup",
+          "random.anvil_land",
+          "random.glass",
+          "random.fizz",
+          "random.bow",
+          "random.totem",
+          "random.pop",
+          "mob.enderdragon.growl",
+          "mob.wither.spawn",
+          "mob.wither.shoot",
+          "mob.warden.roar",
+          "mob.warden.sonic_boom",
+          "mob.endermen.portal",
+          "mob.ghast.fireball",
+          "mob.blaze.shoot",
+          "mob.evocation_illager.cast_spell",
+          "mob.elderguardian.curse",
+          "mob.shulker.shoot",
+          "ambient.weather.thunder",
+          "ambient.weather.lightning.impact",
+          "beacon.activate",
+          "beacon.power",
+          "block.bell.hit",
+          "conduit.activate",
+          "item.trident.thunder",
+          "item.trident.riptide_1",
+          "item.trident.throw",
+          "item.shield.block",
+          "fire.ignite",
+          "dig.stone",
+          "bucket.fill_water",
+          "wind_charge.burst",
+          "mace.smash_ground",
+          "mace.heavy_smash_ground",
+          "note.pling",
+          "note.bell",
+          "respawn_anchor.charge",
+          "block.end_portal.spawn",
+          "chime.amethyst_block",
+          "break.amethyst_block"
+         ]
+        },
+        "steps": {
+         "type": "array",
+         "items": {
+          "type": "object",
+          "properties": {
+           "delay_ticks": {
+            "type": "integer"
+           },
+           "type": {
+            "type": "string",
+            "enum": [
+             "particle",
+             "sound",
+             "effect",
+             "summon",
+             "projectile",
+             "fill_blocks",
+             "knockback",
+             "pull",
+             "ignite",
+             "message",
+             "teleport",
+             "lightning",
+             "heal",
+             "damage_target",
+             "launch",
+             "set_state"
+            ]
+           },
+           "target": {
+            "type": "string",
+            "enum": [
+             "self",
+             "hit_entity",
+             "attacker",
+             "nearby",
+             "look_target"
+            ]
+           },
+           "radius": {
+            "type": "number"
+           },
+           "at": {
+            "type": "string",
+            "enum": [
+             "self",
+             "target",
+             "look_point"
+            ]
+           },
+           "if": {
+            "type": "string",
+            "enum": [
+             "sneaking",
+             "low_health",
+             "in_water",
+             "night",
+             "on_ground",
+             "airborne"
+            ]
+           },
+           "chance": {
+            "type": "number"
+           },
+           "repeat_times": {
+            "type": "integer"
+           },
+           "repeat_every_ticks": {
+            "type": "integer"
+           },
+           "particle": {
+            "type": "string",
+            "enum": [
+             "minecraft:basic_flame_particle",
+             "minecraft:blue_flame_particle",
+             "minecraft:candle_flame_particle",
+             "minecraft:mobflame_emitter",
+             "minecraft:lava_particle",
+             "minecraft:basic_smoke_particle",
+             "minecraft:white_smoke_particle",
+             "minecraft:campfire_smoke_particle",
+             "minecraft:large_explosion",
+             "minecraft:huge_explosion_emitter",
+             "minecraft:basic_crit_particle",
+             "minecraft:critical_hit_emitter",
+             "minecraft:heart_particle",
+             "minecraft:villager_happy",
+             "minecraft:villager_angry",
+             "minecraft:endrod",
+             "minecraft:portal_directional",
+             "minecraft:portal_reverse_particle",
+             "minecraft:dragon_breath_trail",
+             "minecraft:dragon_breath_fire",
+             "minecraft:totem_particle",
+             "minecraft:soul_particle",
+             "minecraft:sculk_soul_particle",
+             "minecraft:sonic_explosion",
+             "minecraft:shriek_particle",
+             "minecraft:snowflake_particle",
+             "minecraft:water_splash_particle",
+             "minecraft:bubble_column_up_particle",
+             "minecraft:mobspell_emitter",
+             "minecraft:witchspell_emitter",
+             "minecraft:evoker_spell",
+             "minecraft:electric_spark_particle",
+             "minecraft:note_particle",
+             "minecraft:knockback_roar_particle",
+             "minecraft:wind_explosion_emitter",
+             "minecraft:breeze_wind_explosion_emitter",
+             "minecraft:enchanting_table_particle",
+             "minecraft:conduit_particle",
+             "minecraft:cherry_leaves_particle",
+             "minecraft:obsidian_glow_dust_particle",
+             "minecraft:redstone_wire_dust_particle",
+             "minecraft:ink_emitter",
+             "minecraft:stunned_emitter",
+             "minecraft:sparkler_emitter"
+            ]
+           },
+           "particle_shape": {
+            "type": "string",
+            "enum": [
+             "point",
+             "ring",
+             "sphere",
+             "spiral",
+             "line",
+             "burst"
+            ]
+           },
+           "particle_count": {
+            "type": "integer"
+           },
+           "particle_radius": {
+            "type": "number"
+           },
+           "offset": {
+            "type": "string"
+           },
+           "sound": {
+            "type": "string",
+            "enum": [
+             "random.explode",
+             "random.orb",
+             "random.levelup",
+             "random.anvil_land",
+             "random.glass",
+             "random.fizz",
+             "random.bow",
+             "random.totem",
+             "random.pop",
+             "mob.enderdragon.growl",
+             "mob.wither.spawn",
+             "mob.wither.shoot",
+             "mob.warden.roar",
+             "mob.warden.sonic_boom",
+             "mob.endermen.portal",
+             "mob.ghast.fireball",
+             "mob.blaze.shoot",
+             "mob.evocation_illager.cast_spell",
+             "mob.elderguardian.curse",
+             "mob.shulker.shoot",
+             "ambient.weather.thunder",
+             "ambient.weather.lightning.impact",
+             "beacon.activate",
+             "beacon.power",
+             "block.bell.hit",
+             "conduit.activate",
+             "item.trident.thunder",
+             "item.trident.riptide_1",
+             "item.trident.throw",
+             "item.shield.block",
+             "fire.ignite",
+             "dig.stone",
+             "bucket.fill_water",
+             "wind_charge.burst",
+             "mace.smash_ground",
+             "mace.heavy_smash_ground",
+             "note.pling",
+             "note.bell",
+             "respawn_anchor.charge",
+             "block.end_portal.spawn",
+             "chime.amethyst_block",
+             "break.amethyst_block"
+            ]
+           },
+           "volume": {
+            "type": "number"
+           },
+           "pitch": {
+            "type": "number"
+           },
+           "effect": {
+            "type": "string",
+            "enum": [
+             "speed",
+             "slowness",
+             "haste",
+             "mining_fatigue",
+             "strength",
+             "instant_health",
+             "instant_damage",
+             "jump_boost",
+             "nausea",
+             "regeneration",
+             "resistance",
+             "fire_resistance",
+             "water_breathing",
+             "invisibility",
+             "blindness",
+             "night_vision",
+             "hunger",
+             "weakness",
+             "poison",
+             "wither",
+             "health_boost",
+             "absorption",
+             "saturation",
+             "levitation",
+             "slow_falling",
+             "conduit_power",
+             "darkness",
+             "wind_charged",
+             "weaving",
+             "oozing",
+             "infested"
+            ]
+           },
+           "duration_seconds": {
+            "type": "number"
+           },
+           "amplifier": {
+            "type": "integer"
+           },
+           "entity": {
+            "type": "string",
+            "enum": [
+             "minecraft:lightning_bolt",
+             "minecraft:small_fireball",
+             "minecraft:fireball",
+             "minecraft:wither_skull",
+             "minecraft:dragon_fireball",
+             "minecraft:evocation_fang",
+             "minecraft:tnt",
+             "minecraft:arrow",
+             "minecraft:snowball",
+             "minecraft:wind_charge_projectile",
+             "minecraft:xp_orb",
+             "minecraft:wolf",
+             "minecraft:iron_golem",
+             "minecraft:snow_golem",
+             "minecraft:bee",
+             "minecraft:vex",
+             "minecraft:allay",
+             "minecraft:zombie",
+             "minecraft:skeleton",
+             "minecraft:silverfish",
+             "minecraft:egg",
+             "minecraft:shulker_bullet",
+             "minecraft:llama_spit",
+             "minecraft:thrown_trident",
+             "minecraft:xp_bottle"
+            ]
+           },
+           "speed": {
+            "type": "number"
+           },
+           "block": {
+            "type": "string",
+            "enum": [
+             "minecraft:cobblestone",
+             "minecraft:stone",
+             "minecraft:deepslate",
+             "minecraft:obsidian",
+             "minecraft:crying_obsidian",
+             "minecraft:ice",
+             "minecraft:packed_ice",
+             "minecraft:blue_ice",
+             "minecraft:glass",
+             "minecraft:tinted_glass",
+             "minecraft:web",
+             "minecraft:magma",
+             "minecraft:sand",
+             "minecraft:gravel",
+             "minecraft:dirt",
+             "minecraft:oak_leaves",
+             "minecraft:powder_snow",
+             "minecraft:snow",
+             "minecraft:amethyst_block",
+             "minecraft:glowstone",
+             "minecraft:sea_lantern",
+             "minecraft:netherrack",
+             "minecraft:soul_sand",
+             "minecraft:honey_block",
+             "minecraft:slime",
+             "minecraft:end_stone",
+             "minecraft:basalt",
+             "minecraft:iron_bars"
+            ]
+           },
+           "fill_from": {
+            "type": "string"
+           },
+           "fill_to": {
+            "type": "string"
+           },
+           "decay_ticks": {
+            "type": "integer"
+           },
+           "horizontal_strength": {
+            "type": "number"
+           },
+           "vertical_strength": {
+            "type": "number"
+           },
+           "command": {
+            "type": "string"
+           },
+           "actionbar_text": {
+            "type": "string"
+           },
+           "teleport_destination": {
+            "type": "string"
+           },
+           "heal_amount": {
+            "type": "number"
+           },
+           "damage_amount": {
+            "type": "number"
+           },
+           "launch_up": {
+            "type": "number"
+           },
+           "launch_forward": {
+            "type": "number"
+           },
+           "state_action": {
+            "type": "string",
+            "enum": [
+             "toggle",
+             "advance",
+             "reset"
+            ]
+           }
+          },
+          "required": [
+           "type"
+          ],
+          "additionalProperties": false
+         }
+        }
+       },
+       "required": [
+        "name",
+        "steps"
+       ],
+       "additionalProperties": false
+      },
+      "on_hurt": {
+       "type": "object",
+       "description": "wearer/mob takes damage (attacker = whoever hit them)",
+       "properties": {
+        "name": {
+         "type": "string"
+        },
+        "description": {
+         "type": "string"
+        },
+        "cooldown_seconds": {
+         "type": "number"
+        },
+        "actionbar_text": {
+         "type": "string"
+        },
+        "sound": {
+         "type": "string",
+         "enum": [
+          "random.explode",
+          "random.orb",
+          "random.levelup",
+          "random.anvil_land",
+          "random.glass",
+          "random.fizz",
+          "random.bow",
+          "random.totem",
+          "random.pop",
+          "mob.enderdragon.growl",
+          "mob.wither.spawn",
+          "mob.wither.shoot",
+          "mob.warden.roar",
+          "mob.warden.sonic_boom",
+          "mob.endermen.portal",
+          "mob.ghast.fireball",
+          "mob.blaze.shoot",
+          "mob.evocation_illager.cast_spell",
+          "mob.elderguardian.curse",
+          "mob.shulker.shoot",
+          "ambient.weather.thunder",
+          "ambient.weather.lightning.impact",
+          "beacon.activate",
+          "beacon.power",
+          "block.bell.hit",
+          "conduit.activate",
+          "item.trident.thunder",
+          "item.trident.riptide_1",
+          "item.trident.throw",
+          "item.shield.block",
+          "fire.ignite",
+          "dig.stone",
+          "bucket.fill_water",
+          "wind_charge.burst",
+          "mace.smash_ground",
+          "mace.heavy_smash_ground",
+          "note.pling",
+          "note.bell",
+          "respawn_anchor.charge",
+          "block.end_portal.spawn",
+          "chime.amethyst_block",
+          "break.amethyst_block"
+         ]
+        },
+        "steps": {
+         "type": "array",
+         "items": {
+          "type": "object",
+          "properties": {
+           "delay_ticks": {
+            "type": "integer"
+           },
+           "type": {
+            "type": "string",
+            "enum": [
+             "particle",
+             "sound",
+             "effect",
+             "summon",
+             "projectile",
+             "fill_blocks",
+             "knockback",
+             "pull",
+             "ignite",
+             "message",
+             "teleport",
+             "lightning",
+             "heal",
+             "damage_target",
+             "launch",
+             "set_state"
+            ]
+           },
+           "target": {
+            "type": "string",
+            "enum": [
+             "self",
+             "hit_entity",
+             "attacker",
+             "nearby",
+             "look_target"
+            ]
+           },
+           "radius": {
+            "type": "number"
+           },
+           "at": {
+            "type": "string",
+            "enum": [
+             "self",
+             "target",
+             "look_point"
+            ]
+           },
+           "if": {
+            "type": "string",
+            "enum": [
+             "sneaking",
+             "low_health",
+             "in_water",
+             "night",
+             "on_ground",
+             "airborne"
+            ]
+           },
+           "chance": {
+            "type": "number"
+           },
+           "repeat_times": {
+            "type": "integer"
+           },
+           "repeat_every_ticks": {
+            "type": "integer"
+           },
+           "particle": {
+            "type": "string",
+            "enum": [
+             "minecraft:basic_flame_particle",
+             "minecraft:blue_flame_particle",
+             "minecraft:candle_flame_particle",
+             "minecraft:mobflame_emitter",
+             "minecraft:lava_particle",
+             "minecraft:basic_smoke_particle",
+             "minecraft:white_smoke_particle",
+             "minecraft:campfire_smoke_particle",
+             "minecraft:large_explosion",
+             "minecraft:huge_explosion_emitter",
+             "minecraft:basic_crit_particle",
+             "minecraft:critical_hit_emitter",
+             "minecraft:heart_particle",
+             "minecraft:villager_happy",
+             "minecraft:villager_angry",
+             "minecraft:endrod",
+             "minecraft:portal_directional",
+             "minecraft:portal_reverse_particle",
+             "minecraft:dragon_breath_trail",
+             "minecraft:dragon_breath_fire",
+             "minecraft:totem_particle",
+             "minecraft:soul_particle",
+             "minecraft:sculk_soul_particle",
+             "minecraft:sonic_explosion",
+             "minecraft:shriek_particle",
+             "minecraft:snowflake_particle",
+             "minecraft:water_splash_particle",
+             "minecraft:bubble_column_up_particle",
+             "minecraft:mobspell_emitter",
+             "minecraft:witchspell_emitter",
+             "minecraft:evoker_spell",
+             "minecraft:electric_spark_particle",
+             "minecraft:note_particle",
+             "minecraft:knockback_roar_particle",
+             "minecraft:wind_explosion_emitter",
+             "minecraft:breeze_wind_explosion_emitter",
+             "minecraft:enchanting_table_particle",
+             "minecraft:conduit_particle",
+             "minecraft:cherry_leaves_particle",
+             "minecraft:obsidian_glow_dust_particle",
+             "minecraft:redstone_wire_dust_particle",
+             "minecraft:ink_emitter",
+             "minecraft:stunned_emitter",
+             "minecraft:sparkler_emitter"
+            ]
+           },
+           "particle_shape": {
+            "type": "string",
+            "enum": [
+             "point",
+             "ring",
+             "sphere",
+             "spiral",
+             "line",
+             "burst"
+            ]
+           },
+           "particle_count": {
+            "type": "integer"
+           },
+           "particle_radius": {
+            "type": "number"
+           },
+           "offset": {
+            "type": "string"
+           },
+           "sound": {
+            "type": "string",
+            "enum": [
+             "random.explode",
+             "random.orb",
+             "random.levelup",
+             "random.anvil_land",
+             "random.glass",
+             "random.fizz",
+             "random.bow",
+             "random.totem",
+             "random.pop",
+             "mob.enderdragon.growl",
+             "mob.wither.spawn",
+             "mob.wither.shoot",
+             "mob.warden.roar",
+             "mob.warden.sonic_boom",
+             "mob.endermen.portal",
+             "mob.ghast.fireball",
+             "mob.blaze.shoot",
+             "mob.evocation_illager.cast_spell",
+             "mob.elderguardian.curse",
+             "mob.shulker.shoot",
+             "ambient.weather.thunder",
+             "ambient.weather.lightning.impact",
+             "beacon.activate",
+             "beacon.power",
+             "block.bell.hit",
+             "conduit.activate",
+             "item.trident.thunder",
+             "item.trident.riptide_1",
+             "item.trident.throw",
+             "item.shield.block",
+             "fire.ignite",
+             "dig.stone",
+             "bucket.fill_water",
+             "wind_charge.burst",
+             "mace.smash_ground",
+             "mace.heavy_smash_ground",
+             "note.pling",
+             "note.bell",
+             "respawn_anchor.charge",
+             "block.end_portal.spawn",
+             "chime.amethyst_block",
+             "break.amethyst_block"
+            ]
+           },
+           "volume": {
+            "type": "number"
+           },
+           "pitch": {
+            "type": "number"
+           },
+           "effect": {
+            "type": "string",
+            "enum": [
+             "speed",
+             "slowness",
+             "haste",
+             "mining_fatigue",
+             "strength",
+             "instant_health",
+             "instant_damage",
+             "jump_boost",
+             "nausea",
+             "regeneration",
+             "resistance",
+             "fire_resistance",
+             "water_breathing",
+             "invisibility",
+             "blindness",
+             "night_vision",
+             "hunger",
+             "weakness",
+             "poison",
+             "wither",
+             "health_boost",
+             "absorption",
+             "saturation",
+             "levitation",
+             "slow_falling",
+             "conduit_power",
+             "darkness",
+             "wind_charged",
+             "weaving",
+             "oozing",
+             "infested"
+            ]
+           },
+           "duration_seconds": {
+            "type": "number"
+           },
+           "amplifier": {
+            "type": "integer"
+           },
+           "entity": {
+            "type": "string",
+            "enum": [
+             "minecraft:lightning_bolt",
+             "minecraft:small_fireball",
+             "minecraft:fireball",
+             "minecraft:wither_skull",
+             "minecraft:dragon_fireball",
+             "minecraft:evocation_fang",
+             "minecraft:tnt",
+             "minecraft:arrow",
+             "minecraft:snowball",
+             "minecraft:wind_charge_projectile",
+             "minecraft:xp_orb",
+             "minecraft:wolf",
+             "minecraft:iron_golem",
+             "minecraft:snow_golem",
+             "minecraft:bee",
+             "minecraft:vex",
+             "minecraft:allay",
+             "minecraft:zombie",
+             "minecraft:skeleton",
+             "minecraft:silverfish",
+             "minecraft:egg",
+             "minecraft:shulker_bullet",
+             "minecraft:llama_spit",
+             "minecraft:thrown_trident",
+             "minecraft:xp_bottle"
+            ]
+           },
+           "speed": {
+            "type": "number"
+           },
+           "block": {
+            "type": "string",
+            "enum": [
+             "minecraft:cobblestone",
+             "minecraft:stone",
+             "minecraft:deepslate",
+             "minecraft:obsidian",
+             "minecraft:crying_obsidian",
+             "minecraft:ice",
+             "minecraft:packed_ice",
+             "minecraft:blue_ice",
+             "minecraft:glass",
+             "minecraft:tinted_glass",
+             "minecraft:web",
+             "minecraft:magma",
+             "minecraft:sand",
+             "minecraft:gravel",
+             "minecraft:dirt",
+             "minecraft:oak_leaves",
+             "minecraft:powder_snow",
+             "minecraft:snow",
+             "minecraft:amethyst_block",
+             "minecraft:glowstone",
+             "minecraft:sea_lantern",
+             "minecraft:netherrack",
+             "minecraft:soul_sand",
+             "minecraft:honey_block",
+             "minecraft:slime",
+             "minecraft:end_stone",
+             "minecraft:basalt",
+             "minecraft:iron_bars"
+            ]
+           },
+           "fill_from": {
+            "type": "string"
+           },
+           "fill_to": {
+            "type": "string"
+           },
+           "decay_ticks": {
+            "type": "integer"
+           },
+           "horizontal_strength": {
+            "type": "number"
+           },
+           "vertical_strength": {
+            "type": "number"
+           },
+           "command": {
+            "type": "string"
+           },
+           "actionbar_text": {
+            "type": "string"
+           },
+           "teleport_destination": {
+            "type": "string"
+           },
+           "heal_amount": {
+            "type": "number"
+           },
+           "damage_amount": {
+            "type": "number"
+           },
+           "launch_up": {
+            "type": "number"
+           },
+           "launch_forward": {
+            "type": "number"
+           },
+           "state_action": {
+            "type": "string",
+            "enum": [
+             "toggle",
+             "advance",
+             "reset"
+            ]
+           }
+          },
+          "required": [
+           "type"
+          ],
+          "additionalProperties": false
+         }
+        }
+       },
+       "required": [
+        "name",
+        "steps"
+       ],
+       "additionalProperties": false
+      },
+      "on_equip": {
+       "type": "object",
+       "description": "the moment the armor is put on",
+       "properties": {
+        "name": {
+         "type": "string"
+        },
+        "description": {
+         "type": "string"
+        },
+        "cooldown_seconds": {
+         "type": "number"
+        },
+        "actionbar_text": {
+         "type": "string"
+        },
+        "sound": {
+         "type": "string",
+         "enum": [
+          "random.explode",
+          "random.orb",
+          "random.levelup",
+          "random.anvil_land",
+          "random.glass",
+          "random.fizz",
+          "random.bow",
+          "random.totem",
+          "random.pop",
+          "mob.enderdragon.growl",
+          "mob.wither.spawn",
+          "mob.wither.shoot",
+          "mob.warden.roar",
+          "mob.warden.sonic_boom",
+          "mob.endermen.portal",
+          "mob.ghast.fireball",
+          "mob.blaze.shoot",
+          "mob.evocation_illager.cast_spell",
+          "mob.elderguardian.curse",
+          "mob.shulker.shoot",
+          "ambient.weather.thunder",
+          "ambient.weather.lightning.impact",
+          "beacon.activate",
+          "beacon.power",
+          "block.bell.hit",
+          "conduit.activate",
+          "item.trident.thunder",
+          "item.trident.riptide_1",
+          "item.trident.throw",
+          "item.shield.block",
+          "fire.ignite",
+          "dig.stone",
+          "bucket.fill_water",
+          "wind_charge.burst",
+          "mace.smash_ground",
+          "mace.heavy_smash_ground",
+          "note.pling",
+          "note.bell",
+          "respawn_anchor.charge",
+          "block.end_portal.spawn",
+          "chime.amethyst_block",
+          "break.amethyst_block"
+         ]
+        },
+        "steps": {
+         "type": "array",
+         "items": {
+          "type": "object",
+          "properties": {
+           "delay_ticks": {
+            "type": "integer"
+           },
+           "type": {
+            "type": "string",
+            "enum": [
+             "particle",
+             "sound",
+             "effect",
+             "summon",
+             "projectile",
+             "fill_blocks",
+             "knockback",
+             "pull",
+             "ignite",
+             "message",
+             "teleport",
+             "lightning",
+             "heal",
+             "damage_target",
+             "launch",
+             "set_state"
+            ]
+           },
+           "target": {
+            "type": "string",
+            "enum": [
+             "self",
+             "hit_entity",
+             "attacker",
+             "nearby",
+             "look_target"
+            ]
+           },
+           "radius": {
+            "type": "number"
+           },
+           "at": {
+            "type": "string",
+            "enum": [
+             "self",
+             "target",
+             "look_point"
+            ]
+           },
+           "if": {
+            "type": "string",
+            "enum": [
+             "sneaking",
+             "low_health",
+             "in_water",
+             "night",
+             "on_ground",
+             "airborne"
+            ]
+           },
+           "chance": {
+            "type": "number"
+           },
+           "repeat_times": {
+            "type": "integer"
+           },
+           "repeat_every_ticks": {
+            "type": "integer"
+           },
+           "particle": {
+            "type": "string",
+            "enum": [
+             "minecraft:basic_flame_particle",
+             "minecraft:blue_flame_particle",
+             "minecraft:candle_flame_particle",
+             "minecraft:mobflame_emitter",
+             "minecraft:lava_particle",
+             "minecraft:basic_smoke_particle",
+             "minecraft:white_smoke_particle",
+             "minecraft:campfire_smoke_particle",
+             "minecraft:large_explosion",
+             "minecraft:huge_explosion_emitter",
+             "minecraft:basic_crit_particle",
+             "minecraft:critical_hit_emitter",
+             "minecraft:heart_particle",
+             "minecraft:villager_happy",
+             "minecraft:villager_angry",
+             "minecraft:endrod",
+             "minecraft:portal_directional",
+             "minecraft:portal_reverse_particle",
+             "minecraft:dragon_breath_trail",
+             "minecraft:dragon_breath_fire",
+             "minecraft:totem_particle",
+             "minecraft:soul_particle",
+             "minecraft:sculk_soul_particle",
+             "minecraft:sonic_explosion",
+             "minecraft:shriek_particle",
+             "minecraft:snowflake_particle",
+             "minecraft:water_splash_particle",
+             "minecraft:bubble_column_up_particle",
+             "minecraft:mobspell_emitter",
+             "minecraft:witchspell_emitter",
+             "minecraft:evoker_spell",
+             "minecraft:electric_spark_particle",
+             "minecraft:note_particle",
+             "minecraft:knockback_roar_particle",
+             "minecraft:wind_explosion_emitter",
+             "minecraft:breeze_wind_explosion_emitter",
+             "minecraft:enchanting_table_particle",
+             "minecraft:conduit_particle",
+             "minecraft:cherry_leaves_particle",
+             "minecraft:obsidian_glow_dust_particle",
+             "minecraft:redstone_wire_dust_particle",
+             "minecraft:ink_emitter",
+             "minecraft:stunned_emitter",
+             "minecraft:sparkler_emitter"
+            ]
+           },
+           "particle_shape": {
+            "type": "string",
+            "enum": [
+             "point",
+             "ring",
+             "sphere",
+             "spiral",
+             "line",
+             "burst"
+            ]
+           },
+           "particle_count": {
+            "type": "integer"
+           },
+           "particle_radius": {
+            "type": "number"
+           },
+           "offset": {
+            "type": "string"
+           },
+           "sound": {
+            "type": "string",
+            "enum": [
+             "random.explode",
+             "random.orb",
+             "random.levelup",
+             "random.anvil_land",
+             "random.glass",
+             "random.fizz",
+             "random.bow",
+             "random.totem",
+             "random.pop",
+             "mob.enderdragon.growl",
+             "mob.wither.spawn",
+             "mob.wither.shoot",
+             "mob.warden.roar",
+             "mob.warden.sonic_boom",
+             "mob.endermen.portal",
+             "mob.ghast.fireball",
+             "mob.blaze.shoot",
+             "mob.evocation_illager.cast_spell",
+             "mob.elderguardian.curse",
+             "mob.shulker.shoot",
+             "ambient.weather.thunder",
+             "ambient.weather.lightning.impact",
+             "beacon.activate",
+             "beacon.power",
+             "block.bell.hit",
+             "conduit.activate",
+             "item.trident.thunder",
+             "item.trident.riptide_1",
+             "item.trident.throw",
+             "item.shield.block",
+             "fire.ignite",
+             "dig.stone",
+             "bucket.fill_water",
+             "wind_charge.burst",
+             "mace.smash_ground",
+             "mace.heavy_smash_ground",
+             "note.pling",
+             "note.bell",
+             "respawn_anchor.charge",
+             "block.end_portal.spawn",
+             "chime.amethyst_block",
+             "break.amethyst_block"
+            ]
+           },
+           "volume": {
+            "type": "number"
+           },
+           "pitch": {
+            "type": "number"
+           },
+           "effect": {
+            "type": "string",
+            "enum": [
+             "speed",
+             "slowness",
+             "haste",
+             "mining_fatigue",
+             "strength",
+             "instant_health",
+             "instant_damage",
+             "jump_boost",
+             "nausea",
+             "regeneration",
+             "resistance",
+             "fire_resistance",
+             "water_breathing",
+             "invisibility",
+             "blindness",
+             "night_vision",
+             "hunger",
+             "weakness",
+             "poison",
+             "wither",
+             "health_boost",
+             "absorption",
+             "saturation",
+             "levitation",
+             "slow_falling",
+             "conduit_power",
+             "darkness",
+             "wind_charged",
+             "weaving",
+             "oozing",
+             "infested"
+            ]
+           },
+           "duration_seconds": {
+            "type": "number"
+           },
+           "amplifier": {
+            "type": "integer"
+           },
+           "entity": {
+            "type": "string",
+            "enum": [
+             "minecraft:lightning_bolt",
+             "minecraft:small_fireball",
+             "minecraft:fireball",
+             "minecraft:wither_skull",
+             "minecraft:dragon_fireball",
+             "minecraft:evocation_fang",
+             "minecraft:tnt",
+             "minecraft:arrow",
+             "minecraft:snowball",
+             "minecraft:wind_charge_projectile",
+             "minecraft:xp_orb",
+             "minecraft:wolf",
+             "minecraft:iron_golem",
+             "minecraft:snow_golem",
+             "minecraft:bee",
+             "minecraft:vex",
+             "minecraft:allay",
+             "minecraft:zombie",
+             "minecraft:skeleton",
+             "minecraft:silverfish",
+             "minecraft:egg",
+             "minecraft:shulker_bullet",
+             "minecraft:llama_spit",
+             "minecraft:thrown_trident",
+             "minecraft:xp_bottle"
+            ]
+           },
+           "speed": {
+            "type": "number"
+           },
+           "block": {
+            "type": "string",
+            "enum": [
+             "minecraft:cobblestone",
+             "minecraft:stone",
+             "minecraft:deepslate",
+             "minecraft:obsidian",
+             "minecraft:crying_obsidian",
+             "minecraft:ice",
+             "minecraft:packed_ice",
+             "minecraft:blue_ice",
+             "minecraft:glass",
+             "minecraft:tinted_glass",
+             "minecraft:web",
+             "minecraft:magma",
+             "minecraft:sand",
+             "minecraft:gravel",
+             "minecraft:dirt",
+             "minecraft:oak_leaves",
+             "minecraft:powder_snow",
+             "minecraft:snow",
+             "minecraft:amethyst_block",
+             "minecraft:glowstone",
+             "minecraft:sea_lantern",
+             "minecraft:netherrack",
+             "minecraft:soul_sand",
+             "minecraft:honey_block",
+             "minecraft:slime",
+             "minecraft:end_stone",
+             "minecraft:basalt",
+             "minecraft:iron_bars"
+            ]
+           },
+           "fill_from": {
+            "type": "string"
+           },
+           "fill_to": {
+            "type": "string"
+           },
+           "decay_ticks": {
+            "type": "integer"
+           },
+           "horizontal_strength": {
+            "type": "number"
+           },
+           "vertical_strength": {
+            "type": "number"
+           },
+           "command": {
+            "type": "string"
+           },
+           "actionbar_text": {
+            "type": "string"
+           },
+           "teleport_destination": {
+            "type": "string"
+           },
+           "heal_amount": {
+            "type": "number"
+           },
+           "damage_amount": {
+            "type": "number"
+           },
+           "launch_up": {
+            "type": "number"
+           },
+           "launch_forward": {
+            "type": "number"
+           },
+           "state_action": {
+            "type": "string",
+            "enum": [
+             "toggle",
+             "advance",
+             "reset"
+            ]
+           }
+          },
+          "required": [
+           "type"
+          ],
+          "additionalProperties": false
+         }
+        }
+       },
+       "required": [
+        "name",
+        "steps"
+       ],
+       "additionalProperties": false
+      }
+     },
+     "additionalProperties": false
+    }
+   },
+   "additionalProperties": false
+  }
+ },
+ "required": [
+  "item_name",
+  "item_description",
+  "theme",
+  "script"
+ ],
+ "additionalProperties": false
+}
