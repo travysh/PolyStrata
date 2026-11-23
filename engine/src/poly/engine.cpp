@@ -17,6 +17,7 @@
 #include "mmq.hpp"
 #include "qwen35.hpp"
 #include "runtime.hpp"
+#include "vocab_text.hpp"
 #include "strata/poly/kernels.hpp"
 #if defined(STRATA_GPU_METAL)
 #include "strata/core/conversation_memory.hpp"
@@ -1731,6 +1732,12 @@ void Engine::load_shape() {
     const MetaValue* vocab = meta_in(*gg_, "vocab_size");
     const TensorInfo* te = gg_->find("token_embd.weight");
     n_vocab_ = vocab ? (int) vocab->u : te && te->shape.size() == 2 ? (int) te->shape[1] : 0;
+    {   // the tokens' bytes, for a grammar (src/poly/grammar.hpp); a model whose tokenizer is not byte-level BPE has none
+        const MetaValue* model = gg_->get("tokenizer.ggml.model");
+        if (model && model->type == MetaType::STRING)
+            token_texts_ = gpt2_token_texts(model->s, gg_->first().string_array("tokenizer.ggml.tokens"),
+                                            gg_->first().int_array("tokenizer.ggml.token_type"), n_vocab_);
+    }
     rms_eps_ = shape_f("attention.layer_norm_rms_epsilon");
     n_expert_ = shape_i("expert_count");
     n_used_ = shape_i("expert_used_count");

@@ -154,6 +154,7 @@ public:
     }
 
     const MetaValue* get(const std::string& key) const { return files_[0]->get(key); }
+    const GgufFile& first() const { return *files_[0]; }
     const std::vector<std::string>& paths() const { return paths_; }
     const TensorInfo* find(const std::string& name) const {
         const auto it = where_.find(name);

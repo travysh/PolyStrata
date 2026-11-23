@@ -8,8 +8,10 @@
 #include "conversations.hpp"
 #include "engine.hpp"
 #include "guesses.hpp"
+#include "sampler.hpp"
 #include "strata/core/conversation_file.hpp"
 #include "strata/core/conversation_memory.hpp"
+#include "strata/core/logit_bias.hpp"
 #include "strata/spec/draft_policy.hpp"
 #include "strata/spec/suffix_drafter.hpp"
 
@@ -58,6 +60,8 @@ using strata::poly::Engine;
 using strata::poly::Guesses;
 using strata::poly::KvFmt;
 using strata::poly::Options;
+using strata::poly::Sampler;
+using strata::poly::Sampling;
 using Clock = std::chrono::steady_clock;
 
 double ms_since(Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); }
@@ -93,109 +97,6 @@ constexpr size_t kSessionPiece = 16u << 20;
 constexpr uint64_t kSessionFreeMib = 4096;
 constexpr uint64_t kSessionFrame = sizeof kSessionMagic + 8 + 8;   // around the conversation's bytes: the magic,
                                                                    // what the file is bound to, the hash
-
-struct Sampling {
-    float temperature = 0.f;   // 0: the most likely token
-    float top_p = 1.f, min_p = 0.f;
-    int top_k = 20;            // 0: no limit
-    int penalty_last_n = 0;
-    float penalty_repeat = 1.f, penalty_freq = 0.f, penalty_present = 0.f;
-    unsigned long long seed = 0;
-};
-
-// llama.cpp's sampler chain in its default order: penalties, top-k, top-p, min-p, temperature, then the draw.
-class Sampler {
-public:
-    /// pick() is most_likely() of the logits as they are: no temperature and no penalty.
-    static bool greedy(const Sampling& s) { return s.temperature <= 0.f && !penalizes(s); }
-
-    int pick(const float* logits, int n_vocab, const Sampling& s, const std::vector<int32_t>& history,
-             std::mt19937_64& rng) {
-        if (penalizes(s)) {
-            pen_.assign(logits, logits + n_vocab);
-            penalize(s, history);
-            logits = pen_.data();
-        }
-        if (s.temperature <= 0.f) return strata::poly::most_likely(logits, n_vocab);
-
-        // The k best, the best first and of equals the lower id.  A token is a candidate only when it beats the
-        // worst of the k so far, which is the heap's first; most of a vocabulary never does.
-        auto by_logit = [](const Cand& a, const Cand& b) { return a.logit != b.logit ? a.logit > b.logit : a.id < b.id; };
-        const size_t k = s.top_k > 0 ? std::min((size_t) s.top_k, (size_t) n_vocab) : (size_t) n_vocab;
-        cand_.clear();
-        for (int i = 0; i < n_vocab; ++i) {
-            if (cand_.size() == k) {
-                if (!(logits[i] > cand_.front().logit)) continue;   // an equal with a higher id is no better
-                std::pop_heap(cand_.begin(), cand_.end(), by_logit);
-                cand_.back() = {logits[i], i};
-            } else {
-                cand_.push_back({logits[i], i});
-            }
-            std::push_heap(cand_.begin(), cand_.end(), by_logit);
-        }
-        std::sort_heap(cand_.begin(), cand_.end(), by_logit);
-
-        if (s.top_p < 1.f) {
-            softmax();
-            double cum = 0.0;
-            size_t keep = cand_.size();
-            for (size_t i = 0; i < cand_.size(); ++i) {
-                cum += p_[i];
-                if (cum >= s.top_p) {
-                    keep = i + 1;
-                    break;
-                }
-            }
-            cand_.resize(keep);
-        }
-        if (s.min_p > 0.f) {
-            const float floor = cand_[0].logit + std::log(s.min_p);
-            size_t keep = 1;
-            while (keep < cand_.size() && cand_[keep].logit >= floor) ++keep;
-            cand_.resize(keep);
-        }
-        for (Cand& c : cand_) c.logit /= s.temperature;
-        softmax();
-        return cand_[std::discrete_distribution<size_t>(p_.begin(), p_.end())(rng)].id;
-    }
-
-private:
-    struct Cand {
-        float logit;
-        int id;
-    };
-
-    static bool penalizes(const Sampling& s) {
-        return s.penalty_last_n != 0 &&
-               (s.penalty_repeat != 1.f || s.penalty_freq != 0.f || s.penalty_present != 0.f);
-    }
-
-    // on pen_, the logits' copy
-    void penalize(const Sampling& s, const std::vector<int32_t>& history) {
-        const size_t n = s.penalty_last_n < 0 ? history.size() : std::min(history.size(), (size_t) s.penalty_last_n);
-        seen_.clear();
-        for (size_t i = history.size() - n; i < history.size(); ++i) ++seen_[history[i]];
-        for (const auto& [id, count] : seen_) {
-            float& l = pen_[(size_t) id];
-            l = l <= 0.f ? l * s.penalty_repeat : l / s.penalty_repeat;
-            l -= (float) count * s.penalty_freq + s.penalty_present;
-        }
-    }
-
-    void softmax() {
-        p_.resize(cand_.size());
-        float mx = cand_[0].logit;
-        for (const Cand& c : cand_) mx = std::max(mx, c.logit);
-        double sum = 0.0;
-        for (size_t i = 0; i < cand_.size(); ++i) sum += p_[i] = std::exp((double) (cand_[i].logit - mx));
-        for (double& p : p_) p /= sum;
-    }
-
-    std::vector<Cand> cand_;
-    std::vector<float> pen_;
-    std::vector<double> p_;
-    std::unordered_map<int32_t, int> seen_;
-};
 
 bool parse_ids(const char* s, std::vector<int32_t>& out) {
     out.clear();
@@ -391,7 +292,14 @@ struct Session {
         : engine(e), eos(std::move(eos_ids)), flags(f), kept(e, with_floor(f)),
           most(lookup > 0 || e.drafts() ? std::min<int>(e.max_window(), strata::spec::DraftPolicy::kMaxT) : 1),
           look(lookup > 0 && most > 1),
-          repeats(std::max(lookup, 3), 64, (size_t) e.max_context() + 4096), policy(most) {}
+          repeats(std::max(lookup, 3), 64, (size_t) e.max_context() + 4096), policy(most) {
+        vocab.pieces = e.token_texts();
+        vocab.eog = eos;
+    }
+
+    // A grammar can be applied when the model's tokens have texts (byte-level BPE) and there is a token to end with.
+    llama_vocab vocab;
+    bool grammars() const { return !vocab.pieces.empty() && !vocab.eog.empty(); }
 
     static CacheOptions with_floor(const CacheFlags& f) {
         CacheOptions o = f.o;
@@ -539,6 +447,7 @@ struct Session {
             ++r.produced;
             history.push_back(t);
             if (look) repeats.append(t);
+            if (s.grammar) s.grammar->accept(t);
             if (is_eos(t)) r.finish = "stop";
             else if (stop.load()) r.finish = "cancel";
             else return r.produced < max_new;
@@ -611,6 +520,26 @@ struct Session {
     }
 };
 
+// Standard base64 (RFC 4648, with or without the = padding), or false for anything else.
+bool base64_decode(const std::string& in, std::string& out) {
+    static const char* const kAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    out.clear();
+    uint32_t acc = 0;
+    int bits = 0;
+    for (const char c : in) {
+        if (c == '=') break;
+        const char* at = std::strchr(kAlphabet, c);
+        if (c == '\0' || !at) return false;
+        acc = (acc << 6) | (uint32_t) (at - kAlphabet);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back((char) ((acc >> bits) & 0xFF));
+        }
+    }
+    return true;
+}
+
 // GEN <max_new> [key=value ...] <id,id,...>, or GENI with the file of the prompt's pictures ahead of the ids and
 // the key image_pad, the token whose runs in the ids are the pictures' places.  turn_at is the place in the ids
 // where the prompt's last turn begins (the server knows the template's turn tokens): a checkpoint goes there.
@@ -645,6 +574,8 @@ bool parse_gen(const std::string& line, long long& max_new, Sampling& s, int32_t
         else if (key == "seed") s.seed = std::strtoull(v, nullptr, 10);
         else if (key == "image_pad") pad = (int32_t) std::atoi(v);
         else if (key == "turn_at") turn_at = std::strtoll(v, nullptr, 10);
+        else if (key == "logit_bias") s.bias_text = v;
+        else if (key == "grammar") s.grammar_text = v;
         // other keys belong to the other engine and are skipped
     }
     pictures.clear();
@@ -902,10 +833,10 @@ int serve(Session& ss) {
                          ss.pinned.c_str(), why.c_str());
     }
     engine.trim();
-    std::printf("INFO context=%d expert_slots=%d expert_cache_mib=%lld pool_workers=%d conversation_cache_mib=%lld "
+    std::printf("INFO logit_bias=1%s context=%d expert_slots=%d expert_cache_mib=%lld pool_workers=%d conversation_cache_mib=%lld "
                 "conversation_cache_slots=%d conversation_cache_min_free_mib=%lld vram_free_mib=%lld vram_elastic=1 "
                 "batch_slots=%d co_read=%d sessions=1 pinned_tokens=%lld engine=" STRATA_VERSION "\n",
-                engine.max_context(), engine.cached_experts(), (long long) (engine.cached_gib() * 1024.0),
+                ss.grammars() ? " grammar=1" : "", engine.max_context(), engine.cached_experts(), (long long) (engine.cached_gib() * 1024.0),
                 engine.threads(), (long long) ss.flags.o.park_mib, ss.flags.o.park_slots, ss.flags.min_free_mib,
                 (long long) engine.vram_free_mib(), (int) slots.size(), !slots.empty() && engine.co_reads() ? 1 : 0,
                 (long long) ss.kept.pinned_tokens());
@@ -945,9 +876,7 @@ int serve(Session& ss) {
         // every slot greedy with no penalty: the card picks, Sampler::pick()'s most_likely() to the token
         const bool on_card = std::all_of(which.begin(), which.end(), [&](size_t b) {
             const Sampling& s = slots[b].s;
-            return s.temperature <= 0.f &&
-                   (s.penalty_last_n == 0 ||
-                    (s.penalty_repeat == 1.f && s.penalty_freq == 0.f && s.penalty_present == 0.f));
+            return Sampler::greedy(s);
         });
         try {
             if (guessing) {
@@ -1261,6 +1190,35 @@ int serve(Session& ss) {
             std::printf("ERR a token id is outside the vocabulary\n");
             std::fflush(stdout);
             continue;
+        }
+        if (!s.bias_text.empty()) {
+            std::string err;
+            if (!strata::core::parse_logit_bias(s.bias_text, engine.n_vocab(), s.bias, err)) {
+                std::printf("ERR logit_bias: %s\n", err.c_str());
+                std::fflush(stdout);
+                continue;
+            }
+        }
+        std::unique_ptr<strata::poly::Grammar> grammar;   // this request's, where its answer has got to
+        if (!s.grammar_text.empty()) {
+            std::string text, err;
+            if (!ss.grammars()) {
+                err = "this model's tokenizer is not one a grammar can be matched against";
+            } else if (ss.follow) {
+                err = "not with --follow";
+            } else if (!slots.empty()) {
+                err = "not with --batch";
+            } else if (!base64_decode(s.grammar_text, text)) {
+                err = "not base64";
+            } else {
+                grammar = strata::poly::Grammar::parse(text, ss.vocab, err);
+            }
+            if (!grammar) {
+                std::printf("ERR grammar: %s\n", err.c_str());
+                std::fflush(stdout);
+                continue;
+            }
+            s.grammar = grammar.get();
         }
         std::string wrong;
         if (file.empty()) pictures = Pictures{};

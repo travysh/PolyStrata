@@ -320,6 +320,7 @@ public:
         return s;
     }
     size_t pos() const { return pos_; }
+    void seek(size_t p) { pos_ = p; }
 
 private:
     const uint8_t* base_;
@@ -437,7 +438,40 @@ public:
     }
     const uint8_t* tensor_data(const TensorInfo& t) const { return base_ + data_start_ + t.offset; }
 
+    // The whole of a tokenizer.ggml.* array (metadata() keeps a sample of 64).  Empty when the key is not there or
+    // holds another type.
+    std::vector<std::string> string_array(const std::string& key) const {
+        std::vector<std::string> out;
+        Cursor c(base_, size_);
+        uint64_t n = 0;
+        if (!array_head(c, key, MetaType::STRING, n)) return out;
+        out.reserve((size_t)n);
+        for (uint64_t i = 0; i < n; ++i) out.push_back(c.str());
+        return out;
+    }
+    std::vector<int32_t> int_array(const std::string& key) const {
+        std::vector<int32_t> out;
+        Cursor c(base_, size_);
+        const auto it = array_at_.find(key);
+        if (it == array_at_.end()) return out;
+        c.seek(it->second);
+        const MetaType elem = (MetaType)c.read<uint32_t>();
+        if (elem != MetaType::I32 && elem != MetaType::U32) return out;
+        const uint64_t n = c.read<uint64_t>();
+        out.reserve((size_t)n);
+        for (uint64_t i = 0; i < n; ++i) out.push_back(c.read<int32_t>());
+        return out;
+    }
+
 private:
+    bool array_head(Cursor& c, const std::string& key, MetaType want, uint64_t& n) const {
+        const auto it = array_at_.find(key);
+        if (it == array_at_.end()) return false;
+        c.seek(it->second);
+        if ((MetaType)c.read<uint32_t>() != want) return false;
+        n = c.read<uint64_t>();
+        return true;
+    }
     void open() {
 #ifdef _WIN32
         HANDLE h = CreateFileA(path_.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
@@ -500,6 +534,7 @@ private:
         for (uint64_t i = 0; i < n_kv; ++i) {
             std::string key = c.str();
             MetaType t = (MetaType)c.read<uint32_t>();
+            if (t == MetaType::ARRAY && key.rfind("tokenizer.ggml.", 0) == 0) array_at_[key] = c.pos();
             meta_.emplace(std::move(key), read_value(c, t));
         }
         tensors_.reserve((size_t)n_tensors);
@@ -546,6 +581,7 @@ private:
 #endif
     std::vector<TensorInfo> tensors_;
     std::map<std::string, MetaValue> meta_;
+    std::map<std::string, size_t> array_at_;   // tokenizer.ggml.* arrays: where the elem type is
 };
 
 // Bytes of a tensor's payload from its shape and block geometry; 0 when the type is unknown, a row is not whole

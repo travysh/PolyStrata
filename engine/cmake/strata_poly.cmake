@@ -16,6 +16,12 @@ if(STRATA_BUILD_TESTS)
   add_executable(poly_guesses_test src/poly/guesses_test.cpp src/spec/draft_policy.cpp)
   target_include_directories(poly_guesses_test PRIVATE include)
   add_test(NAME poly_guesses_test COMMAND poly_guesses_test)
+  add_executable(poly_sampler_test src/poly/sampler_test.cpp src/poly/grammar.cpp)
+  target_include_directories(poly_sampler_test PRIVATE include src/poly)
+  add_test(NAME poly_sampler_test COMMAND poly_sampler_test)
+  add_executable(poly_grammar_test src/poly/grammar_test.cpp src/poly/grammar.cpp)
+  target_include_directories(poly_grammar_test PRIVATE include src/poly)
+  add_test(NAME poly_grammar_test COMMAND poly_grammar_test)
 
 endif()
 
@@ -194,7 +200,7 @@ if(STRATA_BUILD_POLY AND STRATA_NATIVE_EXPERTS AND (STRATA_ENABLE_CUDA OR STRATA
                          ${_strata_gpu_blas_target} ${_strata_gpu_runtime_target} CUDA::cuda_driver Threads::Threads)
   endif()
 
-  add_executable(strata-poly src/poly/main.cpp src/poly/engine.cpp src/poly/expert_card.cpp src/poly/glm5next.cpp src/poly/qwen35.cpp
+  add_executable(strata-poly src/poly/main.cpp src/poly/grammar.cpp src/poly/engine.cpp src/poly/expert_card.cpp src/poly/glm5next.cpp src/poly/qwen35.cpp
                             src/poly/gemma4.cpp src/poly/deepseek4.cpp src/poly/lfm2moe.cpp src/poly/flint.cpp
                             src/poly/kolibri1.cpp src/poly/laguna.cpp src/poly/inkling2.cpp src/poly/inkling2_pictures.cpp src/poly/inkling2.cu src/poly/cpu_experts.cpp src/poly/kernels.cu src/poly/kernels_dsv4.cu
                             src/poly/spill.cpp src/core/conversation_memory.cpp src/core/conversation_file.cpp)
