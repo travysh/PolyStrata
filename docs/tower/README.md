@@ -1442,6 +1442,35 @@ on: 400 tokens after a short prompt x4, 300 after 11K x2) on new, current, and n
 - After 11K the two scripts disagree: equal with thinking on, 26% slower with thinking off. `ldecode.py` records no
   draft acceptance, and one 300-token answer a run is noisy. Not settled.
 
+**Against 0.1.45, the baseline** (the image Tower ran before Pass 18, `tower-893468a5`, with its template's
+`STRATA_FATTN=1`, `STRATA_FDEC=1`, `STRATA_CPU_DOWN_ORDER=1`; `p20/o.sh`). `p20/chain2.sh` ran 0.1.45, new, 0.1.45, new,
+the same set as above plus `dprobe.py` after `ldecode.py`. Both 0.1.45 runs logged all three switches on.
+
+| | 0.1.45 | 0.2.20 hotfix | |
+|---|---|---|---|
+| `features.py` | all ok | all ok | |
+| read 11K (runs 1-3) | 7.65-8.01 s | 5.56-5.76 s | -28% |
+| read 32K (A1, B1) | 17.8-18.1 s | 13.8-13.9 s | -23% |
+| read 64K (A1, B1) | 35.6-36.6 s | 28.3-29.2 s | -20% |
+| back to A after B, 32K / 64K (A2) | 3.0 / 4.9-5.0 s | 0.6-0.8 / 0.9-1.6 s | |
+| decode after a short prompt, `runbench.sh` (runs 2-4; mean) | 64.4-79.1 (74.8) | 71.3-77.3 (73.4) | -2% |
+| decode after a short prompt, `dprobe.py` (runs 2-4; mean) | 75.0-79.9 (77.4) | 60.3-70.8 (67.7) | -13% |
+| draft acceptance there | 77-85% | 79-89% | |
+| decode after 11K, thinking on (`dprobe.py`) | 72.9-77.2 | 68.3-72.1 | -6% |
+| decode after 11K, thinking off (`ldecode.py`) | 65.9-66.6 | 48.7-52.8 | -23% |
+| decode after 32K, thinking off | 72.7-74.9 | 57.8-63.3 | -17% |
+| decode after 64K, thinking off | 70.8-72.9 | 55.2-60.5 | -20% |
+| engine RSS after the set | 23.0-23.7 GB | 18.8-19.6 GB | |
+
+- Every prompt read is faster, and going back to a conversation after another one is 3-5 times faster.
+- **Decode is slower than 0.1.45**, most after a long prompt (17-23% at 11K-64K with thinking off). Draft acceptance is
+  the same, so each step costs more: about 14-15 ms a token against 12.5-13.3. The 0.2.19 image is slower still after
+  64K (48.5-54.0). The decode kernel's fix recovers part of what 0.2.x lost there, not all of it.
+- `dprobe.py`'s short decode is lower on the new image when it runs after `ldecode.py`'s long prompts (60.3-70.8) than
+  when it runs first (72.3-80.6, the probe above). 0.1.45 does not show that.
+- The 0.1.45 image's own copies of the grammar, logit_bias and prefill unit tests fail 2 of 46; its `features.py` run is
+  clean. Its tests are not the ones the new image runs.
+
 **Not checked:** GLM's models, the add-on pattern, a long agent session.
 
 **To make it live** (not done): `docker tag polystrata:next-aadae31e polystrata:tower`, then

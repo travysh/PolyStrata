@@ -17,6 +17,7 @@ docker exec polystrata-next sh -c "$P .venv/bin/python /data/features.py"
 docker exec polystrata-next sh -c "$P .venv/bin/python -m unittest serve.test_grammar serve.test_logit_bias serve.test_prefill 2>&1 | tail -3"
 docker exec polystrata-next sh -c "$P sh /data/runbench.sh $L .venv/bin/python"
 docker exec polystrata-next sh -c "$P .venv/bin/python /data/ldecode.py $L-ldec 8000 24000 48000"
+docker exec polystrata-next sh -c "$P .venv/bin/python /data/dprobe.py $L-dp"
 docker exec polystrata-next sh -c "grep -hE 'STRATA_FATTN|STRATA_FDEC|error|Error' /opt/strata/terminal/*.log | sort | uniq -c | head -20"
 echo "== done $(date)"
 } > $O 2>&1
