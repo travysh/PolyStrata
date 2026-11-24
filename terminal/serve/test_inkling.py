@@ -222,6 +222,22 @@ class ServiceForInkling(unittest.TestCase):
                        if kind == "event"]
                 self.assertEqual((said(evs, "reasoning"), said(evs, "content")), (reasoning, "Rome"))
 
+    def test_a_prefill_goes_on_in_the_text_block_the_prompt_opened(self):
+        # (tower) the prefill's tokens follow the text block's opening, and the reply ends that block: its end is not text
+        for history in ([], [{"role": "user", "content": "x"}]):
+            with self.subTest(turns=len(history)):
+                ids, _, _ = self.svc.prepare(self.chat + history, None, {"enable_thinking": False}, 64, prefill="one, two,")
+                self.svc.engine = MockEngine(self.tok, " three" + END + STOP)
+                evs = [e for kind, e in self.svc.run(ids, False, None, 64, {}, threading.Event()) if kind == "event"]
+                self.assertEqual(said(evs, "content"), " three")
+
+    def test_a_closed_text_block_in_the_prompt_is_not_an_open_one(self):
+        # an earlier reply's text block ends with <|end_message|>: a prompt that ends after it has no block open
+        ids = self.tok.encode("<|message_user|>hi" + END + TEXT, parse_special=True)
+        self.svc.engine = MockEngine(self.tok, TEXT + STOP)
+        evs = [e for kind, e in self.svc.run(ids, False, None, 64, {}, threading.Event()) if kind == "event"]
+        self.assertEqual(said(evs, "content"), "Rome")
+
     def test_a_named_tool_choice_is_opened_once_the_thinking_is_closed(self):
         # the model thinks; the server writes the call's opening right after the closed thinking block, in place of
         # the text block the model would open, and the model goes on with the arguments

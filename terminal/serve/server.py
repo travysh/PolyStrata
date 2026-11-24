@@ -465,6 +465,19 @@ def inkling_template_kwargs(kwargs: dict) -> dict:
     return {**rest, "reasoning_effort": level}
 
 
+def open_block_at_end(ids: list, opening: list, end_id: int) -> bool:
+    """(tower) Whether a prompt ends inside the block `opening` began: read back from its end, the opening comes before
+    any `end_id`.  An assistant prefill's text (encoded with no special tokens) follows the opening; an earlier reply's
+    block in the history ends with `end_id`."""
+    n = len(opening)
+    for i in range(len(ids) - 1, n - 2, -1):
+        if ids[i] == end_id:
+            return False
+        if ids[i - n + 1:i + 1] == opening:
+            return True
+    return False
+
+
 def closed_with(text: str, think_end: str) -> str:
     """REASONING_CLOSE or REASONING_WRAP_UP for a model whose thinking ends with think_end (OutputParser).  Gemma 4
     ends it with <channel|>, its answer right after: a </think> there is text inside the thought, and the model
@@ -4432,6 +4445,7 @@ class Service:
         if self.call_format == "inkling":       # its replies are typed blocks, whatever its template says of tools
             self.parser_cls = InklingOutputParser
             self.text_open_ids = tokenizer.encode(INK_TEXT_OPEN, parse_special=True)
+            self.text_end_id = tokenizer.encode(INK_END, parse_special=True)[0]
             self._force_text = inkling_forced_call
         openers = TURN_OPENERS_OF_PRE.get(pre) or TURN_OPENERS[self.call_format]
         # templates that read a tool as OpenAI sends it, {"type": "function", "function": {...}}: Gemma's and DeepSeek's
@@ -6411,7 +6425,8 @@ class Service:
                 budget = max(1, max_new - reserve)
         opened = bool(self.think_open_ids) and ids[-len(self.think_open_ids):] == self.think_open_ids
         if self.text_open_ids:                          # Inkling 2: the prompt opened the reply's text block
-            opened = ids[-len(self.text_open_ids):] == self.text_open_ids
+            # (tower) also with an assistant prefill after the opening (prepare(prefill=...))
+            opened = open_block_at_end(ids, self.text_open_ids, self.text_end_id)
         parser = self.parser_cls(thinking=thinking, tools=with_history_tools(tools, sampling), stream_tools=True,
                                  recover=self.tool_call_recovery, declared_only=declared_only,
                                  deferred=deferred or self.undeclared_tool_calls == "call",   # #4622: opt-in, as for a deferred tool
