@@ -1384,11 +1384,69 @@ reason. Its keys now go in splits of 256 (`kSplit`, 1,024 in 0.1.45). Its scratc
 **Not checked:** whether the two 0.2.19 builds give the same answers token for token (the kernels round
 differently), GLM's models, and the add-on pattern on `p19-mmq`.
 
+**Not taken (2026-11-23).** Strata has moved away from llama.cpp, so Tower stays on upstream's default build.
+Upstream put the prompt kernel back in that build the next day (Pass 20). What follows is kept for the record.
 **To make it live** (not done): `docker tag polystrata:p19-mmq polystrata:tower`, then `rebuild_container PolyStrata`,
 `docker start PolyStrata`. The template already names `polystrata:tower`. Rollback: tag
 `polystrata:tower-c868922e` back. For the next image build, add the two `-D` options to `p18/Dockerfile`'s engine step.
 `setup.build_engine_poly` passes `STRATA_GGML_DIR` from the environment but has no switch for `STRATA_POLY_MMQ`, so
 the build has to call CMake itself, as `p19/Dockerfile` does.
+
+## Pass 20: PolyStrata 0.2.20-poly.4-hotfix (2026-11-23)
+
+Upstream fixed both kernels Pass 19 found off, in the build without llama.cpp, in 0.2.20-poly.2:
+
+- `113e80ace`: the prompt flash-attention kernel cut down to the one case strata-poly launches (heads of 256, Ampere
+  or later), with no llama.cpp header. Found from issue 263 (an RTX 3080's 122K read 29% slower than on 0.1.45).
+- `cc02708a1`: the decode kernel (FDEC) takes 1,024 keys a block where 256 do not fit the scratch. The same shortfall
+  as Pass 19 (16,908,288 floats needed, 16,777,216 there at 262,144 positions).
+
+**The branch.** `tower-next` `aadae31ea` merges `v0.2.20-poly.4-hotfix` into `4da66d8cb` (our logit_bias, grammar,
+constrained JSON and prefill ports). Two conflicts: `engine.cpp` keeps both includes; `server.py` keeps the grammar
+block and both new flags (`--constrained-decoding`, upstream's `--strict-model`). Upstream's new second `prepare()` on
+the Anthropic path (#6460, unasked thinking turned off near the context limit) passes `prefill` as the first one does.
+Image `polystrata:next-aadae31e`, built from `next/` as before (the Dockerfile is Pass 18's). Its engine log says
+`STRATA_FATTN: prompt attention through llama.cpp's flash-attention kernel` and `STRATA_FDEC: decode attention
+through the tensor-core decode kernel from 4,096 tokens of context`. **Not live yet**: the decode loss below is open.
+
+**How it was measured.** `p20/t.sh` runs the test container with live's environment and config; `p20/chain.sh` ran
+new, current (`tower-c868922e`), new, current. Each run: `features.py`, the three ported features' unit tests inside the
+image, `runbench.sh` (decode, `bench_11k.py`, `aba.py` 32K and 64K, RSS) and `p20/ldecode.py` (300 tokens with
+thinking off, after 11K, 32K and 64K). Then `p20/pchain.sh` ran `p20/dprobe.py` (decode with draft acceptance, thinking
+on: 400 tokens after a short prompt x4, 300 after 11K x2) on new, current, and new with `STRATA_FDEC=0`.
+
+| | 0.2.19 as live (`c868922e`) | 0.2.20 hotfix (`aadae31e`) |
+|---|---|---|
+| `features.py`; grammar, logit_bias and prefill unit tests | all ok; 46 ok | all ok; 46 ok |
+| read 11K (runs 1-3, both rounds) | 5.95-6.24 s | 5.64-6.03 s (one 7.40, first after load) |
+| read 32K (A1, B1) | 17.0-17.3 s | 13.7-14.6 s |
+| read 64K (A1, B1) | 41.8-43.7 s | 29.1-30.0 s |
+| follow-ups on a cached 32K or 64K prompt | 0.4-1.6 s | 0.4-1.6 s |
+| decode after a short prompt, `runbench.sh` (runs 2-4) | 79.8-87.0 tok/s | 67.0-74.3 |
+| decode after a short prompt, `dprobe.py` (4 runs; mean) | 78.7-85.8 (83.0) | 72.3-80.6 (75.7) |
+| draft acceptance there | 73-86% | 79-83% |
+| decode after 11K, thinking on (`dprobe.py`) | 75.6-79.7 | 75.5-76.7 |
+| decode after 11K, thinking off (`ldecode.py`) | 60.9-65.5 | 41.6-49.7 |
+| decode after 32K, thinking off | 56.0-63.2 | 57.5-59.9 |
+| decode after 64K, thinking off | 48.5-54.0 | 57.4-60.1 |
+| engine RSS after the set | 18.4-19.2 GB | 17.7-18.6 GB |
+
+- Prompt reads: 64K 30% faster, 32K 17% faster, and 64K is now 6 s under 0.1.45's 35-36 s.
+- Decode at 64K: 11% faster on the mean, the decode kernel's work.
+- **Decode after a short prompt is 9% slower** (dprobe means 83.0 -> 75.7 tok/s, about 1.1 ms more a token). Draft
+  acceptance is the same, and `STRATA_FDEC=0` leaves it where it is (72.3-80.5, mean 75.8), so it is neither the
+  drafts nor the decode kernel (which starts at 4,096 positions anyway). Not found yet. Upstream engine commits on
+  this path since 0.2.19 include `5d25761c1` (upload order), `e7f467548` (four weight rows a call in the CPU experts'
+  products), `034399e2a` (cached experts' offsets sent by a kernel) and the Strata 0.2.20 merge (`d28c053e6`, 8 GB and
+  12 GB cards).
+- After 11K the two scripts disagree: equal with thinking on, 26% slower with thinking off. `ldecode.py` records no
+  draft acceptance, and one 300-token answer a run is noisy. Not settled.
+
+**Not checked:** GLM's models, the add-on pattern, a long agent session.
+
+**To make it live** (not done): `docker tag polystrata:next-aadae31e polystrata:tower`, then
+`/usr/local/emhttp/plugins/dynamix.docker.manager/scripts/rebuild_container PolyStrata`, `docker start PolyStrata`.
+Rollback: tag `polystrata:tower-c868922e` back.
 
 ## Shared-load changes (2026-10-17)
 
