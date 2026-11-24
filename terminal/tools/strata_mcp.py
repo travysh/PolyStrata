@@ -16,7 +16,7 @@ background processes this server starts itself; it keeps their process id and st
 ever stops a process it started (a PolyStrata started elsewhere, e.g. from its own window, is only asked over its API to
 unload the model).
 
-Not to be confused with serve/mcp.py: that is PolyStrata's MCP *client* (the model calling your tools from the chat page).
+Not to be confused with serve/mcp.py: that is PolyStrata's MCP *client* (the model calling your tools, for a request that asks).
 This file is an MCP *server* for the AI assistant you already use.
 """
 from __future__ import annotations
@@ -165,8 +165,8 @@ FALLBACK_FAMILIES = {
                          "Q8_0": {"about": "8-bit throughout: the closest to the model as trained",
                                   "download_gb": 25.5, "ram_gb": 31, "arena_gb": 24.4}}},
     "inkling": {"title": "Inkling 2 Mini",
-                "about": "experimental, on the strata-poly engine: one NVIDIA card, Linux or Windows, or a Mac (beta), "
-                         "reads pictures; a 17.6 GB file, or 13.6 or 9.1 GB",
+                "about": "experimental, on the strata-poly engine: one NVIDIA card, Linux or Windows, or a Mac (beta); "
+                         "AMD cards are not ready (docs/models/inkling.md); reads pictures; a 17.6 GB file, or 13.6 or 9.1 GB",
                 "tag": "inkling-", "engine": "poly", "vision": True, "experimental": True,
                 "models": {"UD-Q4_K_XL": {"about": "4-bit experts (NVFP4, Unsloth Dynamic), 8-bit where they write",
                                           "download_gb": 17.6, "ram_gb": 21, "arena_gb": 15.797846016},
@@ -734,6 +734,7 @@ class Strata:
         # tests: the interpreter that runs setup / the server. The app's Control runs the installer on its own Python.
         self.python_override: str | None = sys.executable if CONTROL else None
         self.health_timeout = 2.0
+        self._non_strata_ports: set[int] = set()        # #6475: unconfigured fallback ports that already answered as non-PolyStrata
 
     # ---- setup.py's own tables and logic
     def setup_module(self):
@@ -811,14 +812,17 @@ class Strata:
         from strata_control import hy4_fit
         uni = next((g for g in usable if g.get("unified_gb")), None)
         uma = next((g for g in usable if g.get("uma")), None)
+        extra_vram_gib = 0.0
         if uni:
             vram_gib, ram_gib, unified = None, float(uni["unified_gb"]), True
         elif uma:
             vram_gib, ram_gib, unified = None, float(uma.get("vram_gb") or ram) / hy4_fit.GIB_TO_GB, True
         else:
-            vram_gib, ram_gib, unified = max((float(g["vram_gb"]) for g in usable), default=0.0), float(ram), False
-        placed = hy4_fit.place(build, vram_gib, ram_gib, unified, None, vision)
-        return {"placement": placed, "mode": hy4_fit.mode(placed["ssd_gb"]), "recommended": hy4_fit.recommend(vram_gib, ram_gib, unified, None, vision)["build"] == build,
+            vrams = sorted((float(g["vram_gb"]) for g in usable), reverse=True)
+            vram_gib, ram_gib, unified = (vrams[0] if vrams else 0.0), float(ram), False
+            extra_vram_gib = sum(vrams[1:])
+        placed = hy4_fit.place(build, vram_gib, ram_gib, unified, None, vision, extra_vram_gib=extra_vram_gib)
+        return {"placement": placed, "mode": hy4_fit.mode(placed["ssd_gb"]), "recommended": hy4_fit.recommend(vram_gib, ram_gib, unified, None, vision, extra_vram_gib=extra_vram_gib)["build"] == build,
                 "unified": unified, "engram_gb": hy4_fit.ENGRAM_GB, "context": hy4_fit.DEFAULT_CONTEXT, "kv_gb": round(hy4_fit.kv_extra_gb(), 2)}
 
     def hy4_size(self, family, model) -> dict | None:
@@ -923,7 +927,7 @@ class Strata:
     # ---- what is installed
     def configs(self) -> list[Path]:
         return sorted((p for p in self.root.glob("strata-*.json") if not p.name.endswith(".shared-settings.json")),
-                      key=lambda p: p.stat().st_mtime, reverse=True)   # #346: the Chat settings file is no config
+                      key=lambda p: p.stat().st_mtime, reverse=True)   # #346: the settings file is no config
 
     @staticmethod
     def read_config(path: Path) -> dict:
@@ -963,7 +967,7 @@ class Strata:
                 "context": int(val("--max-context")) if str(val("--max-context") or "").isdigit() else None,
                 "kv": val("--kv"), "images": ("gpu" if vis.get("gpu") else "cpu") if isinstance(vis, dict)
                 else ("on" if val("--vision") else "off"),
-                "port": cfg.get("port", DEFAULT_PORT), "host": cfg.get("host", "127.0.0.1"),
+                "port": cfg.get("port", self.default_port()), "host": cfg.get("host", "127.0.0.1"),
                 "gpu": cfg.get("gpu"), "gpu_roles": cfg.get("gpu_roles"), "api_key_set": bool(cfg.get("api_key")),
                 "low_ram": "--resident-experts" in a or "--mmap-experts" in a,
                 "start_script": script.name if script.exists() else None,
@@ -1676,20 +1680,51 @@ class Strata:
             return None
 
     # ---- the running server
+    @staticmethod
+    def configured_default_port() -> int | None:
+        """Preferred default model server port from STRATA_MODEL_PORT (1..65535), or None when unset/invalid (#6475)."""
+        raw = (os.environ.get("STRATA_MODEL_PORT") or "").strip()
+        if raw.isdigit():
+            p = int(raw)
+            if 1 <= p <= 65535:
+                return p
+        return None
+
+    @staticmethod
+    def default_port() -> int:
+        """Default model server port: STRATA_MODEL_PORT when set, else DEFAULT_PORT (8080)."""
+        return Strata.configured_default_port() or DEFAULT_PORT
+
+    @staticmethod
+    def no_default_port() -> bool:
+        """Whether STRATA_NO_DEFAULT_PORT disables probing the unconfigured fallback default port (8080)."""
+        return (os.environ.get("STRATA_NO_DEFAULT_PORT") or "").strip().lower() in ("1", "true", "yes", "on")
+
     def ports(self, port: int | None) -> list[int]:
         if port:
             return [port]
-        ps = [self.state("server").get("port")] + [self.describe_config(c)["port"] for c in self.configs()]
-        return list(dict.fromkeys(int(p) for p in [*ps, DEFAULT_PORT] if isinstance(p, int)))
+        ps = [p for p in ([self.state("server").get("port")] + [self.describe_config(c)["port"] for c in self.configs()])
+              if isinstance(p, int) and 1 <= p <= 65535]
+        explicit = self.configured_default_port()
+        if explicit is not None:
+            if explicit not in ps and explicit not in self._non_strata_ports:
+                ps.append(explicit)
+        elif not ps and not self.no_default_port():
+            # #6475: only probe DEFAULT_PORT (8080) as a fallback when no PolyStrata configs/servers name other ports,
+            # STRATA_NO_DEFAULT_PORT is not set, and 8080 has not already answered as a non-PolyStrata listener.
+            if DEFAULT_PORT not in self._non_strata_ports:
+                ps.append(DEFAULT_PORT)
+        return list(dict.fromkeys(int(p) for p in ps))
 
     def api_key_for(self, port: int) -> str | None:
         """The key a config of this folder set for that port (used for our own requests; never shown)."""
         def real(cfg):                                   # "api_key": "none" = served without a key on purpose
             k = cfg.get("api_key")
             return k if k and str(k).strip().lower() != "none" else None
+        fallback = self.default_port()
         for c in self.configs():
             cfg = self.read_config(c)
-            if real(cfg) and int(cfg.get("port", DEFAULT_PORT)) == port:
+            if real(cfg) and int(cfg.get("port", fallback)) == port:
                 return cfg["api_key"]
         for c in self.configs():
             if real(self.read_config(c)):
@@ -1710,12 +1745,15 @@ class Strata:
         nothing."""
         base = f"http://127.0.0.1:{port}"
         if not port_accepts(port):
+            self._non_strata_ports.discard(port)
             return None
         st, health = http_json(base + "/health", timeout=self.health_timeout)
         if st == 0:
             return None
         if st != 200 or not isinstance(health, dict) or health.get("service") != "strata":
+            self._non_strata_ports.add(port)
             return {"port": port, "other": True, "note": "something else answers on this port (not a PolyStrata server)"}
+        self._non_strata_ports.discard(port)
         info = {"port": port, "url": base, "model": health.get("model"), "context": health.get("max_context"),
                 "images": health.get("images"), "loaded": health.get("loaded"),
                 "api_key_required": bool(health.get("api_key"))}
@@ -1860,9 +1898,19 @@ def files_here(S, family: str, model: str, models_dir: Path, vision: bool) -> di
         size = f.get("bytes")
         if size is None:
             try:
-                size = S.fam_pin(fam, path)[0]
+                pin = S.fam_pin(fam, path)
+            except KeyError:
+                if "sha256" in fam:
+                    return None
+                try:
+                    pin = S.file_pin(S.model_hf(fam, model) + path.name)
+                except Exception:                       # noqa: BLE001
+                    return None
             except Exception:                           # noqa: BLE001 - an unpinned file: its size is not known, so "complete" cannot be said
                 return None
+            if not pin:
+                return None
+            size = pin[0]
         total += size
         try:
             if path.is_file() and path.stat().st_size == size and not path.with_name(path.name + ".part").exists():
@@ -2670,10 +2718,12 @@ class Tools:
                 raise ToolError("no Intel Arc card PolyStrata can use was found in this computer (the Intel Arc engine runs on Linux)")
             if not intel_app.can_set_up(family, families[family]):
                 raise ToolError(f"{families[family]['title']} {model} can't be set up for an Intel Arc card yet; "
-                                "the Qwen3.8-Flash-Next, Swift, Coder, Gyro and Unsloth sizes can")
-            backend, vision = "sycl", "no"                  # pictures stay off on an Arc (strata_cli/launch/adopt.py)
-            if not gguf_dir and not intel_app.model_files_in(have_dir, family, families[family]):
-                raise ToolError(intel_app.NO_DOWNLOAD)
+                                "the Qwen3.8-Flash-Next, Swift, Coder, Gyro, Unsloth and Hy4-Flash sizes can")
+            backend = "sycl"
+            if not md.get("hy4") and not md.get("inkling"):
+                vision = "no"                  # pictures stay off on an Arc for GGUF families (strata_cli/launch/adopt.py)
+                if not gguf_dir and not intel_app.model_files_in(have_dir, family, families[family]):
+                    raise ToolError(intel_app.NO_DOWNLOAD)
         if md.get("hy4"):                                       # Hy4-Flash: the files are in <models>/hy4-flash (the build, the shared Engram shard); the disk need is what is not there yet
             from strata_control import hy4_family
             have_files = hy4_family.local_files(target / "models" / hy4_family.FAMILY)
@@ -2701,8 +2751,9 @@ class Tools:
                 args += [flag, str(v)]
         if gguf_dir:
             local = Path(os.path.expandvars(gguf_dir)).expanduser()
-            if not local.is_absolute() or not local.is_dir() or ".." in local.parts:
-                raise ToolError("gguf_dir must be an existing absolute folder")
+            is_model_file = local.is_file() and local.suffix.lower() in (".gguf", ".strata")
+            if not local.is_absolute() or (not local.is_dir() and not is_model_file) or ".." in local.parts:
+                raise ToolError("gguf_dir must be an existing absolute folder or .gguf/.strata file")
             args += ["--gguf-dir", str(local)]
         if backend in ("cuda", "hip", "sycl"):
             args += ["--backend", backend]
@@ -2792,7 +2843,7 @@ class Tools:
             if not desc["ready"]:
                 raise ToolError(f"{cfg_path.name} refers to missing files ({', '.join(desc['missing_files'])}): run "
                                 "the install again (strata_install with confirm=true) to repair it")
-            port = port or desc["port"] or DEFAULT_PORT
+            port = port or desc["port"] or s.default_port()
             tracked = s.tracked_server()
             if tracked and not tracked.get("ended"):
                 info = s.probe(tracked["port"])
@@ -2847,7 +2898,7 @@ class Tools:
             info = s.probe(port)
             if info and not info.get("other"):
                 return {"summary": f"PolyStrata is running: {info.get('model')} on http://127.0.0.1:{port}/v1 "
-                                   "(OpenAI and Anthropic APIs; chat page at http://127.0.0.1:" + str(port) + "/)",
+                                   "(OpenAI and Anthropic APIs; Monitor at http://127.0.0.1:" + str(port) + "/)",
                         "server": {**info, "pid": p.pid}}
             if time.time() >= end:
                 return {"summary": f"PolyStrata is loading {desc['model']} (this takes 1-3 minutes; the PC may be slow "
@@ -2984,7 +3035,7 @@ class Tools:
                 break
         if port is None:
             cfgs = s.configs()
-            port = target["port"] if target else (s.describe_config(cfgs[0])["port"] if cfgs else DEFAULT_PORT)
+            port = target["port"] if target else (s.describe_config(cfgs[0])["port"] if cfgs else s.default_port())
         model = (target or {}).get("model") or "strata"
         key_needed = (target or {}).get("api_key_required")
         if key_needed is None:

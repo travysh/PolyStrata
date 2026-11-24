@@ -208,8 +208,13 @@ or `terminal/run-<model>.sh` start the model directly. The options are the same 
 `--model Q2_0 --yes`, `--gguf-dir /data/Q2_0`). Terminal chat: `terminal/.venv/bin/python terminal/tools/chat.py`. Building from git and trying a pull
 request: [SOURCE_INSTALL.md](SOURCE_INSTALL.md#build-from-git-on-linux-to-try-a-pull-request-or-change-the-code).
 
-- **Updating:** `./setup.sh --update` (it runs `git pull` first), or `git pull` and then `./setup.sh`. It compiles the
-  engine again when its source changed. If the compile fails, it says so and starts the engine you had.
+- **Ready-made engine:** on an x86-64 PC with an NVIDIA card, setup downloads the release's Linux engine (strata-poly and
+  the picture reader, CUDA 13) with NVIDIA's CUDA libraries from pip, as on Windows. It needs glibc 2.34 and GCC 12's
+  libstdc++ or newer (Ubuntu 22.04, Debian 12 and later). When the release has none for your checkout's source or
+  card, or it does not start on your system, setup compiles the engine instead (`--build` always compiles).
+- **Updating:** `./setup.sh --update` (it runs `git pull` first), or `git pull` and then `./setup.sh`. When the engine's
+  source changed it takes the release's ready-made engine of that source, or compiles it when there is none. If the
+  compile fails, it says so and starts the engine you had.
 - **Other distributions** (Arch, Fedora and others): install the C++ compiler and the CUDA Toolkit 13 with your package
   manager first (Arch: `sudo pacman -S base-devel cuda`). Setup finds `nvcc` on `PATH`, in `/usr/local/cuda*` and in
   `/opt/cuda*`.
@@ -531,7 +536,7 @@ print(r.choices[0].message.content)
 ### Thinking levels: none, low, medium, high
 
 The model thinks before it answers (streamed as `reasoning_content`; Anthropic: `thinking` blocks). Choose how much per request
-in the chat page, in `chat.py` (`/think low`) or over the API:
+in `chat.py` (`/think low`) or over the API:
 
 | API | How |
 | --- | --- |
@@ -555,7 +560,7 @@ key, MCP and program keys are not editable there.
 
 | Key | Default | Effect |
 | --- | --- | --- |
-| `reasoning_effort` | model default (high) | Level for requests that name none. The engine has no such option; `--reasoning-effort` in `"args"` is moved here with a note. A request's level and the web page's shared Chat settings win. |
+| `reasoning_effort` | model default (high) | Level for requests that name none. The engine has no such option; `--reasoning-effort` in `"args"` is moved here with a note. A request's level and the shared settings (`POST /settings`) win. |
 | `reasoning_budget_tokens` | `0` (no budget) | Caps the thinking at N tokens: the server ends it with a short wrap-up line and `</think>` and the model answers from there. The wrap-up counts as output tokens. A request may send the budget as `reasoning_budget_tokens`, or under the name another provider uses: `thinking_token_budget` (vLLM), `thinking_budget` (Qwen) or `thinking_budget_tokens` (llama.cpp), which is what pi's `thinkingTokenBudgetField` sends. `reasoning_budget_tokens` wins over them, and of the others the first in that order does; a request's own value wins over the config's. |
 | `answer_room` | on | A request with thinking on, no budget and `max_tokens` of 1,024 or more gets one: thinking is wrapped up when a quarter of the cap (at least 512 tokens) is left. Requests without `max_tokens` get three quarters of the context. `false` turns it off. Clients should not cap the reply far below what the context allows. |
 | `reasoning_close_retry` | off | Closes the thinking once and continues when a reply ended inside its thinking with no answer and no tool call (#1053). |
@@ -652,7 +657,7 @@ key, MCP and program keys are not editable there.
   prompt, including earlier assistant turns in it, is not counted, so the numbers or a quoted earlier answer in a new task are not
   penalised. `STRATA_PENALTY_PROMPT=1` counts the last `penalty_last_n` tokens of prompt and answer together, the old window.
   This holds for the Qwen3.8 and Qwen3.6-35B-A3B engines on CUDA, HIP, Metal and SYCL.
-- Sampling defaults, in order of precedence: the request, the web page's shared Chat settings, the config's `sampling` block,
+- Sampling defaults, in order of precedence: the request, the shared settings (`POST /settings`), the config's `sampling` block,
   then the model card. Without a block, thinking requests get temperature 1.0, top_p 0.95, top_k 20, and non-thinking
   requests get 0.7, 0.8, 20 with presence_penalty 1.5 (Qwen3.6-35B-A3B uses presence_penalty 1.5 in both). Greedy is only for
   whoever asks: `temperature: 0` in the request or `"sampling": {"temperature": 0}` in the config. A greedy request is sent
@@ -838,33 +843,77 @@ tables per token). The scaling is fixed for the whole run, because the KV cache 
   with the real one 8 of 12. The engine gives the same tokens
   for the same reads (two such servers agreed in 12 of 12), but where a read starts changes its numbers slightly,
   and that already happens today whenever a request goes on from a checkpoint.
-- **OpenCode:** a starting point for `opencode.jsonc`. The field names are OpenCode's, so check its config docs if your version
+- **OpenCode:** a starting point for `opencode.json`. The field names are OpenCode's, so check its config docs if your version
   differs.
 
-  ```jsonc
+  ```json
   {
     "$schema": "https://opencode.ai/config.json",
-    "provider": {
+    "providers": {
       "strata": {
-        "npm": "@ai-sdk/openai-compatible",
         "name": "PolyStrata (local)",
-        "options": { "baseURL": "http://127.0.0.1:8080/v1", "apiKey": "none" },  // or your api_key
+        "package": "@opencode/ai/providers/openai-compatible",
+        "settings": {
+          "baseURL": "http://127.0.0.1:8080/v1",
+          "apiKey": "strata-local"
+        },
         "models": {
-          "strata": {
-            "name": "Qwen3.8-Flash-Next (PolyStrata)",
-            // context: what you chose in setup; output: what one reply may use (prompt + output must fit)
-            "limit": { "context": 262144, "output": 32768 },
-            "options": { "reasoningEffort": "high" },
-            "variants": {
-              "low": { "reasoningEffort": "low" },
-              "medium": { "reasoningEffort": "medium" },
-              "none": { "reasoningEffort": "none" }
-            }
+          "qwen3.8-flash-next-coder-iq1_m": {
+            "name": "Qwen3.8-Flash-Next Coder (local)",
+            "type": "chat",
+            "limit": {
+              "context": 262144,
+              "input": 258048,
+              "output": 32768
+            },
+            "capabilities": {
+              "tools": true,
+              "input": [
+                "text"
+              ],
+              "output": [
+                "text"
+              ],
+              "reasoning": {
+                "supported": true,
+                "effort": [
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "toggle": true
+              }
+            },
+            "compatibility": {
+              "reasoningField": "reasoning_content"
+            },
+            "variants": [
+              {
+                "id": "low",
+                "settings": {
+                  "reasoningEffort": "low"
+                },
+                "body": {
+                  "reasoning_budget_tokens": 2048
+                }
+              },
+              {
+                "id": "none",
+                "body": {
+                  "reasoning_effort": "none"
+                }
+              },
+              {
+                "id": "budget",
+                "body": {
+                  "reasoning_budget_tokens": 4096
+                }
+              }
+            ]
           }
         }
       }
-    },
-    "model": "strata/strata"
+    }
   }
   ```
 
@@ -906,8 +955,10 @@ system prompt with a billing header that changes on every request; the server pi
 | `"strata_prefix": {"messages": 1}` (per request, opt-in) | One long document, many questions. Marks where the document ends: `{"messages": 1}`, `{"message": 0, "chars": 210000}` or `{"tokens": 12345}`. The checkpoint at the boundary is pinned, so 20 questions cost one read of the document. One pinned prefix at a time per engine; needs `--prompt-cache 3` or more; a malformed field is a 400. See [RESEARCH_RUNS.md](RESEARCH_RUNS.md). |
 | `--conversation-cache-mib N`, `--conversation-cache-slots N` | Park conversations in a bounded host-RAM cache so alternating requests (controller and worker histories, sub-agents) reuse their prompts. Without `--conversation-cache-mib` the budget is 40% of the RAM left above `--conversation-cache-min-free-mib` once the model is loaded, at most 8192 MiB in steps of 256, off when under 1024; the engine log says which. `0` turns it off. It preserves histories; it does not run requests at once. With more clients taking turns than slots, the oldest parked conversation leaves and that client reads its whole prompt again when it returns ([measured with eight agents](#history--older-measurements)). |
 | `--conversation-cache-min-tokens N` | Park only conversations of at least N tokens, so short side requests do not evict a long conversation. Default `0` (park all). |
+| `--conversation-cache-swap-block-mib N` (opt-in) | Exchange compatible host K/V in blocks when switching between parked conversations, reusing the incoming buffers for the outgoing conversation. Set `N` to any whole number from 1 to 256 MiB (for example `17`); default `0` disables it and keeps the original switch and K/V retention. An existing retained K/V prefix that matches the current conversation uses the ordinary park and restore path instead of exchange. |
 | `--conversation-cache-park-gain N` (opt-in) | Park a conversation again only after it advanced N tokens past the copy it would replace. |
 | `--conversation-cache-rewind-keep N` (opt-in) | When a request continues this conversation and at most N of the engine's newest tokens lie past the point where it resumes (for example, the reasoning that a client strips and does not send back), the conversation is not parked. The follow-up then reads only its new tokens instead of first copying the conversation's whole K/V cache. Those N tokens are read again only if that earlier branch is used again. A request that shares only a small part of the conversation (for example only the system prompt) is parked as before. Default `0` parks as before. |
+| `--conversation-spill-persist` (opt-in) | Keep the SSD tier of the conversation cache across engine restarts and reboots. The tier then lives in `<data>/conversation-spill/fp-<model fingerprint>/`; at start the entries written by the same model and settings are adopted and found by token prefix like spills of the current run (a resumed session reads its tokens back from the SSD instead of prefilling them), and the folders of other models are removed. A second engine of the same model uses its own per-process folder. Entries have no time limit: one goes only when the size cap needs room (least recently used, read or written, first) or when a longer spill of the same conversation replaces it. Reading an entry leaves it on disk. Default off: a per-process folder removed when the engine ends. |
 | `--conversation-cache-min-free-mib N` | RAM floor, default 2560. Parking and session files are skipped when less than the snapshot plus the floor is available. |
 | `--memory-limit-mib N` (or `STRATA_MEMORY_LIMIT_MIB`) | Total RAM this engine's container may use, for when a container cannot see its own limit. Config `args`: `"--memory-limit-mib", "102400"`. `0` = none. |
 
@@ -957,6 +1008,13 @@ prompt tokens the cache gave back; `/metrics` has the same under `"conversation_
 strata-poly writes each parked conversation to a temporary file between requests and frees its RAM; a later restore maps
 that file instead of reading from RAM. `STRATA_NO_SPILL` set to a nonzero value (in the config's `"env"`) keeps every
 parked conversation in RAM instead: parking still works, and RAM use grows accordingly.
+
+The opt-in block exchange is for the Qwen3.8-Flash-Next CUDA engine: a single, non-batched session with host-backed
+streaming K/V and a whole conversation returned from the RAM cache. A draft layer, if used, also needs a verified
+host-backed K/V pool. Borrowed prefixes, session file restores, SSD returns, layer splits, elastic or device-only K/V,
+unverified mappings, asynchronous snapshots and diagnostic captures use the original path. The exchange also falls back
+if the image and working block cannot fit without an eviction. The block is temporary; it is not a limit on the engine's
+total host RAM.
 
 ### Session files (disk)
 
@@ -1040,94 +1098,40 @@ and in 0.32 s with the file in it, where reading the prompt from its start took 
 last token and wrote the 64 tokens the first engine wrote without a restore. After a file with one bit changed was
 refused, the engine wrote what a new engine writes for the same prompt.
 
-### The web page (Chat, Images, Monitor, Requests, About)
+### The web page (Monitor, Requests, Images, Experts, About)
 
-Open the server's address in a browser. Everything in it runs from the server's own files: no CDN, no outside address. Chats,
-settings and the API key stay in the browser. Its tabs:
+Open the server's address in a browser to watch the model. Everything in it runs from the server's own files: no CDN, no
+outside address. It has no chat: chat with the model in an app ([Linger](https://github.com/simplexai-labs/linger) or any
+app from [Connecting apps](#connecting-apps)) or in the terminal (`python polystrata.py --model <name>`). Its tabs:
 
-- **Chat:** streaming answers, the model's thinking (folded away once it answers), code with a copy button, pictures when
-  images are on, and the sampling and thinking-level settings.
-- **Images:** only when image generation is set up ([IMAGES.md](IMAGES.md)).
 - **Monitor:** what the model is doing (reading the prompt, with progress, or writing, at how many tokens/s); GPU load,
   VRAM, temperature, power and PCIe traffic; CPU and disk; the conversation cache and the MCP servers.
 - **Requests:** always there. With the [API request monitor](#api-request-monitor) on, it has a button that opens
   `/api-monitor` in a browser tab of its own (the page's security policy allows no frames); with the monitor off, it says
   how to turn it on.
+- **Images:** only when image generation is set up ([IMAGES.md](IMAGES.md)).
 - **Experts:** only when the model saves its learned expert profile (`"expert_profile_save"`), a grid of the experts'
   ranks.
 - **About:** the model and engine settings, the Model settings card ([config keys](#config-keys)),
   and the addresses to connect other apps.
 
 **The model list.** With more than one model installed, a list at the top of the page shows them; one that cannot run is
-greyed out, with the reason as its tooltip. Choosing another one stops the model in memory and loads the chosen one. Then
-the chat starts over as New chat does it, since the answers on the screen came from the other model: **Undo** in the
-toast brings the earlier chat back (with the saved chats list on, it stays in the list). A question sent while the switch
-runs is answered by the new model and kept. A switch the server refuses leaves the chat and the list as they were, and
-the toast says why (the server starts the earlier model again). While an answer is being written the list does not
-switch. It uses `GET /api/models` and `POST /api/models/load` ([BACKENDS.md](BACKENDS.md#changing-the-model)), and each
-model runs with its own `strata-<model>.json` settings.
-
-**Another answer.** Under every answer, **↻** writes another answer to the same question and keeps the one it replaces
-as a variant: **‹** and **›** go between them, round and round, and a count such as `2/3` says which one is on the
-screen. The variants are saved with the chat. A new answer drops the variants after the one on the screen; one that fails,
-or is stopped before it writes anything, puts the earlier answer back, and a stopped one keeps what it wrote. For an
-earlier answer the request ends with its question; the messages after it stay in the chat, and the page says that the
-next question still sends them.
-
-**Editing your question.** On each of your messages, the pencil button (**✎**, Edit) edits it in place (**Save** or Ctrl+Enter, Cmd+Enter on a
-Mac; **Cancel** or Escape; neither key acts inside an input method's conversion). An empty or unchanged text changes nothing. Saving a
-changed text removes the messages after it, tool calls and their results included, since they answered the old wording,
-and writes a new answer. When messages were removed, a toast offers **Undo**, which puts the old question and the removed messages back as long as no
-other question was sent after the edit. A question whose pictures or files the browser kept by name only is not edited,
-since a new request would go without them. **Rewind to here** (Chat settings, below) is the other way to change a
-question: it puts it back into the message box. **↻**, **‹ ›** and **✎** are off while an answer is being written, while
-a message waits to be sent and while a Rewind panel or an answer editor (below) is open.
-
-**Chat settings** (the button next to the message box) holds the sampling and thinking settings and the switches below. Every
-switch below is **off by default**; with all of them off the page behaves as it did before.
-
-- **Render math.** Equations written as `\( ... \)`, `\[ ... \]`, `$x$` or `$$ ... $$` are drawn as formulas by KaTeX 0.19.0, which
-  ships in `terminal/serve/web/vendor/katex` (MIT; `PROVENANCE.json` there lists the package and a hash of every file). The text of a
-  message is never changed: copying, the Markdown export and the next request all carry what the model wrote. Code, prices
-  (`$5 and $10`) and a formula still being written stay text. A formula KaTeX cannot read stays as its source. A formula can only
-  draw: it cannot make a link, load a picture or run anything (`\href`, `\url`, `\includegraphics` and `\htmlClass` are shown as
-  their own names).
-- **Saved chats list.** Keeps every chat in a list on the left, with search over titles and text, rename, delete (with Undo) and
-  days as headings. The chats live in this browser's IndexedDB; a picture or file is kept by name only. Nothing goes to the server.
-  In a private window, or when the browser's storage is full, the list stays in memory and the page says so once. Turning it on
-  keeps the chat on the screen as the first one in the list; turning it off keeps that chat as the single chat.
-- **Edit and rewind messages.** Under each message: **Rewind to here**; under each answer also **Edit answer** (correct its
-  text; the old thinking and tool calls go and no request is sent); under a question left without an answer, **Regenerate**
-  (another answer to an answer is **↻**, above). Rewind asks what you want. On your
-  message, **Edit and send again here** hides it and the messages after it and puts it in the box; on an answer, **Continue from
-  here** hides the messages after it. **Branch from here** (needs the saved chats list) starts a new chat from the messages up to
-  that point and leaves this chat as it is; the branch keeps a name such as "Branch of ..." and links back to the original. An
-  **Undo** bar above the box brings back what was hidden, until your next question, another chat or a reload. A picture or file
-  that was only kept by name is not sent again: the page asks you to attach it again.
-- **When you send while it is answering.** *Wait* (the default): Send is off until the answer is done. *Send after*: your message
-  waits and goes when the answer is done. *Interrupt*: the answer stops where it is, what was written stays and is marked
-  interrupted, and your message goes at once; a tool that is running finishes first. Only one message waits, and **Take back**
-  returns it to the box. Stop keeps a waiting message for you to send yourself.
-
-An answer's ` ```svg ` or ` ```html ` block gets a **Preview** button. The code is drawn in a frame that is cut off from the page:
-an empty sandbox (no scripts, forms, popups or downloads, and no access to the page, its storage or the server), a policy inside
-the frame that allows no address at all, and a page header (`Content-Security-Policy: frame-src 'none'`) that keeps a link or a
-redirect in the model's HTML from loading a web page into it. An svg is shown as a picture. For an HTML page there is also a
-warning button, **Run scripts**: after you confirm, that one block runs with scripts, still with no way to the page and no network,
-until you close the preview. It can still use your CPU, and it is code the model wrote.
+greyed out, with the reason as its tooltip. Choosing another one stops the model in memory and loads the chosen one. A
+switch the server refuses leaves the list as it was, and a toast says why (the server starts the earlier model again).
+While an answer is being written the list does not switch. It uses `GET /api/models` and `POST /api/models/load`
+([BACKENDS.md](BACKENDS.md#changing-the-model)), and each model runs with its own `strata-<model>.json` settings.
 
 **Load / Unload** in the header loads the model or frees the GPU (`POST /load`, `POST /unload`). It asks before unloading and is off
 while an answer is being written or an image is made.
 
-**Language.** About > Settings lists the page's languages: English (the default), German, Spanish, Japanese, Korean, Portuguese,
-Russian and Chinese. The Chat view, its settings and the header are translated; Monitor, Images and About are still English. A
+**Language.** About > Settings lists the page's languages: English (the default), German, French, Spanish, Japanese, Korean,
+Portuguese, Russian, Chinese and Hebrew. The header and its tabs are translated; Monitor, Images and About are still English. A
 language is a file `serve/web/locales/<lang>.json`; the English text lives in the code next to its key, and
-`python terminal/tools/web_i18n.py` checks every file for the same keys and placeholders (`--write` rewrites `en.json`). `/?lang=de` shows a
-language for one visit.
+`python terminal/tools/web_i18n.py` checks every file for the same keys and placeholders (`--write` rewrites `en.json`). `/?lang=de`
+shows a language for one visit.
 
-Tests: `serve/test_web_*.py` and `serve/test_web_*.js` (Node), and a browser run against a stand-in server with no model:
-`WEBTEST_MODULES=<folder with puppeteer-core> node terminal/tools/webtest/browser_test.mjs`. `terminal/tools/webtest/shots.mjs` takes the page's
-screenshots.
+Tests: `serve/test_web_*.py` and `serve/test_web_i18n.js` (Node), and a browser run against a stand-in server with no model:
+`WEBTEST_MODULES=<folder with puppeteer-core> node terminal/tools/webtest/browser_test.mjs`.
 
 ### API request monitor
 
@@ -1185,6 +1189,9 @@ base_url = "http://127.0.0.1:8080/v1"
 wire_api = "responses"
 stream_idle_timeout_ms = 600000         # a first, long prompt can take minutes to read
 # env_key = "STRATA_API_KEY"            # only if the server has an api_key: the variable holding it
+
+[model_providers.strata.capabilities]
+remote_compaction = "unsupported"       # compact locally with ordinary requests (#6459)
 ```
 
 Run `codex` (or `codex exec "..."`). Codex warns `Model metadata for ... not found` for a local model name; that is expected.
@@ -1203,7 +1210,7 @@ the client sent, which is why it is off by default.
 
 ## Tools from MCP servers
 
-The chat page can give the model tools from [MCP](https://modelcontextprotocol.io) servers, as LM Studio and Claude Desktop do.
+The server can give the model tools from [MCP](https://modelcontextprotocol.io) servers, as LM Studio and Claude Desktop do.
 List the servers in `strata-<model>.json` under `"mcp_servers"`, the same shape as Claude Desktop's `mcpServers` block (key
 `"mcpServers"` also works when pasted as is). Merge these fields into the existing config:
 
@@ -1223,26 +1230,15 @@ after a change.
 - A **program** (`command`, `args`, optional `env` and `cwd`) is started by PolyStrata and spoken to over stdin and stdout. Node.js is
   needed for `npx` servers. An **address** (`url`, optional `headers`) uses MCP's Streamable HTTP transport (the older SSE-only
   transport is not supported). `"disabled": true` leaves an entry out.
-- Servers start with PolyStrata. The server window says what each offers or why it did not start. The Monitor tab lists them, and
-  Chat settings has **Use tools from MCP servers** (on by default). A server that stops later is started again at its next call.
-- In the chat each call shows as a small block. The model reads the result and goes on, up to `max_rounds` rounds of calls (one round can hold several calls). At the limit
+- Servers start with PolyStrata. The server window says what each offers or why it did not start. The Monitor tab lists them. A server that
+  stops later is started again at its next call.
+- The model reads each result and goes on, up to `max_rounds` rounds of calls (one round can hold several calls). At the limit
   the model gets one final reply with no tools, using the results already found, so the answer is not cut off. A tool
   that fails or takes longer than `timeout_s` gives the model an `error: ...` result. Results longer than `max_result_chars` are
   cut with a note. Stop stops a running tool too.
-- Only the chat page uses them. API clients see the API exactly as before and keep their own tools. A request to
-  `/v1/chat/completions` opts in with `"strata_mcp": true`.
-
-**A tool server that needs a key.** Settings → Tools → Add tool server connects to a web address (http:// or https://) or starts
-a program. For a web address it sends no extra headers; the "Extra settings" lines are for a program only. When your server
-expects a key in a header (MCP Proxy and most hosted servers do), add the server to the model instead: Models → your model →
-Expert settings → Add tool server, then put the header under Credentials & environment, for example:
-
-```json
-{"proxy": {"url": "http://127.0.0.1:8096/mcp", "headers": {"Authorization": "Bearer <your key>"}}}
-```
-
-The chat and the coding assistant on that model can then use its tools. The key stays in that model's settings on this
-computer; after saving, it is shown masked.
+- Only a request that asks for them gets them: a request to `/v1/chat/completions` opts in with `"strata_mcp": true`, and
+  the tool activity comes back as chunks with a `strata_mcp` field. Other API clients see the API exactly as before and keep
+  their own tools.
 
 **Security.** MCP tools run on your PC with your user's rights, and the model decides when to call them, also because of what
 it reads (a web page or file can contain instructions). Give a filesystem server only the folders it needs, prefer read-only
@@ -1408,6 +1404,7 @@ them on your own card.
 | `STRATA_PCIE_BALANCE=1` | CUDA, one GPU, no `--batch`, no `--pcie-frac` | Each verify layer reads over PCIe the number of its missed experts that balances the two sides. | Helps an RTX A4000 arena (+5.6%), hurts others slightly. |
 | `STRATA_GDN_CHUNKED=1` | CUDA, 128 or more SMs by itself (`=2` forces it); HIP gfx1100-gfx1102, gfx1150, gfx1151 | The DeltaNet recurrence of the prompt in chunks of 32 tokens (CUDA) or 16-token WMMA chunks (HIP). Changes rounding. | 1.8x on the recurrence on an RTX 5090; slower on smaller cards. See [AMD_HIP.md](AMD_HIP.md#opt-in-chunked-prompt-gdn-on-gfx11). |
 | `STRATA_FS_SLOTS=N` | CUDA | Foresight swap space: N VRAM slots per layer refilled with missed and predicted experts. | The smaller cache cost more than the slots returned in every box measured. Left off. |
+| `STRATA_L3_PF=1` | CUDA, one GPU, a native pack with its experts in RAM, an AVX2 CPU; not with the NUMA split | After each layer the CPU workers run the next layer's router on this layer's input, pick its 4 most likely experts that are not in VRAM (`STRATA_L3_PF_TOP`, 1-16) and read them from RAM into their caches while the GPU works. The next batch of CPU work stops the reading. Each worker always computes the same rows of every expert (`STRATA_POOL_STATIC=1` alone), so it computes the rows it read; a native layer call then runs as two phases instead of `STRATA_POOL_DEP`'s one batch. The output does not change. The routers take 120 MiB of RAM. The startup log says when it is on or why it is off. | RTX 3090 at PCIe 4.0 x8 with a Ryzen 9 5950X and DDR4, against 0.1.64 with its defaults: decode +5.8% on short prompts and +6.0% on a 142K-174K token agent session. Top 2 to 8 gave about the same; static rows alone gave nothing. Measured on one machine only. |
 | `--prefill-head-alias` | `--serve`, one GPU | The output head's VRAM holds the prompt buffers while a prompt is read ([PREFILL_HEAD_ALIAS.md](PREFILL_HEAD_ALIAS.md)). | For 8 GB cards. |
 | `STRATA_EMB_REUSE_ACCOUNT=1` | CUDA | The planner counts the VRAM saved because the half-output buffer `bo` reuses the embedding buffer `emb`, so the auto chunk can grow. Changes prompt rounding. | Prompt about +3.9% on an RTX 3060, no KL measurement yet. |
 | `STRATA_VERIFY_ASYNC_LAUNCH=1` | CUDA, single-request verifier | Runs the CUDA graph launch of a verify window on a separate host thread so the caller keeps serving CPU expert doorbells. A diagnostic for Compute Sanitizer runs. | |
@@ -1612,7 +1609,7 @@ your own prompts. The Monitor marks every request ESP or stock.
 ```
 
 The engine log then says `control vector mode = project, dir = per-layer, layers 4..44 (41 steered)`. A loaded vector is on for
-every request unless it says otherwise: Chat settings has a switch, and the API takes `"experimental_speed_projection": false`
+every request unless it says otherwise: the API takes `"experimental_speed_projection": false`
 (config default: `"sampling": {"experimental_speed_projection": false}`). Switching drops the conversation cache once. Switched
 off, the output is token for token the stock model's.
 
@@ -1627,6 +1624,7 @@ that one compute capability. The identity gate (10 prompts plus exact_pp 4K/20K,
 | Architecture | On by default | Off switch |
 | --- | --- | --- |
 | sm_86 (RTX 3050-3090, RTX A2000-A6000) | `STRATA_ADAPT_NOWAIT=1`, `STRATA_ADAPT_LAG=2`, `STRATA_CPU_IQ_ALL_EXACT1=1`, `STRATA_SIDE_MIXER=2`, `STRATA_ATTN_DAILY=1`, `STRATA_GR_UP75=1`, `STRATA_GU_SWIGLU=1`, `STRATA_QSA_ROWS=1`, `STRATA_B6_MMVQ_ROWS=1` | `STRATA_SM86_PERF=0` |
+| sm_70 (Tesla V100 / Titan V / Quadro GV100) | `STRATA_ADAPT_OVERLAP=1`, `STRATA_SM70_TABLE=1`, `STRATA_B6_MMVQ_ROWS=1`, `STRATA_TSUM=1`, `STRATA_SMALL_UNR=3`, `STRATA_GR_NORM_FAST=1`, `STRATA_SIDE_MIXER=2`, `STRATA_ARGMAX_ROWS_SM70=1`, `STRATA_LFUSE=1`, `STRATA_GDN_SPLIT=1`, `STRATA_SH_STREAM=1`, `STRATA_Q80_ROWS1=1`, `STRATA_NO_MMVQ_ROWS2=1`, `STRATA_CPU_IQ_ALL_EXACT1=1`, `STRATA_GR_Q8_DOWN_MODE=2`, `STRATA_GR_Q8_UP_COLS=16`, `STRATA_GR_Q8_UP_MODE=2`, `STRATA_SCORES_HALVE=1`, `STRATA_SCORES_THREAD=1`, `STRATA_TOPK_SAMPLE=1`, `STRATA_SELECT_LONG=1` | `STRATA_SM70_PERF=0` (and `STRATA_DEFAULTS=026`) |
 | sm_60 (Tesla P100) | `STRATA_ADAPT_NOWAIT=1`, `STRATA_ADAPT_LAG=2`, `STRATA_SIDE_MIXER=2`, `STRATA_FUSE_WAIT=2`, `STRATA_B6_MMVQ_ROWS=1`, `STRATA_FUSE_DECODE=1`, `STRATA_GR_UP75=1` | `STRATA_SM60_PERF=0` |
 | sm_120 (RTX 50 and RTX PRO Blackwell) | `STRATA_SIDE_MIXER=2`, `STRATA_ATTN_DAILY=1`, `STRATA_GR_UP75=1`, `STRATA_GR_DOWN_TG=1`, `STRATA_GU_SWIGLU=1` | `STRATA_SM120_PERF=0` |
 | sm_121 (GB10, DGX Spark) | the six of its own table ([DGX_SPARK_LINUX.md](DGX_SPARK_LINUX.md)), and of the sm_120 set `STRATA_ATTN_DAILY=1` and `STRATA_GR_DOWN_TG=2` (measured there, same bits); the rest of the sm_120 set measured level or slower on a GB10 and stays off | `STRATA_SM121_PERF=0` |
@@ -1660,11 +1658,12 @@ ceiling 32768 -> 16384 -> 8192 when the RAM available does not cover the extra l
 or `STRATA_DEFAULTS=026` keep 8192 (`STRATA_NV_CHUNK=16` keeps 16384); `--prefill N`, `auto:N` and `STRATA_PREFILL_AUTO_MAX` are
 never changed. `STRATA_ROUTE_PRIOR` raises KL and is an opt-in again in 0.2.8 (0.2.7 set 1.5 by itself on a discrete NVIDIA card of 13 GiB or less, and the owner took that back on 2026-10-29 because of repetition loops and weaker results in long agent sessions, #4402). `STRATA_ROUTE_PRIOR=1.5` on an RTX 3060 12 GB: story +15%, code +37%, 80 tasks with no copy or code errors, but 4.5 of 10 agent tasks against 5.6 with it off.
 
-## strata-poly: flash attention for prompt reading (a `-DSTRATA_POLY_MMQ=ON` build; `STRATA_FATTN=0` turns it off)
+## strata-poly: flash attention for prompt reading (on by default; `STRATA_FATTN=0` turns it off)
 
-strata-poly is built without llama.cpp by default, and that build leaves this kernel out: the prompt's attention takes
-the old path below. A build with `-DSTRATA_POLY_MMQ=ON` (llama.cpp's kernels
-from a checkout given as `-DSTRATA_GGML_DIR`, an override kept for two releases) has it, on by default, as follows.
+strata-poly is built without llama.cpp by default; its build takes this kernel from `src/poly/fattn_mma_d256.cuh`,
+llama.cpp's kernel cut down to the shapes below, with the same sums as the copy a `-DSTRATA_POLY_MMQ=ON` build
+compiles from llama.cpp's headers. (0.2.19-poly.1 and 0.2.20-poly.1 left it out of the default build, and their
+prompts read through the old path below.)
 
 For strata-poly's Qwen3.6 family, including Ornith 122B (heads of 256 values, 8 or 16 heads a group), on an
 Ampere or later NVIDIA card. A prompt batch's attention runs through llama.cpp's flash-attention kernel
@@ -1801,8 +1800,8 @@ PolyStrata itself: [MIT](../LICENSE). The model files are not part of it; their 
 - PolyStrata's tuned DFlash2 drafter (`data/dflash2-tuned/`, Apache-2.0, **modified by PolyStrata**): a fine-tuned copy of the weights of [incoai/Qwen3.8-Flash-Next-DFlash2](https://huggingface.co/incoai/Qwen3.8-Flash-Next-DFlash2) (revision a22a1744, Apache-2.0, Inco AI); the original notices are kept, the licence text and a notice of the change are copied next to the file when it is fetched.
 - The web app's font: [Outfit](https://github.com/Outfitio/Outfit-Fonts) (SIL Open Font License 1.1, see `terminal/serve/web/fonts/OFL.txt`). Its
   Monitor tab started from @code-martin's dashboard idea (PR #22).
-  Math is drawn by [KaTeX](https://katex.org) (MIT, vendored in `terminal/serve/web/vendor/katex`). The chat page's wide-window layout, svg/html preview, math, Load/Unload, saved
-  chats, edit and rewind came from PRs #3176 (@mnott), #1628 (@thoives), #2972 and #2974 (@CC-David-CC), #3550 (@sakuumomo), #1787 (@Scotty-Hudson) and
+  The chat page it used to have got its wide-window layout, svg/html preview, math, Load/Unload, saved
+  chats, edit and rewind from PRs #3176 (@mnott), #1628 (@thoives), #2972 and #2974 (@CC-David-CC), #3550 (@sakuumomo), #1787 (@Scotty-Hudson) and
   #2615 (@uppet), and the rewind choice and sending while answering from issues #3823 and #4004 (@xvcezrqpbxtpzblrt).
 - The experimental speed projection's vector (`data/experimental-speed-projection/`): Qwen Community License 1.0, made from the model's
   activations (see its README).
@@ -1833,6 +1832,7 @@ described in the sections above. Raw data is in [`docs/bench-results/`](bench-re
 | 0.1.40 | 4060 Ti + 5080 layer split, i9-14900KF | `--host-core last`: a decode that swung ±6% became steady, 8% faster on average |
 | 0.1.41 | Core i7-13700K (8 P + 8 E), RTX 5090, 64 GB, Windows 11, Swift 1.5 IQ3_XXS, 128K | `--pool-affinity measure`: `all` (15 workers) 6.7 ms per verify window in the CPU pool, 148 tok/s; `p-cores` (7 workers) 2.2 ms, 188-191 tok/s. Over four starts of one day `all` read 14.8, 21.9 and 25.3 ms against 6.1 to 6.2 for `p-cores`, and once `all` won |
 | 0.1.45 | Ryzen 5 5600X etc. | `STRATA_CPU_IQ_ALL_EXACT1`: per expert, one thread, IQ3_S -32% on Threadripper PRO 3975WX, -11% on Ryzen 5 5600X; Core Ultra 7 265 IQ3_S -60%. End to end: Xeon E5-2643 v3 + RTX A4000 CPU part -5% (decode +0.5%, +2.5% on story and code), Core Ultra 7 265 + RTX 3060 +0.4%, Threadripper + R9700 +0.4% |
+| 0.1.64 | RTX 3090 24 GB at PCIe 4.0 x8, Ryzen 9 5950X (16 cores, two 32 MiB L3), 96 GB DDR4, Linux; Flash-Next Huihui abliterated v2 UD-Q4_K_XL, 262K context, `--spec 4`, int8 KV; a fresh engine per run, interleaved | `STRATA_L3_PF=1` (top 4) against the same build without it (`STRATA_POOL_DEP` on, the default). 8 greedy chat prompts x 600 tokens, 3 rounds: 66.76 / 67.98 / 67.37 -> 70.54 / 71.58 / 71.79 tok/s (+5.8%). A recorded 34-turn agent session (prompts of 142K to 174K tokens sent as token ids, each turn capped at its recorded length), 3 rounds, total decode speed: 63.03 / 62.10 / 60.56 -> 65.63 / 66.81 / 64.31 tok/s (+6.0%); mean of per-turn speed 60.16 / 59.03 / 57.58 -> 62.52 / 63.39 / 61.83 (+6.2%). On 0.1.61, one run each, per-turn mean: top 2 61.14, top 3 61.04, top 4 61.16 to 63.40, top 6 61.60, top 8 61.29, top 2 per token row 62.12; static rows alone 65.17 / 60.66 / 64.30 tok/s on the chat prompts against 64.71 / 64.65 / 64.64 without. CPU time per missed expert 74 -> 60 us. The 200 tokens of a greedy one-shot run (`--adapt-every 100000 --pcie-frac 0`) were the same with it off, on, and on the build before it, and every window with the same position and drafts had the same hash. |
 
 ### Images
 

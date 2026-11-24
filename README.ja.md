@@ -7,14 +7,13 @@ Qwen3.8-Flash-Next、Hy4-Flash、GLM 5.3 Flash、DeepSeek V4 Flash、LFM2.5、Fl
 
 <p align="center"><a href="https://github.com/simplexai-labs/linger"><img height="28" alt="Used by Linger" src="docs/media/used-by-linger.svg"></a></p>
 
-<p align="center"><img src="docs/media/speed.svg" width="820" alt="回答を書く速さ（トークン/秒）：Qwen3.6-35B-A3B は 8 GB のノート PC で 98、RTX 5090 で 536"></p>
+<p align="center"><img src="docs/media/speed.svg" width="820" alt="回答を書く速さ（トークン/秒）：Qwen3.6-35B-A3B は 8 GB のノート PC で 106、RTX 5090 で 536"></p>
 
 <p align="center"><img src="docs/media/claude-code-demo.gif" width="820" alt="ターミナルの Claude Code と、その横の PolyStrata の API Monitor"><br>
 <sub>Claude Code と Qwen3.6-35B-A3B UD-Q3_K_M、8 GB のカードのノート PC で、実時間：小さなプログラムに <code>--json</code> オプションを足し、テストを書いて実行します。サーバーは起動時に Claude Code のシステムプロンプトを読んであります（<code>"warm_start": true</code>）。</sub></p>
 
-<p align="center"><a href="https://github.com/Niko1221/Strata/releases/download/v0.1.10/Pagoda.mp4"><img src="docs/media/pagoda-preview.webp" width="720" alt="PolyStrata のモデルが書いたボクセルの五重塔の庭。ブラウザで動いている様子"></a><br>
-<sub>ボクセルの五重塔の庭。1 回のプロンプトで作成し、RTX 5070 上の <a href="https://github.com/Niko1221/Strata">Strata</a>（Qwen3.8-Flash-Next IQ3_S、128K コンテキスト）で実行 ·
-<a href="https://github.com/Niko1221/Strata/releases/download/v0.1.10/Pagoda.mp4">動画全体（49 秒）</a></sub></p>
+<p align="center"><img src="docs/media/linger-inkling-3d.gif" width="820" alt="PolyStrata 上の Linger が 3D の村を書く"><br>
+<sub>PolyStrata 上の <a href="https://github.com/simplexai-labs/linger">Linger</a>：8 GB カードのノート PC で Inkling 2 Mini UD-Q3_K_XL が毎秒約 33 トークンで three.js のローポリ村を 1 つの HTML に書き、Linger がそのまま開きます。</sub></p>
 
 PolyStrata は、ふつうはサーバーが必要な大きな AI モデルを普通の PC で動かします。チャットをしたり、コードを書いたり、
 アプリやコーディングエージェントと連携したりできます。データが PC の外に出ることはありません。
@@ -64,19 +63,19 @@ PolyStrata は Niko1221 の [Strata](https://github.com/Niko1221/Strata) をも�
 
 | モデル | 8 GB のカードのノート PC<br>書き出し / 読み込み | RTX 5090<br>書き出し / 読み込み | 全サイズ |
 | --- | ---: | ---: | --- |
-| LFM2.5-24B-A2B | 87 / 3,955 | 492 / 25,275 | [LFM2.5](docs/models/lfm25.ja.md) |
-| Flint 40B-A2.5B | 66 / 2,648 | 261 / 15,033 | [Flint](docs/models/flint.ja.md) |
-| Qwen3.6-35B-A3B | 98 / 2,445 | 536 / 15,319 | [Qwen3.6](docs/models/qwen36.ja.md) |
-| Clover-35B-A3B-Preview | 77 / 2,266 | 308 / 13,918 | [Clover](docs/models/clover.ja.md) |
-| Ornith 1.5 | 89 / 2,298 | 366 / 14,438 | [Ornith](docs/models/ornith.ja.md) |
-| Gemma 4 26B-A4B | 96 / 2,174 | 370 / 11,478 | [Gemma 4](docs/models/gemma4.ja.md) |
-| Tiel Coder 35B-A3B | 91 / 2,455 | 440 / 15,109 | [Tiel Coder](docs/models/tiel.ja.md) |
-| MiniCPM-V 4.7 35B-A3B | 79 / 2,288 | 331 / 14,615 | [MiniCPM-V](docs/models/minicpmv.ja.md) |
-| Kolibri 1 | 63 / 843 | 207 / 6,133 | [Kolibri 1](docs/models/kolibri.ja.md) |
+| LFM2.5-24B-A2B | 86 / 4,035 | 492 / 25,275 | [LFM2.5](docs/models/lfm25.ja.md) |
+| Flint 40B-A2.5B | 64 / 2,643 | 261 / 15,033 | [Flint](docs/models/flint.ja.md) |
+| Qwen3.6-35B-A3B | 106 / 2,483 | 536 / 15,319 | [Qwen3.6](docs/models/qwen36.ja.md) |
+| Clover-35B-A3B-Preview | 83 / 2,242 | 308 / 13,918 | [Clover](docs/models/clover.ja.md) |
+| Ornith 1.5 | 87 / 2,362 | 366 / 14,438 | [Ornith](docs/models/ornith.ja.md) |
+| Gemma 4 26B-A4B | 92 / 2,187 | 370 / 11,478 | [Gemma 4](docs/models/gemma4.ja.md) |
+| Tiel Coder 35B-A3B | 89 / 2,517 | 440 / 15,109 | [Tiel Coder](docs/models/tiel.ja.md) |
+| MiniCPM-V 4.7 35B-A3B | 79 / 2,263 | 331 / 14,615 | [MiniCPM-V](docs/models/minicpmv.ja.md) |
+| Kolibri 1 | 66 / 851 | 207 / 6,133 | [Kolibri 1](docs/models/kolibri.ja.md) |
 | GLM 5.3 Flash | 動きません（32 GB のカードが必要） | 52 / 863 | [GLM](docs/models/glm.ja.md) |
 | DeepSeek V4 Flash | 動きません（32 GB のカードが必要） | 54 / 1,926 | [DeepSeek](docs/models/deepseek.ja.md) |
-| Inkling 2 Mini | 56 / 887 | 196 / 6,706 | [Inkling 2 Mini](docs/models/inkling.md) |
-| Groot 19B-A3B 261023 | 91 / 2,789 | 458 / 15,634 | [Groot](docs/models/groot.md) |
+| Inkling 2 Mini | 53 / 892 | 196 / 6,706 | [Inkling 2 Mini](docs/models/inkling.md) |
+| Groot 19B-A3B 261023 | 97 / 2,785 | 458 / 15,634 | [Groot](docs/models/groot.md) |
 | Hy4-Flash | 動きません（64 GB の RAM が必要） | 90-111 / 1,694 | [Hy4-Flash](https://github.com/Niko1221/Strata/releases/tag/v0.2.18) |
 
 ノート PC：RTX 4070 Laptop（8 GB）、Core i7-14700HX、RAM 32 GB。ワークステーション：RTX 5090（32 GB）、Xeon Platinum 8470Q（25 vCPU）、RAM 90〜120 GB。Flint はノート PC では UD-Q3_K_XL（RAM 32 GB でインストーラーが選ぶサイズ）、ワークステーションでは UD-Q4_K_XL です。Kolibri 1 はどちらも Q2_K です。ワークステーションでインストーラーが選ぶ Q4_K_M は測っていません。
@@ -198,8 +197,8 @@ PolyStrata のインストール、起動、停止もできます。
 **Mac（Apple シリコン、M1〜M5、macOS 15 以降）：** まず一度だけ Apple の Command Line Tools をインストールします（ターミナルで `xcode-select --install`。Xcode 本体は不要です）。次に PolyStrata フォルダーでターミナルを開き、**`./setup.sh`** を実行します。Mac 用エンジンをお使いの Mac 上でビルドし（約 7 分）、同じ質問をしてからモデルをダウンロードして起動します。次回からは `./setup.sh` ですぐに起動します。どのサイズが Mac に合うかと速度：[docs/MAC.md](docs/MAC.md)。標準では Qwen3.8-Flash-Next をセットアップします。`./setup.sh --family qwen36` または `--family lfm25` を使うと、代わりに Qwen3.6 か LFM2.5 を strata-poly の Metal エンジンでセットアップします（ベータ版）。M5 Ultra では Qwen3.6 UD-Q2_K_XL が短いチャットで毎秒 134 トークンを書き、3,768 トークンのプロンプトを毎秒 2,978 トークンで読みました。`--family inkling` でも同じように Inkling 2 Mini をセットアップできます。M5 Ultra では UD-Q3_K_XL が短いチャットで毎秒 74 トークンを書き、32,787 トークンのプロンプトを毎秒 2,440 トークンで読み、そのあと毎秒 61 トークンで書きました。画像は CPU で読みます。GLM、DeepSeek、Ornith、Gemma 4、Tiel Coder、MiniCPM-V も Mac でセットアップできますが、Mac ではまだ実際の重みで動かしていません。Kolibri、Flint、Clover には NVIDIA か AMD のグラフィックカードが必要です。
 
 毎回 Enter を押せば、おすすめの答えになります。そのあとモデル（Qwen3.8-Flash-Next は約 70 GB、GLM 5.3 Flash は 79〜114 GB、DeepSeek V4 Flash は 91 GB、Kolibri 1 は 29〜48 GB、ほかの 8 つは 11〜42 GB）をダウンロードして起動します。
-ダウンロードが止まったら、もう一度実行してください。続きから再開します。ブラウザーで PolyStrata アプリが
-`http://127.0.0.1:8080` に開きます。
+ダウンロードが止まったら、もう一度実行してください。続きから再開します。準備ができると、API は
+`http://127.0.0.1:8080/v1` で使えます。チャットするアプリが欲しければ [Linger](https://github.com/simplexai-labs/linger) がおすすめです。OpenAI や Anthropic の API に対応したアプリなら、ほかのものでも使えます。
 
 14 個ともインストーラーのモデル一覧にあります。`./setup.sh --family glm`（または `deepseek`、`lfm25`、`flint`、`qwen36`、`clover`、`ornith`、`gemma4`、`tiel`、`minicpmv`、`kolibri`、`groot`、`inkling`）なら
 直接そこへ進みます（[何を尋ね、何を書き出すか](docs/GLM.md#install)、英語）。
@@ -210,6 +209,7 @@ PolyStrata のインストール、起動、停止もできます。
 
 **次回からは** `START-HERE.bat`（または `./setup.sh`）をもう一度実行します。すぐに起動し、同じものを 2 回ダウンロードすることはありません。
 モデルを止めるときはウィンドウを閉じます。`UPDATE.bat`（`./setup.sh --update`）を使うと、PolyStrata を起動せずに更新できます。
+0.1.45-poly.10 以前から更新した場合、setup のファイルは `terminal/` に移りました（[変更点](docs/INSTALL.md#coming-from-0145-poly10-or-older)）。
 更新、複数のカード、ファイルの保存場所、すべてのオプションについて：[docs/INSTALL.md](docs/INSTALL.md)。
 
 **自分の PC で速いか知りたいときは** `tools/BENCH.bat`（`tools/bench.sh`）を実行します。5〜10 分ほどで、チャット、4K/16K のプロンプト、エージェント風のセッションを自分の設定のまま測り、共有できるレポートを書き出します（[やり方](docs/COMMUNITY_BENCHMARKS.md#run-the-benchmark)）。
@@ -240,18 +240,17 @@ PolyStrata のインストール、起動、停止もできます。
 
 ## 使い方
 
-14 個のモデルの使い方は同じです。同じアプリ、同じ API です。
+14 個のモデルの使い方は同じで、どれも同じ API で使います。
 
-<p align="center"><img src="docs/media/runpagoda.png" width="900" alt="PolyStrata アプリの Monitor タブと、その横で動くコーディングエージェント"><br>
-<sub>PolyStrata アプリの <b>Monitor</b>（左）。コーディングエージェントが動画の五重塔の庭を書いているところ（右）。<a href="https://github.com/Niko1221/Strata">Strata</a> のスクリーンショットです。</sub></p>
+<p align="center"><a href="https://github.com/simplexai-labs/linger"><img src="docs/media/linger-desktop.jpg" width="900" alt="Mac 上の Linger：エージェントが進み具合を報告するチャットルームと、その横で作業中の Chrome ウィンドウ"></a><br>
+<sub><a href="https://github.com/simplexai-labs/linger">Linger</a>：複数のエージェントが 1 台のコンピューターと、ログイン済みのブラウザーを共有します。画像は Linger プロジェクトのものです。</sub></p>
 
-- **ブラウザーで：** `http://127.0.0.1:8080` を開きます。**Chat**、モデルと GPU/CPU/RAM の様子をリアルタイムで見る **Monitor**、
-  **Requests**（オンにした [API リクエストモニター](docs/DETAILS.md#api-request-monitor)を別のタブで開きます）、設定とアドレスが載った **About** があります。
-  モデルを 2 つ以上入れていれば、ページ上部のリストで切り替えられます。切り替えると新しいチャットになり、**Undo** で前のチャットに戻せます。
+- **パーソナルエージェントとして：** [Linger](https://github.com/simplexai-labs/linger) がおすすめです。Mac（Apple シリコン）、Windows、Linux 版を[最新リリース](https://github.com/simplexai-labs/linger/releases/latest)からダウンロードできます。
 - **ターミナルで：** PolyStrata フォルダーで `python polystrata.py --model <name>` を実行すると、インストール済みのモデルと
   チャットできます。`--list-models` で一覧を出せます（[詳しく](docs/INSTALL.md#the-terminal)）。
-- **パーソナルエージェントとして：** [Linger](https://github.com/simplexai-labs/linger) をダウンロード：[Mac（Apple シリコン）](https://github.com/simplexai-labs/linger/releases/download/desktop-v0.1.2/Linger-0.1.2-macos-arm64.dmg) ·
-  [Windows](https://github.com/simplexai-labs/linger/releases/download/desktop-v0.1.2/Linger-0.1.2-windows-x64-setup.exe) · [Linux](https://github.com/simplexai-labs/linger/releases/download/desktop-v0.1.2/Linger-0.1.2-linux-x64.tar.gz)。
+- **ブラウザーで：** `http://127.0.0.1:8080` には、モデルと GPU/CPU/RAM の様子をリアルタイムで見る **Monitor**、
+  **Requests**（オンにした [API リクエストモニター](docs/DETAILS.md#api-request-monitor)を別のタブで開きます）、設定とアドレスが載った **About** があります。
+  モデルを 2 つ以上入れていれば、ページ上部のリストで切り替えられます。
 - **アプリやコーディングエージェントから：** 「OpenAI-compatible」プロバイダーを追加し、ベース URL に
   **`http://127.0.0.1:8080/v1`** を指定します。API キーとモデル名は何でもかまいません。
   - Anthropic の API を使うアプリ：`http://127.0.0.1:8080/v1/messages`（Claude Code：
@@ -259,7 +258,7 @@ PolyStrata のインストール、起動、停止もできます。
     （[理由](docs/FAQ.md#can-i-use-it-with-claude-code-codex-or-other-apps)））。
   - Codex CLI など OpenAI Responses API を使うアプリ：`/v1/responses`
     （[設定方法](docs/DETAILS.md#the-responses-api-and-codex-cli)）。
-- **思考（Thinking）：** チャットのメニュー、またはアプリの「reasoning effort」で **off、low、medium、high** を選びます。
+- **思考（Thinking）：** アプリの「reasoning effort」設定で **off、low、medium、high** を選びます。
   off がいちばん速く、high は難しい質問に向いています。
 - **スマートフォンや別の PC から：** `START-HERE.bat --setup --host 0.0.0.0 --api-key <secret>`。キーは必ず設定してください。
 
@@ -267,12 +266,12 @@ PolyStrata のインストール、起動、停止もできます。
 
 | | Qwen3.8-Flash-Next | GLM 5.3 Flash | DeepSeek V4 Flash | LFM2.5-24B-A2B | Flint 40B-A2.5B | Kolibri 1 | Qwen3.6-35B-A3B、Clover-35B-A3B-Preview、Ornith 1.5、Gemma 4 26B-A4B、Tiel Coder 35B-A3B、MiniCPM-V 4.7 35B-A3B |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| **画像** | セットアップで「Images?」に yes と答えます。そのあとチャットで **Picture** をクリックするか、アプリで画像を添付します。グラフィックメモリーが 24 GB 未満なら、画像エンコーダーはプロセッサーで動きます。NVIDIA でも AMD でも同じです。 | まだ読めません。 | テキストだけです。 | テキストだけです。 | テキストだけです。 | テキストだけです。 | セットアップで「Images?」に yes と答えます。あとは Qwen3.8-Flash-Next と同じです。16 GB 未満のカードでは画像エンコーダーがプロセッサーで動き、画像 1 枚に数秒かかります。Clover はテキストだけです。 |
+| **画像** | セットアップで「Images?」に yes と答えます。そのあとアプリで画像を添付します。グラフィックメモリーが 24 GB 未満なら、画像エンコーダーはプロセッサーで動きます。NVIDIA でも AMD でも同じです。 | まだ読めません。 | テキストだけです。 | テキストだけです。 | テキストだけです。 | テキストだけです。 | セットアップで「Images?」に yes と答えます。あとは Qwen3.8-Flash-Next と同じです。16 GB 未満のカードでは画像エンコーダーがプロセッサーで動き、画像 1 枚に数秒かかります。Clover はテキストだけです。 |
 | **リクエストは 1 つずつ** | 初期設定では PolyStrata は 1 つのリクエストに答え、ほかは待ちます。複数に同時に答えるには`"parallel": 2` を設定します（[BATCHING.md](docs/BATCHING.md)）。12 GB のカードでは、それぞれの回答が遅くなります。 | 1 つずつ答え、ほかは待ちます。 | 1 つずつ答え、ほかは待ちます。 | 1 つずつ答え、ほかは待ちます。 | 1 つずつ答え、ほかは待ちます。 | 1 つずつ答え、ほかは待ちます。 | 1 つずつ答え、ほかは待ちます。 |
 | **複数の会話** | RAM に余裕があれば、標準で複数の会話を RAM に保持します。2 通目以降や、交代で話すエージェントは数秒で始まります（[詳細](docs/DETAILS.md#conversation-cache)）。 | 直前の会話は保持されます。セットアップで、複数の会話を RAM に保持するかどうかを尋ねます。保持すると、エージェントとサブエージェントが交互に使っても、プロンプトを読み直しません（[仕組み](docs/GLM.md#several-conversations-at-once)）。 | GLM 5.3 Flash と同じです。 | GLM 5.3 Flash と同じです。 | GLM 5.3 Flash と同じです。 | GLM 5.3 Flash と同じです。 | GLM 5.3 Flash と同じです。 |
 | **長いプロンプト** | PolyStrata はチャットの最初のメッセージをすべて読みます。30,000 トークンあたり約 1 分かかります。2 通目以降のメッセージは数秒で始まります。 | 最初のメッセージはすべて読みます。30,000 トークンあたり約 40 秒かかります。 | 最初のメッセージはすべて読みます。30,000 トークンあたり約 29 秒かかります。 | 最初のメッセージはすべて読みます。30,000 トークンにワークステーションで 1.3〜1.5 秒、8 GB のノート PC で 8〜10 秒かかります。 | 最初のメッセージはすべて読みます。30,000 トークンにワークステーションで約 2.3 秒、8 GB のノート PC で 15〜22 秒かかります。 | 最初のメッセージはすべて読みます。30,000 トークンに Q2_K でワークステーションは約 6 秒、8 GB のノート PC は約 40 秒かかります。 | 最初のメッセージは全部読みます。30,000 トークンで、ワークステーションは 4〜5 秒、8 GB のノート PC は 14〜27 秒です。 |
 
-詳しくは：[チャットの保存場所](docs/INSTALL.md#where-things-are-stored)、[API](docs/DETAILS.md#using-it)。
+詳しくは：[ファイルの保存場所](docs/INSTALL.md#where-things-are-stored)、[API](docs/DETAILS.md#using-it)。
 
 ### オプション：モデル全体が RAM に収まる場合、GPU 1 枚でさらに高速化
 

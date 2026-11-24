@@ -61,17 +61,17 @@ def _check_pre(tok: dict) -> None:
     for i, want in enumerate(_SPLITS):
         p = parts[i]
         if p.get("type") != "Split" or (p.get("pattern") or {}).get("Regex") != want or p.get("behavior") != "Isolated":
-            raise NotHy4Tokenizer(f"split {i + 1} of the pre-tokenizer is not the rule this Strata knows")
+            raise NotHy4Tokenizer(f"split {i + 1} of the pre-tokenizer is not the rule this PolyStrata knows")
     third = parts[2]
     rx = (third.get("pattern") or {}).get("Regex", "")
     if third.get("type") != "Split" or not rx.startswith(_WORDS_HEAD) or third.get("behavior") != "Isolated":
-        raise NotHy4Tokenizer("split 3 of the pre-tokenizer is not the rule this Strata knows")
+        raise NotHy4Tokenizer("split 3 of the pre-tokenizer is not the rule this PolyStrata knows")
     if parts[3].get("type") != "ByteLevel" or parts[3].get("add_prefix_space") or parts[3].get("use_regex"):
         raise NotHy4Tokenizer("the byte mapping is not the plain GPT-2 one")
     if (tok.get("model") or {}).get("type") != "BPE" or tok["model"].get("byte_fallback") or tok["model"].get("ignore_merges"):
         raise NotHy4Tokenizer("the model is not plain byte-level BPE")
     if (tok.get("normalizer") or {}).get("normalizers"):
-        raise NotHy4Tokenizer("the file has a text normalizer; this Strata applies none")
+        raise NotHy4Tokenizer("the file has a text normalizer; this PolyStrata applies none")
 
 
 def convert(tokenizer_json, chat_template: str, out_dir, *, bos: int | None = None, eos: int | None = None, pad: int | None = None) -> dict:

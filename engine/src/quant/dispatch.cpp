@@ -1,5 +1,7 @@
 // src/quant/dispatch.cpp - kernel lookup: the best kernel of an arithmetic contract that this CPU can run.
 #include <algorithm>
+#include <cstdlib>
+#include <cstring>
 
 #include "registry.hpp"
 #include "strata/quant/act.hpp"
@@ -27,7 +29,7 @@ int collect_dots(Type w, Arith a, const DotKernel** out, int cap) {
     const DotTable tables[] = {
         generic_dot_table(),
 #ifdef STRATA_QUANT_X86_TIERS
-        avx_dot_table(), avx2_dot_table(), avx512_dot_table(),
+        avx_dot_table(), avx2_dot_table(), avx512_dot_table(), avx512vbmi_dot_table(),
 #endif
 #ifdef STRATA_QUANT_AVXVNNI
         avxvnni_dot_table(),
@@ -43,7 +45,7 @@ int collect_acts(Type act, Arith a, const ActKernel** out, int cap) {
     const ActTable tables[] = {
         generic_act_table(),
 #ifdef STRATA_QUANT_X86_TIERS
-        avx_act_table(), avx2_act_table(),
+        avx_act_table(), avx2_act_table(), avx512_act_table(),
 #endif
 #ifdef STRATA_QUANT_ARM_TIERS
         neon_act_table(),
@@ -54,13 +56,22 @@ int collect_acts(Type act, Arith a, const ActKernel** out, int cap) {
 
 }  // namespace
 
+bool iq3s_own_on() noexcept {
+    static const bool on = [] {
+        // Only the exact value 0 turns them off (no "off"/"false"); the quant layer has no shared env-flag helper.
+        const char* v = std::getenv("STRATA_CPU_IQ3S");
+        return v == nullptr || std::strcmp(v, "0") != 0;
+    }();
+    return on;
+}
+
 int dot_kernels(Type w, Arith a, const DotKernel** out, int cap) noexcept { return collect_dots(w, a, out, cap); }
 
 const DotKernel* dot_kernel(Type w, Arith a, Isa max_isa) noexcept {
     const DotKernel* v[kMaxK];
     const int n = collect_dots(w, a, v, kMaxK);
     for (int i = 0; i < n; ++i)
-        if ((int) v[i]->isa <= (int) max_isa && isa_ok(v[i]->isa)) return v[i];
+        if ((int) v[i]->isa <= (int) max_isa && isa_ok(v[i]->isa) && dot_kernel_on(*v[i])) return v[i];
     return nullptr;
 }
 
@@ -73,6 +84,27 @@ DotRowsFn dot_rows_kernel(Type w, Arith a) noexcept {
     (void) w, (void) a;
     return nullptr;
 }
+
+const DotX4Kernel* dot_x4_kernel(Type w, Arith a, Isa max_isa) noexcept {
+#ifdef STRATA_QUANT_X86_TIERS
+    const DotX4Table tables[] = {avx512_dot_x4_table(), avx2_dot_x4_table()};
+    const DotX4Kernel* best = nullptr;
+    for (const DotX4Table& tb : tables) {
+        for (int i = 0; i < tb.n; ++i) {
+            const DotX4Kernel& k = tb.v[i];
+            if (k.weight == w && k.arith == a && (int) k.isa <= (int) max_isa && isa_ok(k.isa)) {
+                if (!best || (int) k.isa > (int) best->isa) best = &k;
+            }
+        }
+    }
+    return best;
+#else
+    (void) w; (void) a; (void) max_isa;
+    return nullptr;
+#endif
+}
+
+const DotX4Kernel* dot_x4_kernel(Type w, Arith a) noexcept { return dot_x4_kernel(w, a, best_isa()); }
 
 const ActKernel* act_kernel(Type act, Arith a, Isa max_isa) noexcept {
     const ActKernel* v[kMaxK];

@@ -1,6 +1,6 @@
 # PolyStrata media and video guide
 
-For people and AI tools creating an article, overview or video. Last reviewed: 20 November 2026, for PolyStrata 0.2.19.
+For people and AI tools creating an article, overview or video. Last reviewed: 20 November 2026, for PolyStrata 0.2.20.
 Use [AI_REFERENCE.md](AI_REFERENCE.md) for product facts and [README.md](../README.md) for the public introduction.
 
 ## Short description
@@ -8,15 +8,16 @@ Use [AI_REFERENCE.md](AI_REFERENCE.md) for product facts and [README.md](../READ
 PolyStrata runs large AI models on your own computer: Qwen3.8-Flash-Next on the Strata project's engine, and eleven
 more models (GLM 5.3 Flash, DeepSeek V4 Flash, Qwen3.6 and others) on an engine written for PolyStrata. It is installed
 from a copy of the repository with setup (`START-HERE.bat` on Windows, `./setup.sh` on Linux and on a Mac) and used
-through its web page, its OpenAI- and Anthropic-compatible API, or a coding tool. PolyStrata's code is free and open
+through its OpenAI- and Anthropic-compatible API: from an app such as Linger, a coding tool or the terminal. PolyStrata's code is free and open
 source under the MIT license.
 
 Suggested opening: “Run large AI models on your own PC.”
 
 ## A short video outline
 
-1. **Show the web page.** Once setup has started a model, `http://127.0.0.1:8080` has the chat, a live monitor of the
-   model and the GPU, CPU and RAM, and the request monitor. A chat and a visible result explain the product quickly.
+1. **Show it in an app.** Once setup has started a model, connect [Linger](https://github.com/simplexai-labs/linger) or
+   another app to it. A chat and a visible result explain the product quickly. `http://127.0.0.1:8080` has a live
+   monitor of the model and the GPU, CPU and RAM, and the request monitor.
 2. **Show the two engines.** Qwen3.8-Flash-Next runs on the Strata project's engine; the eleven other models run on
    PolyStrata's own engine and are experimental. Explain the [availability limits](AI_REFERENCE.md#model-families).
 3. **Choose a model for the machine.** For Qwen3.8-Flash-Next, prefer ISTA-DASLab, then Unsloth, Gyro and other
@@ -30,9 +31,9 @@ This is an outline, not evidence that any particular model, workflow or benchmar
 
 ## Existing assets
 
-Use the existing assets with accurate captions. PolyStrata has no logo file; write its name as text. Several pictures
-come from the Strata project and show its desktop app or Terminal, which this repository does not publish: caption
-them as the Strata project's, not as PolyStrata.
+Use the existing assets with accurate captions. PolyStrata has no logo file; write its name as text. Some pictures
+come from the Strata project and show its Terminal or its demo, which this repository does not publish: caption
+them as the Strata project's, not as PolyStrata. The Linger picture is the Linger project's.
 
 | Asset | File | Suggested caption / context |
 | --- | --- | --- |
@@ -40,7 +41,7 @@ them as the Strata project's, not as PolyStrata.
 | Coding agent demo | [claude-code-demo.gif](media/claude-code-demo.gif) | Claude Code on Qwen3.6-35B-A3B UD-Q3_K_M with PolyStrata's API monitor beside it, on a laptop with an 8 GB card, in real time. |
 | Engine explanation | [how-it-works.svg](media/how-it-works.svg), [guess-and-check.svg](media/guess-and-check.svg) and the per-model versions in [media/](media/) | Illustrations of each documented engine path, not proof that every model uses the same path. |
 | The Strata project's coding demo | [pagoda-preview.webp](media/pagoda-preview.webp), [Pagoda.mp4](https://github.com/Niko1221/Strata/releases/download/v0.1.10/Pagoda.mp4) | A voxel garden generated with the Strata project's release, documented with an RTX 5070, IQ3_S and 128K context. |
-| The Strata project's desktop app | [app-chat.png](media/app-chat.png), [runpagoda.png](media/runpagoda.png) | Screenshots of the Strata project's app. app-chat.png shows a Gyro model; do not relabel it as an ISTA run. |
+| Linger | [linger-desktop.jpg](media/linger-desktop.jpg) | Linger, the app the README recommends, on a Mac: agents report in a chat room beside the Chrome windows they work in. Copied unchanged from the [Linger project](https://github.com/simplexai-labs/linger) (`assets/feature-desktop-three-agents.jpg`), under [Linger's license](https://github.com/simplexai-labs/linger/blob/main/LICENSE) (Apache 2.0 with added conditions). |
 | The Strata project's Terminal | [terminal-monitor.png](media/terminal-monitor.png) | Its monitor during a Gyro-S session; the live counters are not a standardized benchmark. |
 
 ## Accuracy rules

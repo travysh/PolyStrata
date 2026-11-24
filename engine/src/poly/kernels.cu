@@ -3424,7 +3424,26 @@ void* blas_create(void* stream) {
     cublasGemmStridedBatchedEx(h, CUBLAS_OP_T, CUBLAS_OP_N, n, n, n, &one, a, CUDA_R_16F, n, n * n, a + n * n,
                                CUDA_R_16F, n, n * n, &zero, (float*) (a + 2 * n * n), CUDA_R_32F, n, n * n, 1,
                                CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+#if defined(STRATA_USE_HIP)
+    // hipBLASLt loads a product type's kernels at its first call: on Windows the first single-precision product took
+    // 4 s with the card idle (an RX 9070 XT, ROCm 10.2), inside the first prompt.  A prompt's two other kinds of
+    // product, halves into floats and floats (gemm_f32), are made here once on the zeroed scratch, so the load happens
+    // while the model loads.  Nothing reads their results.  STRATA_POLY_WARMUP=0 leaves them out.
+    if (const char* v = std::getenv("STRATA_POLY_WARMUP"); !(v && v[0] == '0')) {
+        float* c = (float*) (a + 2 * n * n);
+        cublasGemmEx(h, CUBLAS_OP_T, CUBLAS_OP_N, n, n, n, &one, a, CUDA_R_16F, n, a + n * n, CUDA_R_16F, n, &zero, c,
+                     CUDA_R_32F, n, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+        const int m = n / 2;   // n * n floats of the scratch hold the two inputs and the output of m * m each
+        const float* f = (const float*) a;
+        cublasSgemm(h, CUBLAS_OP_T, CUBLAS_OP_N, m, m, m, &one, f, m, f + m * m, m, &zero, c, m);
+    }
+#endif
     cudaStreamSynchronize(cs(stream));
+#if defined(STRATA_USE_HIP)
+    // hipBLAS on Windows can leave a stale error behind a product that worked (prefill/gemm.cu): nothing reads these
+    // products, so whatever they leave must not reach the next launch's check
+    (void) cudaGetLastError();
+#endif
     cudaFree(p);
     return h;
 }
@@ -4356,11 +4375,11 @@ void merge_attn_piece(float* acc_out, float* acc_ml, const float* piece_out, con
 // instead: out[r * width + i] = (float)codes[row + r][i] * __half2float(scales[row + r][i / 32]).  blockIdx.y is
 // the row of the block (blockIdx.x the columns).  A block never wraps a ring: it ends where a ring starts over.
 __global__ void dequant_q8_kernel(const int8_t* __restrict__ codes, const uint16_t* __restrict__ scales,
-                                  half* __restrict__ out, int width, long long row, size_t rs) {
+                                  half* __restrict__ out, int width, long long row, size_t rs, size_t ss) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= width) return;
     const size_t r = (size_t) (row + blockIdx.y), at = r * rs;
-    const float d = __half2float(__ushort_as_half(scales[r * (rs >> 5) + (i >> 5)]));
+    const float d = __half2float(__ushort_as_half(scales[r * ss + (i >> 5)]));
     out[(size_t) blockIdx.y * width + i] = __float2half((float) codes[at + i] * d);
 }
 
@@ -5071,10 +5090,13 @@ void attend_batch(void* blas, const float* q, const uint16_t* kcache, const uint
     const int work_rows_f = width > 0 ? (int) std::min<size_t>(work_halves / 2 / (size_t) width, (size_t) INT_MAX) : 0;
     const size_t chunk_max = std::max<size_t>(16, kAttendResults / (size_t(n_head) * dim * sizeof(float)));
     const size_t cells_f = ((score_floats > qres ? score_floats - qres : 0) / 2) & ~size_t(3);   // a multiple of 4: the floats are read 4 at a time
+    // Both read a q8 cache as rows of width codes and width / 32 scales in two arrays (dequant_q8_f32_kernel, gemm_q8):
+    // a cache with its own row strides (Inkling 2's, codes and scales in one row) keeps the half path, which takes them.
+    const bool strided = kq8.rs || kq8.ss || vq8.rs || vq8.ss;
     // level 2: the head's values in whole blocks of 32 for the scales, and a block of at least 64 keys at the largest chunk
-    const bool own = level == 2 && kq && vq && dim % 32 == 0 && width % 32 == 0 && score_floats >= 4 * qres &&
+    const bool own = level == 2 && kq && vq && !strided && dim % 32 == 0 && width % 32 == 0 && score_floats >= 4 * qres &&
                      cells_f / n_head >= 64 * chunk_max;
-    const bool f32 = own || (level >= 1 && kq && vq && work_rows_f >= 256 && score_floats >= 4 * qres);
+    const bool f32 = own || (level >= 1 && kq && vq && !strided && work_rows_f >= 256 && score_floats >= 4 * qres);
     const size_t cells = f32 ? cells_f : score_floats / 3 * 2;
     float* weight32 = score + cells;
     float* qg32 = score + 2 * cells;   // the grouped queries as floats, in the scratch past the scores and weights
@@ -5170,10 +5192,12 @@ void attend_batch(void* blas, const float* q, const uint16_t* kcache, const uint
             // a q8 cache's rows are dequantized into the workspace the products read as an fp16 cache
             if (kq)
                 dequant_q8_kernel<<<dim3(grid(width, 256), m), 256, 0, cs(stream)>>>(
-                    kq8.codes, kq8.scales, (half*) kwork, width, row, kq8.rs ? kq8.rs : size_t(width));
+                    kq8.codes, kq8.scales, (half*) kwork, width, row, kq8.rs ? kq8.rs : size_t(width),
+                    kq8.ss ? kq8.ss : (kq8.rs ? kq8.rs : size_t(width)) >> 5);
             if (vq)
                 dequant_q8_kernel<<<dim3(grid(width, 256), m), 256, 0, cs(stream)>>>(
-                    vq8.codes, vq8.scales, (half*) vwork, width, row, vq8.rs ? vq8.rs : size_t(width));
+                    vq8.codes, vq8.scales, (half*) vwork, width, row, vq8.rs ? vq8.rs : size_t(width),
+                    vq8.ss ? vq8.ss : (vq8.rs ? vq8.rs : size_t(width)) >> 5);
             const half* krow = kq ? (const half*) kwork : (const half*) kcache + size_t(row) * width;
             const half* vrow = vq ? (const half*) vwork : (const half*) vcache + size_t(row) * width;
             // A product a group: its heads' queries of every token of the chunk against the group's keys.  cuBLAS

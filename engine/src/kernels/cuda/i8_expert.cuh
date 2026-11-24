@@ -459,6 +459,7 @@ __device__ __forceinline__ const uint32_t* i8_grid_src() {
     else if constexpr (T == 18) return (const uint32_t*) iq3xxs_grid;
     else if constexpr (T == 21) return (const uint32_t*) iq3s_grid;
     else if constexpr (T == 29) return (const uint32_t*) iq1s_grid_gpu;   // 2048 words: 8 values of 2 bits' worth in nibbles, as the other IQ1_M kernels read it
+    else if constexpr (T == 19) return (const uint32_t*) iq1s_grid_gpu;   // IQ1_S's, the same grid (i8_mma.cuh only)
     else return nullptr;
 }
 

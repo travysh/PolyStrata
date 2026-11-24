@@ -253,6 +253,41 @@ class MaxTokens(unittest.TestCase):
             del os.environ["STRATA_DEBUG"]
 
 
+class EchoRequests(unittest.TestCase):
+    """#244: STRATA_REQUEST_LINES=1 echoes the engine's summary lines; the regex lost #90's draft groups in the 0.2.16
+    file split and every request ended the echo thread with IndexError."""
+
+    def test_echo_of_real_engine_lines(self):
+        from serve import server
+        log = ("strata-poly: loaded\n"
+               # strata-poly (engine/src/poly/main.cpp), with and without drafts
+               "strata serve: prompt 1200 tokens = 1000 reused + 200 read in 50 ms (4000.0 tok/s), 30 generated in "
+               "300 ms (100.0 tok/s), drafts accepted 20 of 28\n"
+               "strata serve: prompt 64 tokens = 0 reused + 64 read in 16 ms (4000.0 tok/s), 8 generated in 80 ms "
+               "(100.0 tok/s)\n"
+               # the Strata project's engine (engine/src/program/generate.cpp)
+               "strata serve: prompt 98 tokens = 90 reused + 8 read in 4 ms (2000.0 tok/s), 12 generated in 96 ms "
+               "(125.0 tok/s), drafts accepted 9 of 11, 1 checkpoints\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "engine.log"
+            path.write_text(log, encoding="utf-8")
+            out = io.StringIO()
+
+            def at_end(_):
+                raise _Reached
+
+            with contextlib.redirect_stdout(out), mock.patch.object(server, "time", SimpleNamespace(sleep=at_end)):
+                with self.assertRaises(_Reached):
+                    server.echo_requests(str(path), 0)
+        self.assertEqual(out.getvalue().splitlines(), [
+            "[strata] request prompt 1200 cached 1000 output 30 prompt_read 50 ms total 350 ms prefill 4000.0 tok/s "
+            "decode 100.0 tok/s, drafts accepted 20 of 28",
+            "[strata] request prompt 64 cached 0 output 8 prompt_read 16 ms total 96 ms prefill 4000.0 tok/s "
+            "decode 100.0 tok/s",
+            "[strata] request prompt 98 cached 90 output 12 prompt_read 4 ms total 100 ms prefill 2000.0 tok/s "
+            "decode 125.0 tok/s, drafts accepted 9 of 11"])
+
+
 class FitMaxTokens(unittest.TestCase):
     """PR #24: --fit-max-tokens clamps an explicit budget that overshoots the context instead of a 400."""
 
@@ -4043,7 +4078,7 @@ class JoinedEngineArgs(unittest.TestCase):
 
 
 class SharedSettings(unittest.TestCase):
-    """The web app's "Use for other apps too": POST /settings makes its Chat settings every client's defaults."""
+    """POST /settings makes the settings it is sent every client's defaults."""
 
     @classmethod
     def setUpClass(cls):
@@ -5304,7 +5339,7 @@ class ThinkingBudget(unittest.TestCase):
         self.assertTrue(b["choices"][0]["message"]["reasoning_content"].startswith(ThinkingEngine.THOUGHT[:20] + "\n"))
 
     def test_a_shared_budget_reaches_a_request_that_sets_none(self):
-        """The Chat settings shared with other apps may carry a thinking budget too, like max_tokens and the effort."""
+        """The settings shared with other apps may carry a thinking budget too, like max_tokens and the effort."""
         self.svc.set_shared({"reasoning_budget_tokens": 20})
         code, b = self.openai()                                    # a client that asks for no budget of its own
         self.assertEqual(code, 200, b)
@@ -5591,7 +5626,7 @@ class ForcedToolChoice(unittest.TestCase):
 
     def test_any_model_name_on_the_anthropic_route_is_the_loaded_model(self):
         """#5312: Claude Desktop sends the model name `claude-5-5-sonnet` and cannot change it; the route serves the loaded model whatever
-        the request calls it, and answers with that model's name (the Desktop app's own gateway is a separate check in app/host)."""
+        the request calls it, and answers with that model's name."""
         self.says("Hello there.")
         for name in ("claude-5-5-sonnet", "claude-opus-4-1", "gpt-4o", "nonsense"):
             for stream in (False, True):
@@ -6076,13 +6111,17 @@ class ContainerLimits(unittest.TestCase):
         return telemetry.Cgroup(d)
 
     def test_quota_and_limit(self):
-        with tempfile.TemporaryDirectory() as d:
+        from serve import telemetry
+        # A fake clock: on a busy machine the real time between two readings adds to the second, and 50 % read 47
+        clock = mock.Mock(wraps=time, time=lambda: now[0])
+        now = [1000.0]
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(telemetry, "time", clock):
             c = self.cgroup(d)
             self.assertEqual((c.cpus, c.mem), (25.0, 120 << 30))
             self.assertEqual(c.ram_used(), 10 << 30)        # without the file cache
             (Path(d) / "cpu.stat").write_text("usage_usec 13500000\n")   # 12.5 CPU-seconds later
-            c.prev = (c.prev[0] - 1.0, c.prev[1])
-            self.assertAlmostEqual(c.cpu(), 50.0, delta=2.0)             # of the 25 CPUs, over about a second
+            now[0] += 1.0
+            self.assertAlmostEqual(c.cpu(), 50.0, places=6)              # of the 25 CPUs, over one second
 
     def test_no_limit(self):
         with tempfile.TemporaryDirectory() as d:
@@ -7184,7 +7223,7 @@ class VisionArgs(unittest.TestCase):
             seen.append(args)
             return Proc()
 
-        with mock.patch.object(server.subprocess, "Popen", popen):
+        with mock.patch.object(server.subprocess, "Popen", popen), mock.patch.object(server.lifeline, "_watch"):
             # kept running: on the CPU an encoder starts with the first picture by default
             server.Vision({"exe": "strata-vision", "mmproj": "m.gguf", "model": "t.gguf", "elastic": False, **cfg})
         return seen[0]

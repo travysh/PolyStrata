@@ -1,14 +1,11 @@
 """The 0.2.7 speed features and their switches: the contract names, the defaults (Faster long prompts OFF, the other two ON), where each applies, and how the Terminal carries them.
 
-The app (app/host/server/native-settings.mjs SPEED_SWITCHES) and Control (strata_control/speed_switches.py) say the same thing; the last test reads the
-app's table with node and fails when the two differ.  `strata launch` shows the environment entries as rows of its Advanced table and writes them into
+Control (strata_control/speed_switches.py) owns the table.  `strata launch` shows the environment entries as rows of its Advanced table and writes them into
 the run config's "env" (`--set STRATA_KVA=1` turns Faster long prompts on); a default launch has none of them.
 """
 from __future__ import annotations
 
 import json
-import shutil
-import subprocess
 import unittest
 from pathlib import Path
 
@@ -113,11 +110,10 @@ class Contract(unittest.TestCase):
         self.assertIn("Off by default", sw.effect)
         self.assertIn("long agent sessions it can repeat itself", sw.effect)
 
-    def test_the_terminal_only_switch_is_for_qwen_and_never_in_the_app(self):
+    def test_the_terminal_only_switch_is_for_qwen(self):
         sw = W.BY_ID["qwen_defaults_026"]
         self.assertTrue(sw.terminal_only)
         self.assertEqual(dict(sw.env), {"STRATA_DEFAULTS": "026"})
-        self.assertNotIn("qwen_defaults_026", [s.id for s in W.app_switches()])
         for cfg, gpus in ((QWEN, [RTX]), (QWEN36, [RTX]), ({**QWEN, "backend": "sycl"}, []), ({**QWEN, "backend": "cpu"}, [])):
             self.assertIn("qwen_defaults_026", [s.id for s in W.applicable(cfg, gpus)])
         self.assertNotIn("qwen_defaults_026", [s.id for s in W.applicable(DEEPSEEK, [RTX])], "a DeepSeek config gets no switch")
@@ -232,24 +228,6 @@ class PictureReaderGone(unittest.TestCase):
     def test_an_old_entry_stays_in_the_file(self):
         cfg = {**self.PICS, "env": {**QWEN["env"], "STRATA_VISION_TOWER": "mtmd"}}
         self.assertEqual(derive_config(cfg, S.LaunchSettings(), bool_flags=frozenset())["env"], cfg["env"])
-
-
-class SameAsTheApp(unittest.TestCase):
-    @unittest.skipUnless(shutil.which("node"), "node is not installed")
-    def test_the_apps_table_has_the_same_names_and_words(self):
-        script = ("import {SPEED_SWITCHES} from '../app/host/server/native-settings.mjs';"
-                  "console.log(JSON.stringify(SPEED_SWITCHES.map(s=>({id:s.id,label:s.label,hint:s.hint,default:s.default,env:s.env,legacy:s.legacy??{},group:s.group,words:s.words??{}}))))")
-        out = subprocess.run(["node", "--input-type=module", "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=60, check=True).stdout
-        app = json.loads(out)
-        self.assertEqual([a["id"] for a in app], [s.id for s in W.app_switches()], "the Terminal-only switch is not in the app's table")
-        for a, s in zip(app, W.app_switches()):
-            self.assertEqual(a["label"], s.label)
-            self.assertEqual(a["hint"], s.effect, s.id)
-            self.assertEqual(a["env"], dict(s.env), s.id)
-            self.assertEqual(a["default"], s.default, s.id)
-            self.assertEqual(a["legacy"], dict(s.legacy), s.id)
-            self.assertEqual(a["group"], s.group, s.id)
-            self.assertEqual(a["words"], dict(s.words), s.id)
 
 
 if __name__ == "__main__":

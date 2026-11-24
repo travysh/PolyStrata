@@ -185,6 +185,33 @@ STUBBORN = (
 )
 
 
+class ClosedLog(unittest.TestCase):
+    """#154: a log whose descriptor was closed under its file object (v0.2.19-poly.1's vision_log_tail) made the CPU
+    picture reader's Popen raise OSError on Windows and ended the server.  The child starts, its output goes nowhere."""
+
+    def test_a_child_starts_when_its_log_is_closed(self):
+        from serve import lifeline
+        from unittest import mock
+        fd = os.open(os.devnull, os.O_WRONLY)
+        os.close(fd)                                    # the number names no open file now, as the log's did
+
+        class Log:
+            def fileno(self):
+                return fd
+        with mock.patch.object(lifeline.procs, "write_record", return_value=None):   # no record in the user's state dir
+            child = lifeline.popen([sys.executable, "-c", "print('read')"], "vision", stdout=subprocess.PIPE,
+                                   stderr=Log(), text=True)
+            out, _ = child.communicate(timeout=60)
+        self.assertEqual((child.returncode, out.strip()), (0, "read"))
+
+    def test_an_open_log_is_passed_as_it_is(self):
+        from serve import lifeline
+        with tempfile.TemporaryFile("w") as f:
+            self.assertIs(lifeline._open_or_devnull(f, "engine"), f)
+        for given in (None, subprocess.PIPE, subprocess.STDOUT, subprocess.DEVNULL):
+            self.assertIs(lifeline._open_or_devnull(given, "engine"), given)
+
+
 class HardFallback(unittest.TestCase):
     """The clean stop has a deadline: an engine that ignores STOP, QUIT and SIGTERM is killed, and close() returns."""
 

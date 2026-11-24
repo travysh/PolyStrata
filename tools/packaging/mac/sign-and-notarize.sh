@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Sign the Strata Mac app (dmg or .app) and, optionally, the Mac Terminal archive with the owner's Developer ID, then notarise
-# them with Apple, so macOS opens them without the "damaged" / "unidentified developer" warning.
+# Sign the Mac Terminal archive and Mac engine packages with the owner's Developer ID, then notarise them with Apple, so macOS
+# opens them without the "damaged" / "unidentified developer" warning.
 #
-#   bash sign-and-notarize.sh <Strata-tester-mac.dmg | Strata.app> [--terminal <Strata-Terminal-Mac.zip>] [--engine <engine-folder.tar.gz>] [--updater-archive] [--out DIR] [--dry-run]
+#   bash sign-and-notarize.sh [--terminal <Strata-Terminal-Mac.zip>] [--engine <engine-folder.tar.gz>] [--out DIR] [--dry-run]
 #   bash sign-and-notarize.sh --terminal <Strata-Terminal-Mac.zip>            # the Terminal archive alone
 #   bash sign-and-notarize.sh --terminal <Terminal.tar.gz> --engine <strata-...-unsigned-folder.tar.gz>   # both in one run
 #
@@ -21,26 +21,12 @@
 #   com.apple.security.cs.disable-library-validation to node and python ONLY so that the smoke tests can run. A real run never does.
 #
 # What it does, in order (each step prints OK or FAIL; the first FAIL stops the run and the summary says which):
-#   1. copies the .app out of the dmg into a temporary folder;
-#   2. signs every nested Mach-O inside-out (deepest first): hardened runtime, secure timestamp, entitlements only where needed;
-#   3. rewrites the SHA-256 and size of every engine file it signed in the engine package's engine-component.json (Control refuses an
-#      engine whose files do not match that manifest), then signs the .app itself;
-#   4. codesign --verify --deep --strict, spctl -a -vvv;
-#   5. smoke tests of the SIGNED copy (the app's own --self-test, node loading every native addon, python imports, the engine's --version,
-#      and Control's own engine manifest check), so a signing mistake shows up here and not on a tester's Mac;
-#   6. notarises the .app, staples it, rebuilds the dmg (same layout as app/desktop/scripts/make-dmg.sh), signs the dmg, notarises the dmg,
-#      staples it, spctl -a -t open --context context:primary-signature -vv;
-#   7. Terminal archive: signs every Mach-O inside, re-zips, notarises the zip (a zip cannot be stapled: see the note at the end).
-#   7b. --engine FOLDER.tar.gz (an engine package of the Mac that Control installs from the feed, a tar of one folder: its program, its
-#      metal/ kernel sources and engine-component.json): signs every Mach-O in it like the engine inside the app (hardened runtime, timestamp, no entitlements),
+#   1. Terminal archive: signs every Mach-O inside, re-zips, notarises the zip (a zip cannot be stapled: see the note at the end).
+#   2. --engine FOLDER.tar.gz (an engine package of the Mac that Control installs from the feed, a tar of one folder: its program, its
+#      metal/ kernel sources and engine-component.json): signs every Mach-O in it (hardened runtime, timestamp, no entitlements),
 #      writes the signed files' SHA-256 and size into engine-component.json, codesign --verify --strict on each, checks that the signed
 #      program starts, notarises a zip of the folder, and packs it again as <component>-<version>-<platform>-<backend>-folder.tar.gz (modes
 #      kept). Sign the folder with the feed key AFTER this step, on the PC: signing changes the program, so the manifest changes with it.
-#   8. --updater-archive (opt-in, needs the app input): packs the signed, notarised, stapled .app into Strata.app.tar.gz, the file Tauri's in-app
-#      updater downloads on a Mac (Strata.app at the root of the archive), and checks it by unpacking it again. The archive is NOT signed with the
-#      Tauri updater key here: this script never touches that key. Sign it on the PC (npx tauri signer sign) and put it in the update file with
-#      tools/packaging/feed_tool.py set-app-platform (see tools/packaging/UPDATES.md). Any Strata.app.tar.gz / .sig that `tauri build` made earlier holds the
-#      UNSIGNED app and must not be published.
 set -u
 set -o pipefail
 
@@ -49,7 +35,8 @@ NOTARY_PROFILE="${NOTARY_PROFILE:-strata-notary}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENT_NODE_SRC="$HERE/entitlements-node.plist"
 
-INPUT=""; TERMINAL=""; ENGINE=""; OUT=""; DRY=0; KEEP=0; SIGN_NESTED=0; UPDATER_ARCHIVE=0
+TERMINAL=""; OUT=""; DRY=0; KEEP=0; SIGN_NESTED=0
+declare -a ENGINES=()
 WORK=""
 LOG=""
 declare -a RESULTS=()
@@ -65,19 +52,17 @@ usage() {
 while [ $# -gt 0 ]; do
   case "$1" in
     --terminal)    [ $# -ge 2 ] || usage; TERMINAL="$2"; shift 2 ;;
-    --engine)      [ $# -ge 2 ] || usage; ENGINE="$2"; shift 2 ;;
+    --engine)      [ $# -ge 2 ] || usage; ENGINES+=("$2"); shift 2 ;;
     --out)         [ $# -ge 2 ] || usage; OUT="$2"; shift 2 ;;
     --dry-run)     DRY=1; shift ;;
     --keep-work)   KEEP=1; shift ;;
     --sign-nested) SIGN_NESTED=1; shift ;;
-    --updater-archive) UPDATER_ARCHIVE=1; shift ;;
     -h|--help)     usage 0 ;;
     -*)            echo "unknown option: $1" >&2; usage ;;
-    *)             if [ -z "$INPUT" ]; then INPUT="$1"; shift; else echo "unexpected argument: $1" >&2; usage; fi ;;
+    *)             echo "unexpected argument: $1 (this script signs no .dmg or .app)" >&2; usage ;;
   esac
 done
-[ -n "$INPUT" ] || [ -n "$TERMINAL" ] || [ -n "$ENGINE" ] || usage
-if [ "$UPDATER_ARCHIVE" -eq 1 ] && [ -z "$INPUT" ]; then echo "--updater-archive needs the app (a .dmg or .app) as the input" >&2; usage; fi
+[ -n "$TERMINAL" ] || [ "${#ENGINES[@]}" -gt 0 ] || usage
 
 # ----------------------------------------------------------------------------------------------------------------- output helpers
 say() { printf '%s\n' "$*"; [ -z "$LOG" ] || printf '%s\n' "$*" >>"$LOG"; }
@@ -110,7 +95,7 @@ summary() {
   else
     say "RESULT: FAILED. Read the FAIL line above. Full log: ${LOG:-none}"
   fi
-  if [ -n "$TERMINAL" ] || [ -n "$ENGINE" ]; then
+  if [ -n "$TERMINAL" ] || [ "${#ENGINES[@]}" -gt 0 ]; then
     say ""
     say "Note on the Terminal zip and the engine folder: Apple cannot staple a ticket to bare command-line programs in a zip, so the zip carries no ticket. Notarisation is"
     say "still recorded at Apple by the programs' hashes, and macOS checks that online the first time a quarantined (browser-downloaded) copy is opened."
@@ -180,18 +165,21 @@ elif [ "$SIGN_ID" = "-" ]; then
   echo "SIGN_ID=- is an ad-hoc signature, which Apple cannot notarise. Add --dry-run to test with it." >&2; exit 2
 fi
 
-[ -z "$INPUT" ] || [ -e "$INPUT" ] || { echo "not found: $INPUT" >&2; exit 2; }
 [ -z "$TERMINAL" ] || [ -f "$TERMINAL" ] || { echo "not found: $TERMINAL" >&2; exit 2; }
-[ -z "$ENGINE" ] || [ -f "$ENGINE" ] || { echo "not found: $ENGINE" >&2; exit 2; }
-case "$ENGINE" in ""|*.tar.gz|*.tgz) ;; *) echo "--engine takes the engine folder as a .tar.gz: $ENGINE" >&2; exit 2 ;; esac
+if [ "${#ENGINES[@]}" -gt 0 ]; then
+  for eng in "${ENGINES[@]}"; do
+    [ -f "$eng" ] || { echo "not found: $eng" >&2; exit 2; }
+    case "$eng" in *.tar.gz|*.tgz) ;; *) echo "--engine takes the engine folder as a .tar.gz: $eng" >&2; exit 2 ;; esac
+  done
+fi
 
 if [ -z "$OUT" ]; then
-  first="${INPUT:-${TERMINAL:-$ENGINE}}"
+  first="${TERMINAL:-${ENGINES[0]:-}}"
   OUT="$(cd "$(dirname "$first")" && pwd)/signed"
 fi
 mkdir -p "$OUT" || { echo "cannot create $OUT" >&2; exit 2; }
 OUT="$(cd "$OUT" && pwd)"
-TMPBASE="${TMPDIR:-/tmp}"; TMPBASE="${TMPBASE%/}"   # macOS TMPDIR ends in "/": a "//" in the path broke the app self-test
+TMPBASE="${TMPDIR:-/tmp}"; TMPBASE="${TMPBASE%/}"   # macOS TMPDIR ends in "/": a "//" in the path broke a self-test
 WORK="$(mktemp -d "$TMPBASE/strata-sign.XXXXXX")" || { echo "cannot make a work folder" >&2; exit 2; }
 LOG="$OUT/sign-and-notarize.log"
 : >"$LOG"
@@ -204,7 +192,7 @@ say "  output   : $OUT"
 say ""
 
 need_kb=0
-for f in "$INPUT" "$TERMINAL" "$ENGINE"; do
+for f in "$TERMINAL" ${ENGINES[@]+"${ENGINES[@]}"}; do
   [ -n "$f" ] || continue
   kb="$(du -sk "$f" | awk '{print $1}')"; need_kb=$((need_kb + kb * 5))
 done
@@ -279,17 +267,6 @@ codesign_item() {   # path [extra codesign args...]
   return "$rc"
 }
 
-codesign_plain() {   # a disk image: signature and secure timestamp, no hardened-runtime flag (that flag is for programs)
-  local f=$1 try=1
-  local -a args=(--force --sign "$SIGN_ID")
-  if [ "$SIGN_ID" = "-" ]; then args+=(--timestamp=none); else args+=(--timestamp); fi
-  while [ "$try" -le 3 ]; do
-    logged codesign "${args[@]}" "$f" && return 0
-    try=$((try + 1)); sleep 3
-  done
-  return 1
-}
-
 sign_tree() {   # folder label: all Mach-O inside-out, then nested bundles
   local dir=$1 label=$2 f n=0 bad=0 d
   while IFS= read -r f; do
@@ -297,7 +274,7 @@ sign_tree() {   # folder label: all Mach-O inside-out, then nested bundles
     if codesign_item "$f"; then n=$((n + 1)); else say "        could not sign: $f"; bad=$((bad + 1)); fi
   done < <(find_macho "$dir")
   [ "$bad" -eq 0 ] || fail "sign $label" "$bad file(s) could not be signed (see the log)"
-  # nested bundles (frameworks, helper apps, XPC services), deepest first; there are none in today's app
+  # nested bundles (frameworks, helper apps, XPC services), deepest first; there are none in today's packages
   while IFS= read -r d; do
     [ -n "$d" ] || continue
     [ "$d" != "$dir" ] || continue
@@ -308,8 +285,8 @@ sign_tree() {   # folder label: all Mach-O inside-out, then nested bundles
   rec OK "sign $label" "$n Mach-O file(s) signed"
 }
 
-# The engine packages inside the bundle carry engine-component.json with the SHA-256 and size of every file; Control checks them before it
-# starts an engine. Signing changes the engine binary, so the manifest must be brought up to date, or the signed app would refuse its own engine.
+# An engine package carries engine-component.json with the SHA-256 and size of every file; Control checks them before it
+# starts an engine. Signing changes the engine binary, so the manifest must be brought up to date, or Control would refuse the signed engine.
 update_engine_manifests() {   # folder label
   local dir=$1 label=$2 m out rc n=0
   while IFS= read -r m; do
@@ -338,12 +315,6 @@ update_engine_manifests() {   # folder label
     n=$((n + 1)); say "        $m: $out entry(ies) updated"
   done < <(find "$dir" -name engine-component.json -type f 2>/dev/null)
   rec OK "engine manifests $label" "$n manifest(s) checked"
-}
-
-verify_signed() {   # path label
-  local p=$1 label=$2
-  if logged codesign --verify --deep --strict --verbose=2 "$p"; then rec OK "codesign --verify --deep --strict $label"
-  else fail "codesign --verify --deep --strict $label" "see the log"; fi
 }
 
 # notarytool submit --wait; sets NOTARY_ID. On anything but Accepted, fetches Apple's log and fails.
@@ -385,84 +356,6 @@ zip_dir() {   # src_dir out.zip  (keeps symlinks and permissions, no AppleDouble
 }
 
 # ----------------------------------------------------------------------------------------------------------------- smoke tests (signed copy)
-smoke_app() {   # app
-  local app=$1 res="$1/Contents/Resources" home="$WORK/smokehome" rep="$WORK/self-test.json" node py ctl rc f fails=0 out r engines=0
-  mkdir -p "$home"
-  node="$res/node/node"; ctl="$res/control"; py="$ctl/python/bin/python3"
-  export PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1   # a smoke test must not write into the sealed bundle
-
-  # 1. the app's own headless self-test: private node, host, UI, Control on the bundled python
-  run_timeout 150 env HOME="$home" "$app/Contents/MacOS/strata-desktop" --self-test="$rep" >"$WORK/selftest.out" 2>&1; rc=$?
-  cat "$WORK/selftest.out" >>"$LOG"
-  if [ "$rc" -eq 0 ]; then rec OK "smoke: app --self-test (host, UI, Control)"
-  else
-    grep -E '"(name|ok|detail)"' "$rep" 2>/dev/null | paste - - - | grep 'false' | sed 's/^/        /'
-    fail "smoke: app --self-test" "exit $rc; the signed app cannot start its host (see the log)"
-  fi
-
-  # 2. every native addon loads in the signed, hardened node (library validation, JIT)
-  if [ -x "$node" ]; then
-    out="$WORK/addons.txt"; : >"$out"
-    while IFS= read -r f; do
-      case "$(file -b "$f")" in *arm64*) ;; *) continue ;; esac
-      r="$("$node" -e 'try { process.dlopen({ exports: {} }, process.argv[1]); console.log("OK"); } catch (e) { console.log("ERR " + String(e.message).split("\n")[0]); }' "$f" 2>&1 | head -n 1)"
-      [ -n "$r" ] || r="ERR killed by the system (code signature)"
-      printf '%s: %s\n' "$f" "$r" >>"$out"
-    done < <(find "$res" -name '*.node' -type f 2>/dev/null)
-    cat "$out" >>"$LOG"
-    if grep -qiE 'code signature|team id|library validation|not valid for use|killed' "$out"; then
-      grep -iE 'code signature|team id|library validation|not valid for use' "$out" | sed 's/^/        /'
-      fail "smoke: node loads its native addons" "library validation refuses an addon (a library with a different signature)"
-    fi
-    if ! "$node" -e 'WebAssembly.instantiate(new Uint8Array([0,97,115,109,1,0,0,0])).then(()=>{let s=0;for(let i=0;i<2e6;i++)s+=i%7;if(!/a+b/.test("aab"))process.exit(3);console.log("jit ok")})' >>"$LOG" 2>&1; then
-      fail "smoke: node JIT and WebAssembly" "the hardened node cannot run JIT code (entitlement missing?)"
-    fi
-    rec OK "smoke: node JIT, WebAssembly and native addons" "$(grep -c ': OK' "$out") addon(s) loaded"
-  else
-    rec SKIP "smoke: node" "no bundled node"
-  fi
-
-  # 3. Control's python imports its compiled modules
-  if [ -x "$py" ]; then
-    if (cd "$ctl" && env HOME="$home" "$py" -c '
-import ctypes, importlib, sys
-for m in ("numpy", "PIL.Image", "psutil", "yaml", "regex", "charset_normalizer", "markupsafe", "ssl", "sqlite3", "zlib", "lzma", "hashlib"):
-    try: importlib.import_module(m)
-    except ModuleNotFoundError: pass
-cb = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)(lambda a, b: 0)
-arr = (ctypes.c_int * 4)(4, 3, 2, 1); ctypes.CDLL(None).qsort(arr, 4, 4, cb)
-print("python ok", sys.version.split()[0])' >>"$LOG" 2>&1); then rec OK "smoke: bundled python imports and ctypes callbacks"
-    else fail "smoke: bundled python" "an import or a ctypes callback failed under the hardened runtime (see the log)"; fi
-  fi
-
-  # 4. every bundled engine starts, and Control accepts its manifest (hashes of the signed files)
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
-    engines=$((engines + 1))
-    if run_timeout 30 "$f" --version >"$WORK/engine-version.txt" 2>&1; then say "        $(head -n 1 "$WORK/engine-version.txt")"; else
-      cat "$WORK/engine-version.txt" >>"$LOG"; fails=$((fails + 1)); say "        engine did not start: $f"
-    fi
-  done < <(find "$res/engine-bundle" -mindepth 2 -maxdepth 2 -type f \( -name strata -o -name strata-device -o -name strata-vision \) 2>/dev/null)
-  [ "$fails" -eq 0 ] || fail "smoke: bundled engine starts" "$fails engine(s) did not start under the hardened runtime"
-  if [ -x "$py" ] && [ -d "$res/engine-bundle" ]; then
-    out="$(cd "$ctl" && env HOME="$home" "$py" -c '
-import sys, pathlib
-from strata_control import engine_component as ec
-bad = 0; n = 0
-for m in sorted(pathlib.Path(sys.argv[1]).glob("*/engine-component.json")):
-    n += 1
-    try:
-        c = ec.read_manifest(m.parent); ec.verify(c, full=True); print("manifest ok", c.version, c.platform, c.backend)
-    except Exception as e:
-        bad += 1; print("MANIFEST PROBLEM", m, type(e).__name__, e)
-sys.exit(1 if bad or not n else 0)' "$res/engine-bundle" 2>&1)"; rc=$?
-    printf '%s\n' "$out" >>"$LOG"
-    if [ "$rc" -eq 0 ]; then rec OK "smoke: engine manifest matches the signed files (Control's own check)"
-    else printf '%s\n' "$out" | sed 's/^/        /'; fail "smoke: engine manifest" "Control would refuse the signed engine"; fi
-  fi
-  if [ "$engines" -gt 0 ]; then rec OK "smoke: bundled engine --version" "$engines engine(s), no model loaded"; else rec SKIP "smoke: bundled engine" "this app carries no engine"; fi
-}
-
 smoke_terminal() {   # extracted terminal folder
   local root=$1 py f strata home="$WORK/termhome" out
   mkdir -p "$home"
@@ -485,149 +378,12 @@ smoke_terminal() {   # extracted terminal folder
   done < <(find "$root" -type f \( -name strata -o -name strata-device -o -name strata-vision \) -perm -u+x 2>/dev/null | while IFS= read -r c; do file "$c" | grep -q 'Mach-O' && printf '%s\n' "$c"; done)
 }
 
-# #4634: every Mach-O must start on the app's minimum macOS (tools/packaging/binary_deps.py MAC_MIN_OS, = tauri.conf.json's
-# minimumSystemVersion). The 0.2.14 and 0.2.15 Mac engines (strata, strata-vision) needed macOS 27.2: no deployment target was set,
-# so they took the build Mac's SDK. Checked before anything is signed, for the app and for an engine package.
+# #4634: every Mach-O must start on the minimum macOS (tools/packaging/binary_deps.py MAC_MIN_OS). The 0.2.14 and 0.2.15 Mac engines (strata, strata-vision) needed macOS 27.2: no deployment target was set,
+# so they took the build Mac's SDK. Checked before an engine package is signed.
 check_min_os() {   # <folder> <what>
   local out
   if out="$(python3 "$HERE/../binary_deps.py" --mac-min-os "$1" 2>&1)"; then rec OK "minimum macOS ($2)" "$(printf '%s' "$out" | tail -n 1)"
   else printf '%s\n' "$out" >>"$LOG"; fail "minimum macOS ($2)" "$(printf '%s' "$out" | head -n 3 | tr '\n' ';')"; fi
-}
-
-# ----------------------------------------------------------------------------------------------------------------- the app
-process_app() {
-  local app_src="" appdir="$WORK/app" app version vol dmg_name zip out_dmg mnt bundle_real
-
-  mkdir -p "$appdir"
-  if [ -d "$INPUT" ] && { [[ "$INPUT" == *.app ]] || [[ "$INPUT" == *.app/ ]]; }; then
-    app_src="${INPUT%/}"
-    ditto --norsrc --noextattr --noqtn "$app_src" "$appdir/$(basename "$app_src")" || fail "copy the app" "ditto failed"
-    app="$appdir/$(basename "$app_src")"
-    dmg_name="Strata.dmg"
-    rec OK "copy the app" "from $INPUT"
-  elif [ -f "$INPUT" ] && [[ "$INPUT" == *.dmg ]]; then
-    mnt="$WORK/mnt-in"; mkdir -p "$mnt"
-    logged hdiutil attach -nobrowse -readonly -noautoopen -mountpoint "$mnt" "$INPUT" || fail "open the dmg" "hdiutil attach failed (is it already mounted?)"
-    MOUNTS+=("$mnt")
-    app_src="$(find "$mnt" -maxdepth 1 -name '*.app' -type d | head -n 1)"
-    [ -n "$app_src" ] || fail "open the dmg" "no .app at the top of $INPUT"
-    ditto --norsrc --noextattr --noqtn "$app_src" "$appdir/$(basename "$app_src")" || fail "copy the app" "ditto failed"
-    hdiutil detach "$mnt" >/dev/null 2>&1 || hdiutil detach "$mnt" -force >/dev/null 2>&1
-    app="$appdir/$(basename "$app_src")"
-    dmg_name="$(basename "$INPUT")"
-    rec OK "copy the app out of the dmg" "$(basename "$app") ($(du -sh "$app" | awk '{print $1}'))"
-  else
-    fail "input" "$INPUT is neither a .dmg nor a .app"
-  fi
-  [ -f "$app/Contents/Info.plist" ] || fail "input" "$app has no Contents/Info.plist"
-  xattr -cr "$app" 2>/dev/null
-  version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist" 2>/dev/null || echo "")"
-
-  check_min_os "$app" "app"
-  sign_tree "$app" "app contents"
-  update_engine_manifests "$app" "app"
-  if codesign_item "$app"; then rec OK "sign the .app itself"; else fail "sign the .app itself" "see the log"; fi
-
-  verify_signed "$app" "app"
-  if spctl -a -vvv -t exec "$app" >>"$LOG" 2>&1; then rec OK "spctl -a -vvv app" "accepted"
-  elif [ "$DRY" -eq 1 ]; then rec INFO "spctl -a -vvv app" "rejected, as expected for an ad-hoc dry run"
-  else rec INFO "spctl -a -vvv app" "rejected before notarisation (source=Unnotarized Developer ID); it is checked again after stapling"; fi
-
-  smoke_app "$app"
-  verify_signed "$app" "app after the smoke tests (nothing in the sealed bundle changed)"
-
-  bundle_real="$app"
-  if [ "$DRY" -eq 0 ]; then
-    zip="$WORK/$(basename "$app" .app)-notarize.zip"
-    zip_dir "$app" "$zip" || fail "zip the app for Apple" "ditto failed"
-    notarize "$zip" "app"
-    logged xcrun stapler staple "$app" || fail "staple the app" "stapler failed"
-    logged xcrun stapler validate "$app" || fail "staple the app" "stapler validate failed"
-    rec OK "staple the app"
-    if spctl -a -vvv -t exec "$app" >>"$LOG" 2>&1; then rec OK "spctl -a -vvv app (after notarisation)" "accepted, Notarized Developer ID"
-    else fail "spctl -a -vvv app (after notarisation)" "Gatekeeper still rejects the stapled app"; fi
-    rm -f "$zip"
-  fi
-
-  # the dmg, same layout as app/desktop/scripts/make-dmg.sh: the app, an Applications link, the volume icon, no Finder arrangement
-  vol="Strata ${version:-app}"
-  mkdir -p "$WORK/final"
-  out_dmg="$WORK/final/$dmg_name"
-  build_dmg "$bundle_real" "$out_dmg" "$vol" || fail "build the dmg" "hdiutil failed (see the log)"
-  rec OK "build the dmg" "$vol"
-  codesign_plain "$out_dmg" || fail "sign the dmg" "see the log"
-  rec OK "sign the dmg"
-  if [ "$DRY" -eq 0 ]; then
-    notarize "$out_dmg" "dmg"
-    logged xcrun stapler staple "$out_dmg" || fail "staple the dmg" "stapler failed"
-    logged xcrun stapler validate "$out_dmg" || fail "staple the dmg" "stapler validate failed"
-    rec OK "staple the dmg"
-    if spctl -a -t open --context context:primary-signature -vv "$out_dmg" >>"$LOG" 2>&1; then rec OK "spctl -a -t open --context context:primary-signature -vv dmg" "accepted"
-    else fail "spctl on the dmg" "Gatekeeper rejects the notarised dmg"; fi
-  else
-    rec INFO "notarise, staple and spctl on the dmg" "skipped in a dry run"
-  fi
-  logged hdiutil verify "$out_dmg" || fail "hdiutil verify" "the dmg is damaged"
-  rec OK "hdiutil verify the dmg"
-
-  # the app inside the finished dmg is still the signed one
-  mnt="$WORK/mnt-out"; mkdir -p "$mnt"
-  if logged hdiutil attach -nobrowse -readonly -noautoopen -mountpoint "$mnt" "$out_dmg"; then
-    MOUNTS+=("$mnt")
-    if logged codesign --verify --deep --strict "$mnt/$(basename "$app")"; then rec OK "the app inside the final dmg verifies"
-    else hdiutil detach "$mnt" -force >/dev/null 2>&1; fail "the app inside the final dmg" "codesign --verify failed"; fi
-    hdiutil detach "$mnt" >/dev/null 2>&1 || hdiutil detach "$mnt" -force >/dev/null 2>&1
-  fi
-  deliver "$out_dmg" "$INPUT"
-  if [ "$UPDATER_ARCHIVE" -eq 1 ]; then make_updater_archive "$bundle_real"; fi
-}
-
-make_updater_archive() {   # the finished (signed, stapled) .app
-  local app=$1 name chk top out
-  name="$(basename "$app" .app).app.tar.gz"
-  out="$WORK/final/$name"
-  rm -f "$out"
-  # the layout Tauri's bundler makes and its updater unpacks: the .app folder at the root of a gzip tar, nothing else
-  # (COPYFILE_DISABLE keeps AppleDouble "._" files out; tar keeps symlinks and permissions)
-  ( cd "$(dirname "$app")" && COPYFILE_DISABLE=1 tar -czf "$out" "$(basename "$app")" ) || fail "pack the updater archive" "tar failed"
-  chk="$WORK/updater-check"; rm -rf "$chk"; mkdir -p "$chk"
-  tar -xzf "$out" -C "$chk" || fail "check the updater archive" "tar cannot unpack it"
-  top="$(ls -A "$chk")"
-  [ "$top" = "$(basename "$app")" ] || fail "check the updater archive" "the archive root holds '$top', not just $(basename "$app")"
-  find "$chk" -name '._*' | grep -q . && fail "check the updater archive" "AppleDouble files in the archive"
-  if logged codesign --verify --deep --strict "$chk/$top"; then rec OK "updater archive: the unpacked app verifies"
-  else fail "updater archive" "codesign --verify failed on the unpacked app"; fi
-  if [ "$DRY" -eq 0 ]; then
-    logged xcrun stapler validate "$chk/$top" || fail "updater archive" "the unpacked app has no valid notarisation ticket"
-    if spctl -a -vvv -t exec "$chk/$top" >>"$LOG" 2>&1; then rec OK "updater archive: spctl accepts the unpacked app" "Notarized Developer ID"
-    else fail "updater archive" "Gatekeeper rejects the unpacked app"; fi
-  else
-    rec INFO "updater archive: notarisation checks" "skipped in a dry run"
-  fi
-  rm -rf "$chk"
-  rec OK "pack the updater archive" "$name"
-  deliver "$out" "$INPUT"
-}
-
-build_dmg() {   # app out.dmg volname
-  local app=$1 out=$2 vol=$3 rw="$WORK/rw.dmg" mnt="$WORK/mnt-build" kb mb n=0 icon
-  kb="$(du -sk "$app" | awk '{print $1}')"; mb=$((kb * 13 / 10240 + 80))
-  rm -f "$rw" "$out"
-  logged hdiutil create -size "${mb}m" -fs HFS+ -volname "$vol" -type UDIF -ov "$rw" || return 1
-  mkdir -p "$mnt"
-  logged hdiutil attach -nobrowse -noautoopen -noverify -mountpoint "$mnt" "$rw" || return 1
-  MOUNTS+=("$mnt")
-  ditto --norsrc --noextattr --noqtn "$app" "$mnt/$(basename "$app")" || return 1
-  ln -s /Applications "$mnt/Applications"
-  icon="$app/Contents/Resources/Strata.icns"
-  if [ -f "$icon" ] && command -v SetFile >/dev/null 2>&1; then cp "$icon" "$mnt/.VolumeIcon.icns" && SetFile -a C "$mnt" 2>/dev/null; fi
-  sync
-  until hdiutil detach "$mnt" >/dev/null 2>&1; do
-    n=$((n + 1)); [ "$n" -lt 6 ] || { hdiutil detach "$mnt" -force >/dev/null 2>&1; break; }
-    sleep 2
-  done
-  logged hdiutil convert "$rw" -format UDZO -imagekey zlib-level=9 -o "$out" || return 1
-  rm -f "$rw"
 }
 
 # ----------------------------------------------------------------------------------------------------------------- the Terminal archive
@@ -719,10 +475,9 @@ process_terminal() {
 
 # ----------------------------------------------------------------------------------------------------------------- an engine package folder
 # A Mac engine package that Control installs from the update feed (a model shape's engine: its program, its metal/ kernel sources,
-# engine-component.json) as a .tar.gz of ONE folder. The Qwen engine gets its Developer ID signature as a nested program of the signed
-# app; this does the same for a package outside the app. Same identity and options as every nested program above; no entitlements.
+# engine-component.json) as a .tar.gz of ONE folder. Same identity and options as every nested program above; no entitlements.
 process_engine() {
-  local src=$ENGINE edir="$WORK/engine" name stem top tops final notarize_zip bin f bad=0 n rc
+  local src=$1 eidx=$2 edir="$WORK/engine-$2" name stem top tops final notarize_zip bin f bad=0 n rc
   name="$(basename "$src")"
   mkdir -p "$edir"
   tar -xzf "$src" -C "$edir" || fail "unpack the engine folder" "tar failed"
@@ -751,8 +506,8 @@ process_engine() {
   # the signed program starts under the hardened runtime (a signing mistake kills it at once, exit 137); no model is loaded
   bin="$(grep -o '"entrypoint"[^,]*' "$top/engine-component.json" 2>/dev/null | sed 's/.*: *"\(.*\)"/\1/' | head -n 1)"
   if [ -n "$bin" ] && [ -x "$top/$bin" ]; then
-    run_timeout 30 "$top/$bin" --help >"$WORK/engine-help.txt" 2>&1; rc=$?
-    cat "$WORK/engine-help.txt" >>"$LOG"
+    run_timeout 30 "$top/$bin" --help >"$WORK/engine-${eidx}-help.txt" 2>&1; rc=$?
+    cat "$WORK/engine-${eidx}-help.txt" >>"$LOG"
     if [ "$rc" -ge 128 ]; then fail "smoke: engine package starts" "$bin was killed (exit $rc) under the hardened runtime"
     else rec OK "smoke: engine package starts" "$bin, no model loaded"; fi
   else
@@ -772,7 +527,7 @@ process_engine() {
   rec OK "pack the engine folder" "$(basename "$final")"
 
   if [ "$DRY" -eq 0 ]; then
-    notarize "$notarize_zip" "engine"
+    notarize "$notarize_zip" "engine-${eidx}"
     rec INFO "staple the engine folder" "not possible for bare programs; Apple holds the ticket online"
   else
     rec INFO "notarise the engine folder" "skipped in a dry run"
@@ -781,7 +536,12 @@ process_engine() {
 }
 
 # ----------------------------------------------------------------------------------------------------------------- run
-if [ -n "$INPUT" ]; then process_app; fi
 if [ -n "$TERMINAL" ]; then process_terminal; fi
-if [ -n "$ENGINE" ]; then process_engine; fi
+if [ "${#ENGINES[@]}" -gt 0 ]; then
+  eidx=0
+  for eng in "${ENGINES[@]}"; do
+    eidx=$((eidx + 1))
+    process_engine "$eng" "$eidx"
+  done
+fi
 finish 0

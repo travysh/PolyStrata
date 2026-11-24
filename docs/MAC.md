@@ -290,7 +290,7 @@ What the first run does (each step is skipped when it is already done):
 7. **Writes `strata-<model>.json` and `run-<model>.sh` in `terminal/`, then starts the server.**
 
 After that, `./setup.sh` or the model's `terminal/run-<model>.sh` starts it directly. The server is the same as on a PC: the OpenAI-compatible
-API on `http://127.0.0.1:8080/v1`, the Anthropic API on `/v1/messages`, and the chat page on `http://127.0.0.1:8080/`.
+API on `http://127.0.0.1:8080/v1`, the Anthropic API on `/v1/messages`, and the Monitor page on `http://127.0.0.1:8080/`.
 `python polystrata.py --list-models` in the PolyStrata folder lists the installed models, as on a PC.
 
 | Option | Meaning |

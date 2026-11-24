@@ -147,7 +147,10 @@ QWEN2_PATTERN = (
 LAGUNA_SEQUENCE = (r"[^\n]+|[\n]+", QWEN2_PATTERN)
 
 # The `inkling2` pre-tokenizer (Thinking Machines' Inkling 2), llama.cpp's LLAMA_VOCAB_PRE_TYPE_GPT4O: a word with
-# its capitals first or its small letters first, an English contraction kept on it, digits three at a time.
+# its capitals first or its small letters first, an English contraction kept on it, digits three at a time.  With
+# ignore_merges, as the model's tokenizer.json sets it (Hugging Face's tokenizers are the reference): a piece that is a
+# token is that token.  llama.cpp 29b52d398b does not set it for this name, and writes "kwargs" (one token that no
+# chain of merges reaches) as three tokens.
 GPT4O_PATTERN = (
     r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?"
     r"|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?"
@@ -163,7 +166,7 @@ PRE_PATTERNS = {"glm4": GLM4_PATTERN, "glm5": GLM4_PATTERN,   # every other name
                 "qwen2": QWEN2_PATTERN, "inkling2": GPT4O_PATTERN}
 PRE_SEQUENCES = {"joyai-llm": DEEPSEEK3_SEQUENCE, "deepseek-v3": DEEPSEEK3_SEQUENCE, "flint": FLINT_SEQUENCE,
                  "laguna": LAGUNA_SEQUENCE}
-IGNORE_MERGES = ("glm4", "glm5", "lfm2")
+IGNORE_MERGES = ("glm4", "glm5", "lfm2", "inkling2")
 RAW = ("gemma4",)                      # vocabularies of UTF-8 pieces
 MODELS = {"gpt2": None, "gemma4": "gemma4"}   # tokenizer.ggml.model -> the pre-tokenizer it implies, if any
 
@@ -693,6 +696,8 @@ def extract(gguf_path, out_dir) -> dict:
         "pre_pattern_source": "llama.cpp src/llama-vocab.cpp (LLAMA_VOCAB_PRE_TYPE_GEMMA4)" if tk.raw
                               else "llama.cpp src/llama-vocab.cpp (LLAMA_VOCAB_PRE_TYPE_DEEPSEEK3_LLM)"
                               if tk.pre_sequence
+                              else "llama.cpp src/llama-vocab.cpp (LLAMA_VOCAB_PRE_TYPE_GPT4O), with tokenizer.json's "
+                              "ignore_merges" if tk.pre_pattern == GPT4O_PATTERN
                               else "llama.cpp src/llama-vocab.cpp (LLAMA_VOCAB_PRE_TYPE_CHATGLM4)" if tk.ignore_merges
                               else "llama.cpp src/llama-vocab.cpp (LLAMA_VOCAB_PRE_TYPE_QWEN2)"
                               if tk.pre_pattern == QWEN2_PATTERN

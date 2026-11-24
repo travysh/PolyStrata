@@ -1,9 +1,8 @@
-"""The speed features of 0.2.7 that have a switch in the app's Expert settings and in the Terminal's Advanced table.
+"""The speed features of 0.2.7 that have a switch in the Terminal's Advanced table.
 
 A switch has a default (``on`` or ``off``).  In its other state it writes exactly the engine environment below into the model's run config ("env"); back in
 its default it removes those entries, so a default launch carries none of them and is byte for byte what 0.2.6 started.  The names are the engine switch
-contract (phaseA-tests/notes-027-plan.md).  The app does the same in app/host/server/native-settings.mjs (SPEED_SWITCHES); tests/terminal/test_speed_switches.py
-reads that file and fails when the two disagree, so the Terminal and the app cannot drift apart.
+contract (phaseA-tests/notes-027-plan.md).
 
 - "Faster long prompts" (Qwen KVA) is OFF by default (owner decision, 26 October): ``STRATA_KVA=1`` turns it on.  A file that holds ``STRATA_KVA=0`` (the
   off switch of an earlier 0.2.7 test build) reads as off, which is what it is now.
@@ -132,11 +131,6 @@ def applies(switch: Switch | str, cfg: Mapping[str, Any] | None, gpus: Iterable[
 def applicable(cfg: Mapping[str, Any] | None, gpus: Iterable[Mapping[str, Any]] | None, backend: str | None = None) -> list[Switch]:
     gpus = list(gpus or [])
     return [s for s in SWITCHES if applies(s, cfg, gpus, backend)]
-
-
-def app_switches() -> list[Switch]:
-    """The switches the app shows (app/host/server/native-settings.mjs SPEED_SWITCHES): all but the Terminal-only ones."""
-    return [s for s in SWITCHES if not s.terminal_only]
 
 
 def is_set(env: Mapping[str, Any] | None, switch: Switch | str) -> bool:

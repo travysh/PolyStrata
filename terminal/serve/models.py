@@ -35,6 +35,7 @@ BACKENDS = {
     "kolibri1": "kolibri1",
     "laguna": "laguna",
     "inkling2_loop": "inkling2_loop",
+    "inkling2": "inkling2_loop",   # Unsloth's top-level files: the same engine (inkling2.cpp)
 }
 # a routed expert's tensors: they stay in the file and are held in VRAM as far as it has room
 EXPERT = re.compile(r"\.ffn_(gate|up|down|gate_up)_exps\.weight$")

@@ -194,6 +194,10 @@ too small for the blocks' E4M3 scales, and llama.cpp multiplies the product by t
   (`src/poly/mmq_nvfp4.cu`, built the way `mmq_nvfp4_w4a8.cu` above is). On an RTX 50 card (sm_120),
   `STRATA_PREFILL_NVFP4=w4a4` takes llama.cpp's FP4 x FP4 tiles on its FP4 tensor cores instead: the instance is built
   for 12.0a beside MXFP4's, and the rows' per-row float scale goes behind their FP4 blocks.
+- Prompt without llama.cpp's tiles (strata-poly's own `mmq_own.cu`, the default build): NVFP4 keeps the halves (and an
+  RTX 50 card its two-term FP4 products, `w4a4x2`); `STRATA_PREFILL_NVFP4=w4a8` takes the int8 kernel (`i8_mma.cuh`)
+  instead where the card has it, the weights exact and the activations int8 with a scale per 32 values. Before that
+  kernel took NVFP4, `w4a8` kept the halves in this build.
 - CPU experts: ggml-cpu's `ggml_vec_dot_nvfp4_q8_0`.
 - Global scales: a dense matrix's on its product (`Engine::lin()`). A routed expert's gate and up scales go on their
   products before the activation (`ExpertScales`, in each path's SwiGLU), and its down scale on its weight in the

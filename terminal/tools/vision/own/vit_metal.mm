@@ -231,13 +231,17 @@ struct VitGpuImpl {
     bool upload_matrix(DevW& w, const Gguf& gg, const std::string& name, std::string& err) {
         return upload_matrix(w, gg, std::vector<std::string>{name}, err);
     }
-    // matrices of one type and width, their rows one after the other in one matrix (MiniCPM-V's q, k, v: one product)
+    // matrices of one width, their rows one after the other in one matrix (MiniCPM-V's q, k, v: one product).  Their types may
+    // differ (#154: a Q4_0 mmproj made by hand had v in another type than q): a mix goes through float32 like a quantized matrix.
     bool upload_matrix(DevW& w, const Gguf& gg, const std::vector<std::string>& names, std::string& err) {
         std::vector<const GgufTensorInfo*> ts;
+        bool same = true, wide = false;   // wide: a matrix in F32 or BF16, whose range F16 may not hold
         for (const std::string& name : names) {
             const GgufTensorInfo* t = gg.tensor(name);
             if (!t || t->ne.size() != 2) { err = "the mmproj file lacks the matrix " + name; return false; }
-            if (!ts.empty() && (t->type != ts[0]->type || t->ne[0] != ts[0]->ne[0])) { err = "the matrices " + names[0] + " and " + name + " differ in type or width"; return false; }
+            if (!ts.empty() && t->ne[0] != ts[0]->ne[0]) { err = "the matrices " + names[0] + " and " + name + " differ in width"; return false; }
+            same = same && (ts.empty() || t->type == ts[0]->type);
+            wide = wide || t->type == GT_F32 || t->type == GT_BF16;
             ts.push_back(t);
         }
         const GgufTensorInfo* t = ts[0];
@@ -255,7 +259,7 @@ struct VitGpuImpl {
         w.b = buf(n * 2, true, err);
         if (!w.b) return false;
         uint16_t* raw = (uint16_t*) [w.b contents];
-        if (t->type == GT_F16 || t->type == GT_BF16) {        // as stored; a BF16 matrix as F16 (K_HF) unless a weight is beyond F16's range
+        if (same && (t->type == GT_F16 || t->type == GT_BF16)) {   // as stored; a BF16 matrix as F16 (K_HF) unless a weight is beyond F16's range
             size_t at = 0;
             for (const GgufTensorInfo* ti : ts) {
                 if (!gg.read_raw(*ti, raw + at, err)) return false;
@@ -271,16 +275,15 @@ struct VitGpuImpl {
                     raw[i] = host_f32_to_f16(f);
                 }
             }
-        } else {                                                // F32 -> BF16, Q8_0 -> F16
+        } else {                                                // F32 -> BF16, quantized -> F16; a mix with F32 or BF16 -> BF16
             std::vector<float> f(n);
             size_t at = 0;
             for (const GgufTensorInfo* ti : ts) {
                 if (!gg.read_f32(*ti, f.data() + at, err)) return false;
                 at += (size_t) ti->nelem();
             }
-            const bool bf = t->type == GT_F32;
-            w.kind = bf ? K_BF16 : K_F16;
-            for (size_t i = 0; i < n; ++i) raw[i] = bf ? host_f32_to_bf16(f[i]) : host_f32_to_f16(f[i]);
+            w.kind = wide ? K_BF16 : K_F16;
+            for (size_t i = 0; i < n; ++i) raw[i] = wide ? host_f32_to_bf16(f[i]) : host_f32_to_f16(f[i]);
         }
         return true;
     }

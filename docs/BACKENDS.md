@@ -140,7 +140,7 @@ and wants about 26 GB of RAM; two cards with layer split hold it all in VRAM. At
 read a 32K prompt at 1,017 tokens/s (first token 32.7 s) and wrote 91; two read it at 2,179 tokens/s
 (first token 15.3 s) and wrote 93, the medians of three runs. It also takes `--kv q8_0`: the attention
 caches as ggml Q8_0 blocks, 544 bytes a row instead of 1,024, the window layers' rings included; fp16 is
-the default and that path is unchanged. Like Strata, strata-poly also supports `--kv-resident N` (opt-in):
+the default and that path is unchanged. Like the Strata project's engine, strata-poly also supports `--kv-resident N` (opt-in):
 only N cells stay resident in VRAM while the rest is kept in system RAM, freeing several gigabytes of VRAM
 at long contexts (e.g. 256K on Ornith 1.5 122B) for the expert cache.
 
@@ -1946,7 +1946,7 @@ At about the same mean KL the weight is 10% to 12% faster; at 0.095 it moves the
 on every figure and leaves out 17% more experts. At 0.06 the most likely token agrees less often than at
 `--tail-skip 7`. With `--skip-weight` above 0, `--tail-skip` is not used. Other models were not measured.
 
-`--cache-bias F` (opt-in, off by default, `qwen35moe` models only) adds F to the router score of each expert that is in
+`--cache-bias F` (opt-in, off by default, `qwen35moe` and Inkling 2 models) adds F to the router score of each expert that is in
 the VRAM cache before a token that comes a few at a time picks its experts, so a pick that was close goes to the
 cached expert and not to one the CPU has to compute. The weights stay the softmax of the scores the router gave the
 chosen experts, not of the biased ones. A prompt batch and a call routed on the card (every expert in VRAM) route as before, and
@@ -1959,6 +1959,27 @@ and a 4,833-token prompt, the top token stayed the same at 126 and 121 of 128 st
 with F = 1, while the share of experts read from VRAM went from about 60% to 80% and 90%. With setup's own flags and
 the expert split frozen, the median of three runs wrote 196 / 165 tokens/s at F = 0, 234 / 227 at 0.5 and 259 / 202
 at 1 (short prompt / after the long one). It has not been built on every backend.
+
+Inkling 2's router picks a token's experts by the sigmoid of each score plus a bias of the expert's own, and weighs the
+picks by the bare sigmoids. There F goes onto the pick (sigmoid plus bias), not onto the score, so the experts in VRAM
+keep their order among themselves, as do the others, and every pass of the looped layers picks among the same experts
+in VRAM; the weights stay the bare sigmoids. A token that comes on its own is routed on the card, which hands the
+CPU the experts outside VRAM; the card picks with the same bias, set again whenever the experts in VRAM change. A
+prompt batch routes as before. A sigmoid is between 0 and 1, and the same F moved Inkling 2's answers more than
+Qwen3.6's above. On the RTX 4070 Laptop (8 GB), UD-Q3_K_XL with setup's flags and `--vram-reserve-mib 1024` (980 of
+its 3,072 experts in VRAM), the README's benchmark, the median of three runs of each taken in turn:
+
+| F | Writes in a short chat | Writes after a 30,873-token prompt | Experts found in VRAM | Same most likely token |
+| --- | ---: | ---: | ---: | ---: |
+| 0 | 51.2 tokens/s | 38.8 tokens/s | 90.5% / 87.2% | 99.3% (run again) |
+| 0.1 | 52.7 tokens/s | 40.8 tokens/s | 93.1% / 89.6% | 95.8% |
+| 0.2 | 53.3 tokens/s | 41.5 tokens/s | 94.8% / 92.4% | 94.4% |
+| 0.5 | 55.1 tokens/s | 42.0 tokens/s | 98.0% / 97.3% | 85.4% |
+
+The long prompt was read at about 860 tokens/s in every run. One run at F = 0 started with less RAM free and kept
+fewer experts in RAM: it wrote 47.1 and 36.9 tokens/s, the other two 51.2-51.5 and 38.8-41.1. The last column is how
+often the most likely token is the same as in F = 0's greedy answers to six prompts (1,430 steps). Issue 256 measured
+F = 0.2 on its own build, where F went onto the score before the sigmoid.
 
 A call of fewer tokens than `--stage-ahead` routes a layer first and then copies the experts outside VRAM that it
 routes to: a turn of a conversation, a short prompt, the last call of a long one. A call of 150 to 800 tokens

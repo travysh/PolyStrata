@@ -569,6 +569,7 @@ SKIP_DIRS = frozenset({"packs", "mtp", "engine", "node_modules", "windows", "pro
 
 
 DRAFT_LAYER = re.compile(r"mtp[-_][a-z0-9_.-]*\.gguf")
+INKLING_AUX_GGUF = re.compile(r"(?:dspark|imatrix)[a-z0-9_.-]*\.gguf")
 
 
 def _list_gguf(folder: Path) -> tuple[list[Path], list[str], bool]:
@@ -592,8 +593,8 @@ def _list_gguf(folder: Path) -> tuple[list[Path], list[str], bool]:
                 if low.startswith("mmproj"):
                     readers.append(entry.name)
                     continue
-                if DRAFT_LAYER.fullmatch(low):
-                    continue                          # Strata's own draft layer (mtp-q2_0.gguf) is not a second model (#4693)
+                if DRAFT_LAYER.fullmatch(low) or INKLING_AUX_GGUF.fullmatch(low):
+                    continue                          # Strata's own draft layer (mtp-q2_0.gguf) or Inkling dspark/imatrix is not a second model (#4693)
                 if len(shards) >= MAX_LISTED:
                     cut = True
                     break
@@ -623,7 +624,9 @@ def _folders_with_models(root: Path) -> list[Path]:
                 entries = sorted(scan, key=lambda e: e.name.lower())
         except OSError:
             continue
-        if any(e.name.lower().endswith(".gguf") and not e.name.lower().startswith("mmproj") for e in entries):
+        if any(e.name.lower().endswith(".gguf") and not e.name.lower().startswith("mmproj")
+               and not DRAFT_LAYER.fullmatch(e.name.lower()) and not INKLING_AUX_GGUF.fullmatch(e.name.lower())
+               for e in entries):
             found.append(folder)
             continue
         if depth >= TREE_DEPTH:
@@ -760,6 +763,9 @@ def plan_import(raw_path: str) -> dict:
         if path.name.lower().startswith("mmproj"):
             raise ProfileError("this is a picture reader (mmproj), not a model. Choose the model's own "
                                ".gguf file; Strata finds the reader next to it", 5)
+        if INKLING_AUX_GGUF.fullmatch(path.name.lower()) or DRAFT_LAYER.fullmatch(path.name.lower()):
+            raise ProfileError("this is a drafter or calibration file, not a model. Choose the model's own "
+                               ".gguf file; Strata finds helper files next to it", 5)
         match = SHARD.fullmatch(path.name)
         if match:
             total = int(match.group(3))

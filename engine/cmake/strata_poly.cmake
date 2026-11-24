@@ -5,9 +5,10 @@
 #
 # strata-poly needs no ggml and no llama.cpp: a prompt's quantized products are Strata's own kernels
 # (src/poly/mmq_own.cu: int8 and fp16 tiles where the card has them, else a dequantized matrix and the BLAS library,
-# which is the HIP and Turing path), the CPU experts' rows its quant layer (strata_quant).  -DSTRATA_POLY_MMQ=ON
-# builds the products llama.cpp's way instead (its MMQ kernels, its flash-attention kernel and the GDN adapter that
-# needs its headers), from a llama.cpp checkout given as -DSTRATA_GGML_DIR: an override kept for two releases.
+# which is the HIP and Turing path), the CPU experts' rows its quant layer (strata_quant), a prompt's attention on
+# NVIDIA llama.cpp's flash-attention kernel cut down to its shapes (src/poly/fattn_mma_d256.cuh).  -DSTRATA_POLY_MMQ=ON
+# builds the products llama.cpp's way instead (its MMQ kernels, its flash-attention kernel from its headers and the GDN
+# adapter that needs them), from a llama.cpp checkout given as -DSTRATA_GGML_DIR: an override kept for two releases.
 
 macro(strata_poly)
 if(STRATA_BUILD_TESTS)
@@ -61,6 +62,8 @@ if(STRATA_BUILD_TESTS)
   add_test(NAME poly_q35_scratch_arena_test COMMAND poly_q35_scratch_arena_test)
   add_executable(poly_stream_stage_test src/poly/stage_copy_test.cpp)
   add_test(NAME poly_stream_stage_test COMMAND poly_stream_stage_test)
+  add_executable(poly_split_plan_test src/poly/split_plan_test.cpp)
+  add_test(NAME poly_split_plan_test COMMAND poly_split_plan_test)
 endif()
 
 # Shared prepared-input GDN recurrence on the tensor cores (gdn_mma_tiles.cuh has the tiles it takes from llama.cpp's
@@ -160,7 +163,8 @@ if(STRATA_BUILD_POLY AND STRATA_NATIVE_EXPERTS AND (STRATA_ENABLE_CUDA OR STRATA
   endif()
 
   else()
-    # Strata's own kernels (mmq_own.cu); fattn.cu keeps its decode kernels and leaves llama.cpp's prompt kernel out
+    # Strata's own kernels (mmq_own.cu); fattn.cu takes llama.cpp's prompt kernel from fattn_mma_d256.cuh, a copy cut
+    # down to its shapes, and needs no llama.cpp headers
     add_library(strata_poly_mmq STATIC src/poly/mmq_own.cu src/poly/fattn.cu)
     target_include_directories(strata_poly_mmq PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${_strata_gpu_include_directories})
     target_compile_definitions(strata_poly_mmq PRIVATE STRATA_POLY_OWN=1)
@@ -168,6 +172,10 @@ if(STRATA_BUILD_POLY AND STRATA_NATIVE_EXPERTS AND (STRATA_ENABLE_CUDA OR STRATA
     if(STRATA_ENABLE_HIP)
       target_compile_definitions(strata_poly_mmq PRIVATE GGML_USE_HIP=1)   # fattn.cu: no kernel of either kind on HIP
     else()
+      # fattn.cu with the arithmetic the llama.cpp build compiles it with (expf as __expf, approximate division,
+      # denormals flushed): the prompt kernel's sums are then the MMQ build's to the bit, and so are the decode
+      # kernels', as in 0.1.45-poly.10.  The file alone: mmq_own.cu keeps its own options.
+      set_source_files_properties(src/poly/fattn.cu PROPERTIES COMPILE_OPTIONS --use_fast_math)
       # STRATA_PREFILL_NVFP4=w4a4x2's products (mmq_nvfp4_x2.cu): the block-scaled FP4 MMA exists only in the
       # arch-specific target, so this unit alone is built with 12x -> 12xa.  For another target, or a CUDA before 12.8,
       # its kernels are empty and Mmq never takes them.
@@ -235,6 +243,30 @@ if(STRATA_BUILD_POLY AND STRATA_NATIVE_EXPERTS AND (STRATA_ENABLE_CUDA OR STRATA
   target_link_libraries(poly_draft_race_test PRIVATE strata_poly_mmq strata_kernels strata_spec strata_quant
                                                     ${_strata_gpu_blas_target} ${_strata_gpu_runtime_target}
                                                     ${_strata_poly_driver} Threads::Threads)
+  # a layer split's greedy tokens, picked on the card and from the logits, against one card's; needs the model file,
+  # so it is run by hand: poly_layer_split_picks_test MODEL.gguf [LAYER_SPLIT] [TOKENS]
+  add_executable(poly_layer_split_picks_test src/poly/layer_split_picks_test.cpp src/poly/engine.cpp src/poly/expert_card.cpp src/poly/glm5next.cpp
+                                             src/poly/qwen35.cpp src/poly/gemma4.cpp src/poly/deepseek4.cpp
+                                             src/poly/lfm2moe.cpp src/poly/flint.cpp src/poly/kolibri1.cpp src/poly/laguna.cpp src/poly/inkling2.cpp src/poly/inkling2_pictures.cpp src/poly/inkling2.cu
+                                             src/poly/cpu_experts.cpp src/poly/kernels.cu src/poly/kernels_dsv4.cu
+                                             src/core/conversation_memory.cpp)
+  target_include_directories(poly_layer_split_picks_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+                                                                ${_strata_gpu_include_directories})
+  target_link_libraries(poly_layer_split_picks_test PRIVATE strata_poly_mmq strata_kernels strata_spec strata_quant
+                                                           ${_strata_gpu_blas_target} ${_strata_gpu_runtime_target}
+                                                           ${_strata_poly_driver} Threads::Threads)
+  # the engine's logits for a list of tokens as raw floats, to compare two builds or settings; needs the model file,
+  # so it is run by hand: poly_logits_dump MODEL.gguf --tokens ID,ID,... (its usage says the rest)
+  add_executable(poly_logits_dump src/poly/logits_dump.cpp src/poly/engine.cpp src/poly/expert_card.cpp src/poly/glm5next.cpp
+                                  src/poly/qwen35.cpp src/poly/gemma4.cpp src/poly/deepseek4.cpp
+                                  src/poly/lfm2moe.cpp src/poly/flint.cpp src/poly/kolibri1.cpp src/poly/laguna.cpp src/poly/inkling2.cpp src/poly/inkling2_pictures.cpp src/poly/inkling2.cu
+                                  src/poly/cpu_experts.cpp src/poly/kernels.cu src/poly/kernels_dsv4.cu
+                                  src/core/conversation_memory.cpp)
+  target_include_directories(poly_logits_dump PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+                                                     ${_strata_gpu_include_directories})
+  target_link_libraries(poly_logits_dump PRIVATE strata_poly_mmq strata_kernels strata_spec strata_quant
+                                                ${_strata_gpu_blas_target} ${_strata_gpu_runtime_target}
+                                                ${_strata_poly_driver} Threads::Threads)
   # a prompt batch's routing on the card against the hosts' routing; needs a card, so it is run by hand
   add_executable(poly_route_test src/poly/route_test.cu src/poly/kernels.cu)
   target_include_directories(poly_route_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -251,11 +283,37 @@ if(STRATA_BUILD_POLY AND STRATA_NATIVE_EXPERTS AND (STRATA_ENABLE_CUDA OR STRATA
   target_include_directories(poly_gemm_small_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
                                                          ${_strata_gpu_include_directories})
   target_link_libraries(poly_gemm_small_test PRIVATE ${_strata_gpu_blas_target} ${_strata_gpu_runtime_target})
+  # Inkling 2's token attention (ink_attend()): output hashes of a battery of calls, and a long-context bench; needs a
+  # card, run by hand
+  add_executable(poly_inkling2_attend_test src/poly/inkling2_attend_test.cu src/poly/inkling2.cu src/poly/kernels.cu)
+  target_include_directories(poly_inkling2_attend_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+                                                               ${_strata_gpu_include_directories})
+  target_link_libraries(poly_inkling2_attend_test PRIVATE strata_kernels ${_strata_gpu_blas_target}
+                                                          ${_strata_gpu_runtime_target})
+  # Inkling 2's one-pass controller down kernel (STRATA_INK_FAST_CTRL=1) against the default one and float64; needs a
+  # card, run by hand
+  add_executable(poly_ctrl_fast_test src/poly/ctrl_fast_test.cu src/poly/inkling2.cu src/poly/kernels.cu)
+  target_include_directories(poly_ctrl_fast_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+                                                         ${_strata_gpu_include_directories})
+  target_link_libraries(poly_ctrl_fast_test PRIVATE strata_kernels ${_strata_gpu_blas_target}
+                                                    ${_strata_gpu_runtime_target})
   # attend()'s blocks of rows against its other kernels and itself; needs a card, so it is run by hand
   add_executable(poly_attend_test src/poly/attend_test.cu src/poly/kernels.cu)
   target_include_directories(poly_attend_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
                                                      ${_strata_gpu_include_directories})
   target_link_libraries(poly_attend_test PRIVATE ${_strata_gpu_blas_target} ${_strata_gpu_runtime_target})
+  # Inkling 2's flash attention (ink_attend_batch()) against float64 and the paths it stands in for; needs a card,
+  # so it is run by hand (--bench: its speed against attend_batch())
+  add_executable(poly_ink_flash_test src/poly/ink_flash_test.cu src/poly/inkling2.cu src/poly/kernels.cu)
+  target_include_directories(poly_ink_flash_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+                                                        ${_strata_gpu_include_directories})
+  target_link_libraries(poly_ink_flash_test PRIVATE strata_kernels ${_strata_gpu_blas_target} ${_strata_gpu_runtime_target})
+  # Inkling 2's Q8_0 attention caches (--kv q8_0): stores and readers against the host; needs a card, run by hand
+  add_executable(poly_inkling2_kvq8_test src/poly/inkling2_kvq8_test.cu src/poly/inkling2.cu src/poly/kernels.cu)
+  target_include_directories(poly_inkling2_kvq8_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+                                                             ${_strata_gpu_include_directories})
+  target_link_libraries(poly_inkling2_kvq8_test PRIVATE strata_kernels ${_strata_gpu_blas_target}
+                                                        ${_strata_gpu_runtime_target})
   # DeepSeek V4's hyper-connection read for a batch against the rows one at a time; needs a card, run by hand
   add_executable(poly_hc_test src/poly/hc_test.cu src/poly/kernels.cu)
   target_include_directories(poly_hc_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${_strata_gpu_include_directories})
@@ -279,6 +337,16 @@ if(STRATA_BUILD_POLY AND STRATA_NATIVE_EXPERTS AND (STRATA_ENABLE_CUDA OR STRATA
   target_link_libraries(poly_hip_split_attend_test PRIVATE ${_strata_gpu_blas_target} ${_strata_gpu_runtime_target})
   add_test(NAME poly_hip_split_attend_test COMMAND poly_hip_split_attend_test)
   set_tests_properties(poly_hip_split_attend_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600)
+  # ink_attend_batch() on RDNA4's matrix cores against an FP64 reference and ink_attend(), and in 2 calls bit for bit;
+  # needs a gfx12 card (77 = skipped)
+  if(STRATA_ENABLE_HIP)
+    add_executable(poly_inkling2_wmma_test src/poly/inkling2_wmma_test.cu src/poly/inkling2.cu src/poly/kernels.cu)
+    target_include_directories(poly_inkling2_wmma_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+                                                              ${_strata_gpu_include_directories})
+    target_link_libraries(poly_inkling2_wmma_test PRIVATE strata_kernels ${_strata_gpu_blas_target} ${_strata_gpu_runtime_target})
+    add_test(NAME poly_inkling2_wmma_test COMMAND poly_inkling2_wmma_test)
+    set_tests_properties(poly_inkling2_wmma_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600)
+  endif()
   # attend_batch() against attend() with Flint's heads, sinks and window ring; needs a card
   add_executable(poly_sink_attend_test src/poly/sink_attend_test.cu src/poly/kernels.cu)
   target_include_directories(poly_sink_attend_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -294,7 +362,7 @@ if(STRATA_BUILD_POLY AND STRATA_NATIVE_EXPERTS AND (STRATA_ENABLE_CUDA OR STRATA
   set_tests_properties(poly_hip_prefill_fp32_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600)
   # fattn_q8() and fattn_f16() (llama.cpp's flash-attention kernel) against attend_batch(), and with `dec` fdec_q8()
   # against attend(); needs a card, run by hand
-  if(STRATA_POLY_MMQ)
+  if(STRATA_POLY_MMQ OR STRATA_ENABLE_CUDA)
     add_executable(poly_fattn_test src/poly/fattn_test.cu src/poly/kernels.cu)
     target_include_directories(poly_fattn_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/src/poly
                                                       ${_strata_gpu_include_directories})
@@ -316,7 +384,10 @@ if(STRATA_BUILD_POLY AND STRATA_NATIVE_EXPERTS AND (STRATA_ENABLE_CUDA OR STRATA
                                                         ${_strata_gpu_include_directories})
     target_link_libraries(poly_mmq_k32_test PRIVATE strata_poly_mmq ${_strata_gpu_blas_target} ${_strata_gpu_runtime_target})
     add_test(NAME poly_mmq_k32_test COMMAND poly_mmq_k32_test)
-    set_tests_properties(poly_mmq_k32_test PROPERTIES SKIP_RETURN_CODE 77)
+    add_test(NAME poly_mmq_k32_test_turing_int8 COMMAND poly_mmq_k32_test --turing-int8)
+    add_test(NAME poly_mmq_k32_test_w4a8 COMMAND poly_mmq_k32_test)
+    set_tests_properties(poly_mmq_k32_test poly_mmq_k32_test_turing_int8 poly_mmq_k32_test_w4a8 PROPERTIES SKIP_RETURN_CODE 77)
+    set_tests_properties(poly_mmq_k32_test_w4a8 PROPERTIES ENVIRONMENT "STRATA_PREFILL_NVFP4=w4a8")
   endif()
   # a prompt product of each path (the card's, and the BLAS path with STRATA_POLY_PROMPT_BLAS=1) against a double-precision
   # product of ggml's dequantized weights; needs a card
@@ -328,9 +399,13 @@ if(STRATA_BUILD_POLY AND STRATA_NATIVE_EXPERTS AND (STRATA_ENABLE_CUDA OR STRATA
     add_test(NAME poly_mmq_paths_test COMMAND poly_mmq_paths_test)
     add_test(NAME poly_mmq_paths_test_blas COMMAND poly_mmq_paths_test)
     add_test(NAME poly_mmq_paths_test_x2 COMMAND poly_mmq_paths_test)
-    set_tests_properties(poly_mmq_paths_test poly_mmq_paths_test_blas poly_mmq_paths_test_x2 PROPERTIES SKIP_RETURN_CODE 77)
+    add_test(NAME poly_mmq_paths_test_turing_int8 COMMAND poly_mmq_paths_test --turing-int8)
+    add_test(NAME poly_mmq_paths_test_w4a8 COMMAND poly_mmq_paths_test)
+    set_tests_properties(poly_mmq_paths_test poly_mmq_paths_test_blas poly_mmq_paths_test_x2 poly_mmq_paths_test_turing_int8 poly_mmq_paths_test_w4a8
+                         PROPERTIES SKIP_RETURN_CODE 77)
     set_tests_properties(poly_mmq_paths_test_blas PROPERTIES ENVIRONMENT "STRATA_POLY_PROMPT_BLAS=1")
     set_tests_properties(poly_mmq_paths_test_x2 PROPERTIES ENVIRONMENT "STRATA_PREFILL_NVFP4=w4a4x2")
+    set_tests_properties(poly_mmq_paths_test_w4a8 PROPERTIES ENVIRONMENT "STRATA_PREFILL_NVFP4=w4a8")
   endif()
   # LFM2's short convolution against the same arithmetic on the host; needs a card, so it is run by hand
   add_executable(poly_shortconv_test src/poly/shortconv_test.cu src/poly/kernels.cu)
@@ -342,16 +417,57 @@ if(STRATA_BUILD_POLY AND STRATA_NATIVE_EXPERTS AND (STRATA_ENABLE_CUDA OR STRATA
   target_include_directories(poly_dsv4_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
                                                    ${_strata_gpu_include_directories})
   target_link_libraries(poly_dsv4_test PRIVATE ${_strata_gpu_runtime_target})
+  # Inkling 2's kernels (inkling2.cu) against the same arithmetic on the host, and the fused launches against the
+  # calls they stand for; needs a card (77 without one)
+  add_executable(poly_inkling2_test src/poly/inkling2_test.cu src/poly/inkling2.cu src/poly/kernels.cu)
+  target_include_directories(poly_inkling2_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+                                                       ${_strata_gpu_include_directories})
+  target_link_libraries(poly_inkling2_test PRIVATE strata_kernels ${_strata_gpu_blas_target}
+                                                   ${_strata_gpu_runtime_target})
+  add_test(NAME poly_inkling2_test COMMAND poly_inkling2_test)
+  set_tests_properties(poly_inkling2_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600)
   # the pool of the CPU experts, without a model
   add_executable(poly_workers_test src/poly/workers_test.cpp src/poly/cpu_experts.cpp)
   target_link_libraries(poly_workers_test PRIVATE strata_quant Threads::Threads)
   add_test(NAME poly_workers_test COMMAND poly_workers_test)
+  # the four-row dot products the CPU experts take, bit for bit against the one-row ones, without a model
+  add_executable(poly_cpu_x4_test src/poly/cpu_x4_test.cpp src/poly/cpu_experts.cpp)
+  target_link_libraries(poly_cpu_x4_test PRIVATE strata_quant Threads::Threads)
+  add_test(NAME poly_cpu_x4_test COMMAND poly_cpu_x4_test)
   # the card's MXFP4 product against ggml's dequantizer on random blocks, without a model; needs a card, run by hand
   if(TARGET ggml-base)
     add_executable(poly_mxfp4_test src/poly/mxfp4_test.cu)
     target_include_directories(poly_mxfp4_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${_strata_ggml_root}/ggml/include
                                                       ${_strata_gpu_include_directories})
     target_link_libraries(poly_mxfp4_test PRIVATE strata_kernels ggml-base ${_strata_gpu_runtime_target})
+  endif()
+  # Inkling 2's cached IQ3_S / IQ3_XXS slots launches with MmvqSlots::lanes against the same launches without it and
+  # native_mmvq(), bit for bit, on random blocks (no model); CUDA only, needs a card
+  if(STRATA_ENABLE_CUDA)
+    add_executable(poly_iq3_lanes_test src/poly/iq3_lanes_test.cu)
+    target_include_directories(poly_iq3_lanes_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${_strata_gpu_include_directories})
+    target_link_libraries(poly_iq3_lanes_test PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+    add_test(NAME poly_iq3_lanes_test COMMAND poly_iq3_lanes_test)
+    set_tests_properties(poly_iq3_lanes_test PROPERTIES SKIP_RETURN_CODE 77)
+  endif()
+  # a token's attention products in one launch (native_mmvq_mixed(), native_mmvq_many()) against native_mmvq() a
+  # matrix, bit for bit, on random blocks (no model); CUDA only, needs a card
+  if(STRATA_ENABLE_CUDA)
+    add_executable(poly_project_mixed_test src/poly/project_mixed_test.cu)
+    target_include_directories(poly_project_mixed_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+                                                              ${_strata_gpu_include_directories})
+    target_link_libraries(poly_project_mixed_test PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+    add_test(NAME poly_project_mixed_test COMMAND poly_project_mixed_test)
+    set_tests_properties(poly_project_mixed_test PROPERTIES SKIP_RETURN_CODE 77)
+  endif()
+  # Inkling 2's cached IQ2_XXS / IQ2_XS / IQ2_S / IQ1_S / IQ1_M slots launches with MmvqSlots::lanes against the same
+  # launches without it and native_mmvq(), bit for bit, on random blocks (no model); CUDA only, needs a card
+  if(STRATA_ENABLE_CUDA)
+    add_executable(poly_iq_slot_lanes_test src/poly/iq_slot_lanes_test.cu)
+    target_include_directories(poly_iq_slot_lanes_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${_strata_gpu_include_directories})
+    target_link_libraries(poly_iq_slot_lanes_test PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+    add_test(NAME poly_iq_slot_lanes_test COMMAND poly_iq_slot_lanes_test)
+    set_tests_properties(poly_iq_slot_lanes_test PROPERTIES SKIP_RETURN_CODE 77)
   endif()
   # the Q8_0 KV cache kernels (store_q8 / store_q8_at) against a host reference (GPU, synthetic, no model)
   if(STRATA_BUILD_TESTS)

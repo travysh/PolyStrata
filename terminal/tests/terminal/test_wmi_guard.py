@@ -217,7 +217,7 @@ class FreshProcessesNeverLoadWmi(unittest.TestCase):
 
     #: importable without starting anything (a module with a heavy or interactive import side effect is left to the static check)
     MODULES = ("strata_control", "serve", "strata_cli", "strata_control.runtime", "strata_control.management", "strata_control.pictures",
-               "strata_control.app_policy", "strata_control.tls", "strata_control.sysinfo", "serve.server", "serve.mcp", "serve.cpu_affinity",
+               "strata_control.tls", "strata_control.sysinfo", "serve.server", "serve.mcp", "serve.cpu_affinity",
                "setup", "tools.strata_mcp", "tools.mtp_fetch", "tools.strata_tokenizer")
 
     def test_import_each_entry_in_a_fresh_process(self):

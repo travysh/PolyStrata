@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 708" width="960" height="708" role="img" aria-label="Tokens per second while writing an answer, 0.2.19. Laptop: RTX 4070 Laptop (8 GB), 32 GB RAM: LFM2.5-24B-A2B 87, Flint 40B-A2.5B 66, Qwen3.6-35B-A3B 98, Clover-35B-A3B 77, Ornith 1.5 89, Gemma 4 26B-A4B 96, Tiel Coder 35B-A3B 91, MiniCPM-V 4.7 79, Kolibri 1 63, Inkling 2 Mini 56, Groot 19B-A3B 91. RTX 5090 (32 GB): LFM2.5-24B-A2B 492, Flint 40B-A2.5B 261, Qwen3.6-35B-A3B 536, Clover-35B-A3B 308, Ornith 1.5 366, Gemma 4 26B-A4B 370, Tiel Coder 35B-A3B 440, MiniCPM-V 4.7 331, Kolibri 1 207, GLM 5.3 Flash 52, DeepSeek V4 Flash 54, Inkling 2 Mini 196, Groot 19B-A3B 458">
-<title>Tokens per second while writing an answer: 0.2.19</title>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 708" width="960" height="708" role="img" aria-label="Tokens per second while writing an answer, 0.2.20. Laptop: RTX 4070 Laptop (8 GB), 32 GB RAM: LFM2.5-24B-A2B 86, Flint 40B-A2.5B 64, Qwen3.6-35B-A3B 106, Clover-35B-A3B 83, Ornith 1.5 87, Gemma 4 26B-A4B 92, Tiel Coder 35B-A3B 89, MiniCPM-V 4.7 79, Kolibri 1 66, Inkling 2 Mini 53, Groot 19B-A3B 97. RTX 5090 (32 GB): LFM2.5-24B-A2B 492, Flint 40B-A2.5B 261, Qwen3.6-35B-A3B 536, Clover-35B-A3B 308, Ornith 1.5 366, Gemma 4 26B-A4B 370, Tiel Coder 35B-A3B 440, MiniCPM-V 4.7 331, Kolibri 1 207, GLM 5.3 Flash 52, DeepSeek V4 Flash 54, Inkling 2 Mini 196, Groot 19B-A3B 458">
+<title>Tokens per second while writing an answer: 0.2.20</title>
 <style>
 text{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
 .h{font-size:21px;font-weight:700;fill:#f2f4f7}
@@ -14,38 +14,38 @@ text{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Aria
 <text x="32" y="68" class="s">in a short chat, the fastest of three runs</text>
 <text x="32" y="102" class="p">Laptop: RTX 4070 Laptop (8 GB), 32 GB RAM</text>
 <text x="32" y="134" class="m">LFM2.5-24B-A2B</text>
-<rect x="160" y="124" width="230.8" height="14" rx="3" fill="#12b76a"/>
-<text x="396.8" y="136" class="v">87</text>
+<rect x="160" y="124" width="210.9" height="14" rx="3" fill="#12b76a"/>
+<text x="376.9" y="136" class="v">86</text>
 <text x="32" y="174" class="m">Flint 40B-A2.5B</text>
-<rect x="160" y="164" width="175.1" height="14" rx="3" fill="#12b76a"/>
-<text x="341.1" y="176" class="v">66</text>
+<rect x="160" y="164" width="157.0" height="14" rx="3" fill="#12b76a"/>
+<text x="323.0" y="176" class="v">64</text>
 <text x="32" y="214" class="m">Qwen3.6-35B-A3B</text>
 <rect x="160" y="204" width="260.0" height="14" rx="3" fill="#12b76a"/>
-<text x="426.0" y="216" class="v">98</text>
+<text x="426.0" y="216" class="v">106</text>
 <text x="32" y="254" class="m">Clover-35B-A3B</text>
-<rect x="160" y="244" width="204.3" height="14" rx="3" fill="#12b76a"/>
-<text x="370.3" y="256" class="v">77</text>
+<rect x="160" y="244" width="203.6" height="14" rx="3" fill="#12b76a"/>
+<text x="369.6" y="256" class="v">83</text>
 <text x="32" y="294" class="m">Ornith 1.5</text>
-<rect x="160" y="284" width="236.1" height="14" rx="3" fill="#12b76a"/>
-<text x="402.1" y="296" class="v">89</text>
+<rect x="160" y="284" width="213.4" height="14" rx="3" fill="#12b76a"/>
+<text x="379.4" y="296" class="v">87</text>
 <text x="32" y="334" class="m">Gemma 4 26B-A4B</text>
-<rect x="160" y="324" width="254.7" height="14" rx="3" fill="#12b76a"/>
-<text x="420.7" y="336" class="v">96</text>
+<rect x="160" y="324" width="225.7" height="14" rx="3" fill="#12b76a"/>
+<text x="391.7" y="336" class="v">92</text>
 <text x="32" y="374" class="m">Tiel Coder 35B-A3B</text>
-<rect x="160" y="364" width="241.4" height="14" rx="3" fill="#12b76a"/>
-<text x="407.4" y="376" class="v">91</text>
+<rect x="160" y="364" width="218.3" height="14" rx="3" fill="#12b76a"/>
+<text x="384.3" y="376" class="v">89</text>
 <text x="32" y="414" class="m">MiniCPM-V 4.7</text>
-<rect x="160" y="404" width="209.6" height="14" rx="3" fill="#12b76a"/>
-<text x="375.6" y="416" class="v">79</text>
+<rect x="160" y="404" width="193.8" height="14" rx="3" fill="#12b76a"/>
+<text x="359.8" y="416" class="v">79</text>
 <text x="32" y="454" class="m">Kolibri 1</text>
-<rect x="160" y="444" width="167.1" height="14" rx="3" fill="#12b76a"/>
-<text x="333.1" y="456" class="v">63</text>
+<rect x="160" y="444" width="161.9" height="14" rx="3" fill="#12b76a"/>
+<text x="327.9" y="456" class="v">66</text>
 <text x="32" y="494" class="m">Inkling 2 Mini</text>
-<rect x="160" y="484" width="148.6" height="14" rx="3" fill="#12b76a"/>
-<text x="314.6" y="496" class="v">56</text>
+<rect x="160" y="484" width="130.0" height="14" rx="3" fill="#12b76a"/>
+<text x="296.0" y="496" class="v">53</text>
 <text x="32" y="534" class="m">Groot 19B-A3B</text>
-<rect x="160" y="524" width="241.4" height="14" rx="3" fill="#12b76a"/>
-<text x="407.4" y="536" class="v">91</text>
+<rect x="160" y="524" width="237.9" height="14" rx="3" fill="#12b76a"/>
+<text x="403.9" y="536" class="v">97</text>
 <text x="496" y="102" class="p">RTX 5090 (32 GB)</text>
 <text x="496" y="134" class="m">LFM2.5-24B-A2B</text>
 <rect x="624" y="124" width="238.7" height="14" rx="3" fill="#12b76a"/>

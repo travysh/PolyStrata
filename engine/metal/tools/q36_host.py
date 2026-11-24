@@ -106,7 +106,7 @@ def main():
             'inline unsigned grid1(int64_t n,int b=256){return unsigned((n+b-1)/b);}']
     shader=['#include <metal_stdlib>','using namespace metal;','constant int kThreads=256,kChunkCells=256,kConvTile=16;']
     shader.append(constants.replace('constexpr','constant'))
-    shader.append('struct RowSel {device const int* cell;device const int* slot;device const int* delta;device ulong* kc;device ulong* vc;};')
+    shader.append('struct RowSel {device const int* cell;device const int* slot;device const int* delta;device ulong* kc;device ulong* vc;device ulong* ksc;device ulong* vsc;};')
     shader.append('''
 inline float silu(float x){return x/(1+exp(-x));}
 inline float sigm(float x){return 1/(1+exp(-x));}
@@ -119,6 +119,10 @@ inline float block_max(float v,threadgroup float* sh,uint3 tid,uint3 size){
  sh[tid.x]=v;threadgroup_barrier(mem_flags::mem_threadgroup);
  for(uint s=size.x/2;s;s>>=1){if(tid.x<s)sh[tid.x]=max(sh[tid.x],sh[tid.x+s]);threadgroup_barrier(mem_flags::mem_threadgroup);}
  float r=sh[0];threadgroup_barrier(mem_flags::mem_threadgroup);return r;}
+inline void fwht256_row(threadgroup float* b,uint3 tid){
+ for(int h=1;h<256;h<<=1){threadgroup_barrier(mem_flags::mem_threadgroup);const int i=int(tid.x);
+  if((i&h)==0){const float a=b[i],c=b[i+h];b[i]=a+c;b[i+h]=a-c;}}
+ threadgroup_barrier(mem_flags::mem_threadgroup);b[tid.x]*=0.0625f;threadgroup_barrier(mem_flags::mem_threadgroup);}
 inline int atomicAdd(threadgroup int* p,int v){return atomic_fetch_add_explicit((threadgroup atomic_int*)p,v,memory_order_relaxed);}
 inline int atomicAdd(device int* p,int v){return atomic_fetch_add_explicit((device atomic_int*)p,v,memory_order_relaxed);}
 ''')
@@ -134,13 +138,17 @@ inline int atomicAdd(device int* p,int v){return atomic_fetch_add_explicit((devi
         code=re.sub(r'\bhalf\b','rot_half',code)
         code=code.replace('unsigned long long','ulong').replace('int64_t','long')
         code=code.replace('sincosf(theta, &sn, &cs);','sn=sin(theta);cs=cos(theta);')
-        for table,index in [('rs.kc','rs.slot[t]'),('rs.vc','rs.slot[t]'),('hist_tab','slot_rows[g]'),('state_tab','slot_rows[g]')]:
+        for table,index in [('rs.kc','rs.slot[t]'),('rs.vc','rs.slot[t]'),('rs.ksc','rs.slot[t]'),('rs.vsc','rs.slot[t]'),('hist_tab','slot_rows[g]'),('state_tab','slot_rows[g]')]:
             code=code.replace(table+'['+index+']','reinterpret_cast<device float*>('+table+'['+index+'])')
         code=code.replace('__shared__ const float* pk[16];','device const float* threadgroup pk[16];')
         code=code.replace('__shared__','threadgroup').replace('__restrict__','')
-        code=re.sub(r'(?<![\w*])((?:const\s+)?(?:float4|float|int32_t|uint8_t|__half|unsigned long long)\s*\*\s*(?:const\s*\*)?)',lambda m:metal_type(m[1]),code)
+        code=re.sub(r'(?<![\w*])((?:const\s+)?(?:float4|float|int32_t|uint8_t|int8_t|__half|unsigned long long)\s*\*\s*(?:const\s*\*)?)',lambda m:metal_type(m[1]),code)
         code=code.replace('threadgroup device const float* threadgroup','device const float* threadgroup').replace('device device ','device ')
         for old,new in [('__syncthreads()','threadgroup_barrier(mem_flags::mem_threadgroup | mem_flags::mem_device)'),('__float2half_rn','half'),('__float2half','half'),('__half2float','float'),('__expf','exp'),('expf','exp'),('rsqrtf','rsqrt'),('fmaf','fma'),('fmaxf','max'),('fminf','min'),('powf','pow'),('sqrtf','sqrt'),('sinf','sin'),('cosf','cos'),('fabsf','abs'),('__half','half'),('int32_t','int'),('uint8_t','uchar')]:code=code.replace(old,new)
+        # --kv int8 / fp4: CUDA's round-to-nearest-even conversion is rint; a warp is one 32-lane SIMD group
+        code=code.replace('__float2int_rn(','(int)rint(')
+        code=re.sub(r'__shfl_down_sync\(0xffffffffu,\s*([^,]+),\s*([^,)]+)\)',r'simd_shuffle_down(\1,\2)',code)
+        code=re.sub(r'\bfwht256_row\((\w+)\)',r'fwht256_row(\1,threadIdx)',code)
         code=re.sub(r'__shfl_xor_sync\(0xffffffffu,\s*([^,]+),\s*([^,)]+)(?:,\s*32)?\)',r'simd_shuffle_xor(\1,\2)',code)
         while '__ldg(' in code:
             a=code.index('__ldg(');b=a+5;c=end(code,b)

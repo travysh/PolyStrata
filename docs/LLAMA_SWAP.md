@@ -11,7 +11,8 @@ put PolyStrata next to other servers (llama.cpp, vLLM, ...).
 
 ## Quick start
 
-1. Set up PolyStrata without starting it: `./setup.sh --no-start`. This writes `strata-<model>.json` in the checkout.
+1. Set up PolyStrata without starting it: `./setup.sh --no-start`. This writes `strata-<model>.json` in the checkout's
+   `terminal` folder.
 2. Add an entry to llama-swap's config. The start script that setup writes (`run-<model>.sh`) fixes the port at 8080,
    so call `terminal/serve/server.py` with llama-swap's port instead:
 
@@ -22,7 +23,7 @@ models:
   strata:
     cmd: >-
       sh -c 'cd /path/to/PolyStrata && exec terminal/.venv/bin/python terminal/serve/server.py
-      --engine strata --config strata-<model>.json --port ${PORT}'
+      --engine strata --config terminal/strata-<model>.json --port ${PORT}'
     env: ["STRATA_ALLOWED_HOSTS=my-server"]     # the host name your clients use, see below
     checkEndpoint: /health
     ttl: 1800

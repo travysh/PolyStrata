@@ -165,14 +165,6 @@ class MacMinimumOs(unittest.TestCase):
             (Path(d) / "strata-vision").write_bytes(self.make_macho((27, 0)))
             self.assertEqual(binary_deps.too_new_for_mac(Path(d)), [("strata-vision", "27.0")])
 
-    def test_the_floor_matches_the_app_and_both_cmake_projects(self):
-        import json
-        app = json.loads((ROOT.parent / "app" / "desktop" / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8"))
-        floor = ".".join(map(str, binary_deps.MAC_MIN_OS))
-        self.assertEqual(app["bundle"]["macOS"]["minimumSystemVersion"], floor)
-        for cmake in ("engine/metal/CMakeLists.txt", "terminal/tools/vision/CMakeLists.txt"):
-            self.assertIn(f'CMAKE_OSX_DEPLOYMENT_TARGET "{floor}"', (ROOT.parent / cmake).read_text(encoding="utf-8"), cmake)
-
     def test_the_packager_refuses_a_macos_engine_built_for_a_newer_macos(self):
         with tempfile.TemporaryDirectory() as d:
             src, out = Path(d) / "src", Path(d) / "out"
@@ -199,14 +191,12 @@ class MacMinimumOs(unittest.TestCase):
             self.assertEqual(binary_deps.main(["binary_deps.py", "--mac-min-os", d]), 0)
 
     def test_every_mac_release_step_checks_the_minimum_macos(self):
-        # the engine build (packaging/mac/build_engine.sh), the dmg (make-dmg.sh) and the release signing of the app and of an
-        # engine package (sign-and-notarize.sh) each run the check, so a build without the deployment target cannot ship again
-        for script, times in (("tools/packaging/mac/build_engine.sh", 1), ("app/desktop/scripts/make-dmg.sh", 1),
-                              ("tools/packaging/mac/sign-and-notarize.sh", 1)):
+        # the engine build (packaging/mac/build_engine.sh) and the release signing of an engine package (sign-and-notarize.sh)
+        # each run the check, so a build without the deployment target cannot ship again
+        for script, times in (("tools/packaging/mac/build_engine.sh", 1), ("tools/packaging/mac/sign-and-notarize.sh", 1)):
             text = (ROOT.parent / script).read_text(encoding="utf-8")
             self.assertGreaterEqual(text.count("binary_deps.py") and text.count("--mac-min-os"), times, script)
         sign = (ROOT.parent / "tools" / "packaging" / "mac" / "sign-and-notarize.sh").read_text(encoding="utf-8")
-        self.assertIn('check_min_os "$app" "app"', sign)
         self.assertIn('check_min_os "$edir" "engine package"', sign)
 
 

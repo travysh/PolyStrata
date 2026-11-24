@@ -9,7 +9,6 @@ renames and path edits.
 | folder | holds |
 |---|---|
 | `engine/` | the C++/CUDA/HIP/SYCL/Metal engine: `src`, `include`, `cmake`, `metal`, `sycl`, `spark`, `third_party`, `CMakeLists.txt`, `CMakePresets.json`, the C++ tests and benches |
-| `app/` | the desktop app and its host (was `apps/`) |
 | `terminal/` | the Terminal, in the same layout as the installed Terminal: `strata.py`, `setup.py`, `strata_cli`, `strata_control`, `serve`, `integrations`, `bin`, `data`, `ref`, `crates`, the Python tools (`terminal/tools`) and the Python tests |
 | `docs/` | the documentation, `history/`, the benchmark results |
 | `tools/` | the repository's own checks (`tools/check` and the docs and binary checks), `packaging`, `docker`, `research`, `nix`, `BENCH.bat`, `bench.sh`, this folder |
@@ -120,6 +119,4 @@ list their function blocks).
 
 - The text of comments and pages that name old paths (`map0216-prose.tsv`). Each needs a reader; the public pages also need the
   plain-words pass.
-- Builds the dry run could not run: Docker images, the Tauri app bundle, Nix.
-- Do not run the locale generators `app/host/scripts/make-{fix,gh,pick,r3,tune,ui}-locales.py`: their output files have hand
-  edits the generators do not know. The move renames them unchanged.
+- Builds the dry run could not run: Docker images, Nix.

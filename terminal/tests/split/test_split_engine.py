@@ -737,7 +737,7 @@ class NoPeerAccess(unittest.TestCase):
         self.assertEqual(bad, [], "CUDA peer access in the split engine:\n" + "\n".join(bad))
 
     def test_hip_peer_calls_only_in_the_one_probed_file(self):
-        bad = [f"{p.relative_to(ROOT.parent / "engine").as_posix()}:{n}: {line.strip()[:100]}" for p, n, line, code in self._code_lines()
+        bad = [f"{p.relative_to(ROOT.parent / 'engine').as_posix()}:{n}: {line.strip()[:100]}" for p, n, line, code in self._code_lines()
                if self.FORBIDDEN_HIP.search(code) and p.relative_to(ROOT.parent / "engine").as_posix() != self.HIP_PEER_FILE]
         self.assertEqual(bad, [], "HIP peer access outside " + self.HIP_PEER_FILE + ":\n" + "\n".join(bad))
 

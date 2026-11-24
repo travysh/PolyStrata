@@ -1,5 +1,5 @@
 """The web page's translations: the mechanism (node, serve/test_web_i18n.js), the files the server hands out for it
-(serve/web/locales, serve/web/vendor), and the catalogs against the text in the code (tools/web_i18n.py)."""
+(serve/web/locales), and the catalogs against the text in the code (tools/web_i18n.py)."""
 from __future__ import annotations
 
 import shutil
@@ -33,7 +33,7 @@ class Mechanism(unittest.TestCase):
 
 
 class WhatTheServerHandsOut(unittest.TestCase):
-    """/web/locales and /web/vendor: whitelisted names and types, nothing outside those folders."""
+    """/web/locales: whitelisted names, nothing outside that folder (/web/vendor went with the chat page's math)."""
 
     def test_names_and_types(self):
         web = Path(__file__).parent / "web"
@@ -46,21 +46,6 @@ class WhatTheServerHandsOut(unittest.TestCase):
                     "/web/vendor/other/dist/katex.min.js", "/web/vendor/katex/dist/fonts/x.ttf", "/web/vendor/katex/dist/"):
             with self.subTest(bad=bad):
                 self.assertIsNone(subtree_file(bad))
-
-    def test_a_link_out_of_the_folder_is_refused(self):
-        import tempfile
-        with tempfile.TemporaryDirectory() as d:
-            web = Path(d) / "web"
-            (web / "vendor" / "katex").mkdir(parents=True)
-            (web / "locales").mkdir()
-            (web / "secret.js").write_text("secret")
-            (web / "vendor" / "katex" / "ok.js").write_text("ok")
-            self.assertEqual(subtree_file("/web/vendor/katex/ok.js", web)[1], "text/javascript; charset=utf-8")
-            try:
-                (web / "vendor" / "katex" / "link.js").symlink_to(web / "secret.js")
-            except (OSError, NotImplementedError):
-                self.skipTest("symlinks need a privilege here")
-            self.assertIsNone(subtree_file("/web/vendor/katex/link.js", web))
 
 
 class Served(unittest.TestCase):

@@ -15,7 +15,7 @@ body:
       description: Start the issue title with the same area in square brackets, for example "[Engine] decode stops after 2 minutes". Pick Other if none fits.
       options:
         - "[Engine]  (speed, kernels, models, the server and API)"
-        - "[GUI]  (the desktop app)"
+        - "[GUI]  (the web page: Monitor, Requests, About)"
         - "[TUI]  (the Terminal: strata launch, connect, monitor)"
         - "[Benchmark]  (measurements and reports)"
         - "[Docs]  (documentation)"

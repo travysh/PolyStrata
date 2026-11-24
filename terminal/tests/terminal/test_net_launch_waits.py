@@ -166,12 +166,6 @@ class Words(unittest.TestCase):
                                         "  model.gguf:   0.10 / 66.40 GB (0%)"])
         self.assertNotEqual(w.phase, "waiting")
 
-    def test_the_app_string_is_the_same_sentence(self):
-        import json
-        from pathlib import Path
-        en = json.loads((Path(__file__).resolve().parents[2].parent / "app" / "host" / "src" / "locales" / "net-en.json").read_text(encoding="utf-8"))
-        self.assertEqual(en["net01"], netpolicy.WORDS["waiting"].replace("{host}", "{0}").replace("{seconds}", "{1}"))
-
     def test_a_host_name_keeps_its_small_letter(self):
         self.assertEqual(capital("huggingface.co did not answer"), "huggingface.co did not answer")
         self.assertEqual(capital("the update feed could not be read"), "The update feed could not be read")

@@ -1,6 +1,6 @@
 """0.2.17 RAMMODE (owner 11-19): setup writes two RAM budgets for UD-Q4_K_XL / UD-IQ4_XS.  `--resident-budget-gib` in "args" is the new rule (the RAM less 17 GB: 47 on
 64 GB), used by "Full performance" and by the Terminal; "ui_budget_work_gib" is the old rule (the RAM less 24 GB: 40 on 64 GB) that the app's "Leave 20% for my work"
-swaps in (app/host/server/native-resources.mjs, tests/resource-rammode.test.mjs).  The rule lives in one place, setup.resident_budget_gib(work=...).  The person's own
+swaps in (the Strata project's native-resources.mjs).  The rule lives in one place, setup.resident_budget_gib(work=...).  The person's own
 budget wins in every mode: the key is left out when setup was asked for a budget, when the config keeps one of the person's, and where both rules give the same number.
 Every outside effect is mocked (tools/test_setup_golden.py's install()).
 

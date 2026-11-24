@@ -934,7 +934,7 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True, prefill: bool =
         # client that never asks would otherwise lose the thinking on every turn).  Anthropic's thinking is
         # opt-in there, and an effort alone does not ask for it. Claude Code's helper calls (a session title, a
         # topic check) ask for none and allow a few dozen tokens, which the model otherwise spent thinking and
-        # answered with no text at all; 2.1.282's title call also sends effort high.  The Chat settings' effort
+        # answered with no text at all; 2.1.282's title call also sends effort high.  The shared settings' effort
         # still applies: Service.with_shared sets "thinking" with it.  A request that gives its own
         # reasoning_budget_tokens (#123) asks for thinking, so it thinks as before.
         kwargs["enable_thinking"] = False
@@ -1198,12 +1198,14 @@ def _stub_follows(after: str):
 NOT_PARAMS = ("function", "think", "parameter")
 
 
-def param_name(opener: str) -> str | None:
+def param_name(opener: str, declared=None) -> str | None:
     """#6032 R1: the parameter a `<parameter=` opener names (`opener`: what follows `=` up to the `>` found): the name
     cut at its first whitespace, `<` or `>` (the model ran a closer or `</think>` into it, or put a space before the
     `>`); None - the value is read and dropped - when that leaves nothing, a placeholder (null / none) or one of the
     call format's own tag names."""
-    name = re.split(r"[\s<>]", opener.lstrip(), 1)[0]
+    name = re.split(r"[\s<>]", opener.lstrip(), maxsplit=1)[0]
+    if declared and name in declared:        # #6461: a tool may declare a parameter called `function` (Playwright's browser_evaluate)
+        return name
     if not name or name in NOT_PARAMS or name.lower() in ("null", "none"):
         return None
     return name
@@ -1257,7 +1259,7 @@ def opener_at(s: str, names=None, final: bool = False):
         line = s.split("\n", 1)[0]
         gt = line.find(">")
         if gt >= 0:
-            return param_name(s[len(PARAM_START):gt]), gt + 1, None
+            return param_name(s[len(PARAM_START):gt], names), gt + 1, None
         m = _COLON_OPENER.match(s)
         if m:
             value = m.group(2).strip()
@@ -1267,14 +1269,14 @@ def opener_at(s: str, names=None, final: bool = False):
             tail = re.match(r"\s*" + re.escape(PARAM_END), s[m.end():])
             if tail is None and not final and PARAM_END.startswith(s[m.end():].lstrip()):
                 return "pending"
-            return param_name(m.group(1)), m.end() + (tail.end() if tail else 0), value
+            return param_name(m.group(1), names), m.end() + (tail.end() if tail else 0), value
         if "\n" not in s:
             # the `>` still arriving, or a long name: held, except that the call's own scan reads it as before when
             # the line ends (a `<parameter=` line with neither `>` nor a colon form is no opener)
             if s.find(">") < 0 and not final:
                 return "pending"
             gt = s.find(">")
-            return (param_name(s[len(PARAM_START):gt]), gt + 1, None) if gt >= 0 else None
+            return (param_name(s[len(PARAM_START):gt], names), gt + 1, None) if gt >= 0 else None
         return None, len(line), None        # #6032 R5: an opener cut before its `>` (its line ends first): dropped
     if names:
         m = _NAMED_OPENER.match(s)
@@ -1322,7 +1324,7 @@ def call_end(text: str, final: bool = False, hold: bool = True, names=None) -> i
             gt = text.find(">", pos)
             if gt < 0:
                 return -1
-            pname = param_name(text[pos:gt].split("=", 1)[1])
+            pname = param_name(text[pos:gt].split("=", 1)[1], names)
             end = param_end(text[gt + 1:], final, pname, hold, allow_reopen=True,
                             names=(set(names) - seen - {pname}) if names else None)
             if end < 0:
@@ -1754,7 +1756,7 @@ def parse_tool_call(body: str, schema: dict | None = None, notes: list | None = 
             if recover:
                 got = opener_at(rest, unset, final=True)
             if got is None:                                  # the old reading (a `<parameter=` with no `>` raises)
-                got = (param_name(rest[len(PARAM_START):rest.index(">")]), rest.index(">") + 1, None)
+                got = (param_name(rest[len(PARAM_START):rest.index(">")], props), rest.index(">") + 1, None)
             s = rest
         pname, length, inline = got
         openers += 1
@@ -2124,6 +2126,20 @@ class OutputParser:
             if isinstance(name, str) and name:
                 for prefix in ("tools.", "functions.", "default_api."):
                     aliases.setdefault(prefix + name, set()).add(name)
+        # A client that declares MCP tools as `mcp__server__tool` next to plain tools (`web_fetch`, `memory`): Qwen carries
+        # the prefix over to a plain tool (`mcp__web_fetch`), drops it from an MCP tool (`server__tool`), or keeps it and
+        # drops the server (`mcp__tool`, the #5281 last segment with its prefix).  Spellings of a declared name, under the
+        # same unambiguous-alias rule; a server name that differs (`mcp__serevr__tool`) is not guessed.
+        for name in self.schemas:
+            if not isinstance(name, str) or not name or "." in name:
+                continue
+            if name.startswith("mcp__"):
+                rest = name[len("mcp__"):]
+                if "__" in rest:
+                    aliases.setdefault(rest, set()).add(name)
+                    aliases.setdefault("mcp__" + rest.rsplit("__", 1)[1], set()).add(name)
+            elif "__" not in name:
+                aliases.setdefault("mcp__" + name, set()).add(name)
         self.aliases = {alias: next(iter(names)) for alias, names in aliases.items()
                         if len(names) == 1 and alias not in self.schemas}
         self.unread = 0              # #3441: `<tool_call>` blocks that opened like a call and were returned as text
@@ -2629,7 +2645,7 @@ class OutputParser:
                         b = stripped.find(">")
                         if b < 0:
                             return out
-                        got = (param_name(stripped[11:b]), b + 1, None)  # #6032 R1: as parse_tool_call names it
+                        got = (param_name(stripped[11:b], self.sdeclared), b + 1, None)  # #6032 R1: as parse_tool_call names it
                     pname, length, inline = got
                     self.sp += length
                     self.sraw_pname = pname
@@ -2641,7 +2657,8 @@ class OutputParser:
                         declared = self.sdeclared.get(pname) if pname else None
                         v = coerce_value(inline, declared) if pname else _SKIP
                         if v is not _SKIP and declared == "string":
-                            args(("" if self.sfirst else ",") + json.dumps(pname) + ":" + json.dumps(v))
+                            args(("" if self.sfirst else ",") + json.dumps(pname, ensure_ascii=False) + ":"
+                                 + json.dumps(v, ensure_ascii=False))
                             self.sfirst = False
                             self.sset.add(pname)
                         elif v is not _SKIP:
@@ -2651,7 +2668,7 @@ class OutputParser:
                         continue
                     if pname is not None and self.sdeclared.get(pname) == "string":
                         self.sset.add(pname)
-                        args(("" if self.sfirst else ",") + json.dumps(pname) + ':"')
+                        args(("" if self.sfirst else ",") + json.dumps(pname, ensure_ascii=False) + ':"')
                         self.sfirst = False
                         self.ss, self.sval_started = "str", False
                     else:
@@ -2679,7 +2696,7 @@ class OutputParser:
                     value = rest[:end]
                     if value.endswith("\n"):
                         value = value[:-1]
-                    args(json.dumps(value)[1:-1] + '"')
+                    args(json.dumps(value, ensure_ascii=False)[1:-1] + '"')
                     self.sp += end + close_len(rest, end, self.scloser)
                     self.ss = "between"
                     continue
@@ -2689,7 +2706,7 @@ class OutputParser:
                 if safe > 0 and rest[safe - 1] == "\n":   # may be the trailing newline before </parameter>
                     safe -= 1
                 if safe > 0:
-                    args(json.dumps(rest[:safe])[1:-1])
+                    args(json.dumps(rest[:safe], ensure_ascii=False)[1:-1])
                     self.sp += safe
                 return out
             elif self.ss == "raw":
@@ -3411,6 +3428,36 @@ def _held_tail(text: str, tags) -> int:
     return 0
 
 
+def _in_json_string(text: str) -> bool:
+    """Whether JSON text that `text` starts ends inside a string."""
+    in_str = esc = False
+    for c in text:
+        if esc:
+            esc = False
+        elif in_str and c == "\\":
+            esc = True
+        elif c == '"':
+            in_str = not in_str
+    return in_str
+
+
+def _ink_call_end(s: str, final: bool) -> tuple[int, int] | None:
+    """Where a call block's body `s` ends, as (index, length of the tag there): the first <|end_message|> or next
+    message start outside the JSON's strings; None if there is none yet."""
+    ends = sorted([(i, len(INK_END)) for i in _find_all(s, INK_END)] + [(i, 0) for i in _find_all(s, INK_MSG)])
+    for i, n in ends:
+        if not _in_json_string(s[:i]):
+            return i, n
+    return ends[0] if ends and final else None
+
+
+def _find_all(s: str, tag: str):
+    i = s.find(tag)
+    while i >= 0:
+        yield i
+        i = s.find(tag, i + 1)
+
+
 class InklingOutputParser(OutputParser):
     """The parser for Inkling 2's replies (Thinking Machines; the tokenizer's pre-tokenizer `inkling2`).  A reply is a
     list of blocks, each a message of the model's that ends with <|end_message|>:
@@ -3419,8 +3466,8 @@ class InklingOutputParser(OutputParser):
         <|message_model|><|content_text|>...<|end_message|>
         <|message_model|>NAME<|content_invoke_tool_json|>{"name":"NAME","args":{...}}<|end_message|>
 
-    The tags are control tokens, so a block's text cannot hold one: nothing here has to tell a quoted tag from a real
-    one.  A call is a call for a tool the request declared (OutputParser's rule); any other is returned as the text
+    The tags are control tokens, but the model can write their text with ordinary tokens, and the parser reads text: a
+    call's JSON may hold one in a string (_ink_call_end).  A call is a call for a tool the request declared (OutputParser's rule); any other is returned as the text
     it was written as.  Text outside every block is content."""
 
     def __init__(self, thinking: bool = True, tools: list[dict] | None = None, stream_tools: bool = False,
@@ -3433,6 +3480,19 @@ class InklingOutputParser(OutputParser):
         # must not think), so the reply starts inside its text block
         self.mode = "content" if opened else "between"
         self.header = ""         # the block's header: a call's tool name
+
+    # The state the server reads (Service._run) for each mode: "reasoning" in a thinking block, "content" between
+    # blocks (a forced call's opening goes there once the thinking is closed), "text" inside a text block
+    STATES = {"between": "content", "header": "header", "reasoning": "reasoning", "content": "text", "call": "call"}
+
+    @property
+    def state(self) -> str:
+        mode = getattr(self, "mode", None)
+        return self.STATES[mode] if mode is not None else self._state
+
+    @state.setter
+    def state(self, value: str):
+        self._state = value          # OutputParser.__init__'s; this parser's state is its mode
 
     @property
     def clean(self) -> bool:
@@ -3492,12 +3552,17 @@ class InklingOutputParser(OutputParser):
                 continue
             if self.mode == "header":
                 found = [(s.find(tag), tag) for tag in INK_KINDS if s.find(tag) >= 0]
+                # #283: a header is a tool's name, with no space and no block end in it.  A model that writes its
+                # answer right after <|message_model|> (the thinking budget's wrap-up opens the next block and leaves
+                # its kind to the model) is writing a text block: read it as one, so no tag reaches the reply.
+                cut = min((i for i in (next((i for i, c in enumerate(s) if c.isspace()), -1), s.find(INK_END),
+                                       s.find(INK_STOP)) if i >= 0), default=-1)
+                if cut >= 0 and (not found or cut < min(found)[0]):
+                    self.mode, self.header = "content", ""
+                    continue
                 if not found:
-                    if final or len(s) > INK_HEADER_MAX:       # no block follows: the text as it was written
-                        out.append(Event("content", INK_MSG + s))
-                        self.ink, self.mode = "", "between"
-                        if final:
-                            return out
+                    if final or len(s) > INK_HEADER_MAX:       # no block follows: the text of a text block
+                        self.mode, self.header = "content", ""
                         continue
                     return out
                 at, tag = min(found)
@@ -3507,6 +3572,10 @@ class InklingOutputParser(OutputParser):
             ends = [(i, len(t)) for i, t in ((s.find(INK_END), INK_END), (s.find(INK_MSG), "")) if i >= 0]
             end = min(ends) if ends else None
             if self.mode == "call":
+                # a call's JSON can hold the tags' text in a string ("print('<|end_message|>')"): its end is the
+                # first tag outside the JSON's strings.  Where every tag is inside one, the JSON has not closed:
+                # wait for the rest, and at the end of the reply take the first tag (the call is the text it is)
+                end = _ink_call_end(s, final)
                 if end is None and not final:
                     return out
                 body = s if end is None else s[:end[0]]

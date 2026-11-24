@@ -1,7 +1,8 @@
 // tools/vision/own/gguf_lite.h - a small GGUF reader for Strata's own vision tower (no ggml, no llama.cpp).
 //
 // Reads the header (key/value pairs, tensor directory) of a GGUF v2/v3 file and the data of single tensors, converted to float32:
-// F32, F16, BF16 and Q8_0 are handled (what an mmproj file comes in); any other tensor type is an error that names it.
+// F32, F16, BF16, Q8_0 and the other blocks of 32 (Q4_0, Q4_1, Q5_0, Q5_1: an mmproj quantized by hand, #154) are handled;
+// any other tensor type is an error that names it.
 // Shapes are kept as the file stores them (ne[0] is the fastest dimension: a Linear weight of "[in, out]" is `out` rows of `in`
 // contiguous values, y = W x).
 #pragma once
@@ -21,7 +22,7 @@ enum GgufValueType : uint32_t {
 };
 
 // ggml's tensor type ids (the ones this reader knows)
-enum GgufTensorType : uint32_t { GT_F32 = 0, GT_F16 = 1, GT_Q8_0 = 8, GT_BF16 = 30 };
+enum GgufTensorType : uint32_t { GT_F32 = 0, GT_F16 = 1, GT_Q4_0 = 2, GT_Q4_1 = 3, GT_Q5_0 = 6, GT_Q5_1 = 7, GT_Q8_0 = 8, GT_BF16 = 30 };
 
 struct GgufTensorInfo {
     std::string name;

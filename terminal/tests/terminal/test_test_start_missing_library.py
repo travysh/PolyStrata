@@ -77,7 +77,7 @@ class BinarySmoke(unittest.TestCase):
         self.ctx = SimpleNamespace(components=self.components)
 
     def component(self, exe):
-        return SimpleNamespace(exe=exe, root=self.engine, version="0.1.60")
+        return SimpleNamespace(id="", exe=exe, root=self.engine, version="0.1.60")   # "": the default component
 
     def test_a_missing_library_is_named_with_the_package_and_the_log_is_kept(self):
         exe = make_engine(self.engine, f"echo '{LOADER}' >&2\nexit 127\n", f"echo {LOADER} 1>&2\r\nexit /b 127\r\n")

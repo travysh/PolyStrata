@@ -13,10 +13,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 PAGE = ROOT.parent / "docs" / "TROUBLESHOOTING.md"
 
-# One distinctive phrase from the title of each entry the v0.2.4.2 page had (the page may reword the rest).
+# One distinctive phrase from the title of each entry the v0.2.4.2 page had (the page may reword the rest).  The desktop
+# app's two entries ("damaged and can't be opened" on a Mac, "app keeps more graphics memory free") went with the app.
 ENTRIES = [
-    "couldn't find an engine for this computer", "needs a newer engine", "damaged and can't be opened", "strata doctor", "Sending logs for a bug report",
-    "froze, or got very slow", "app keeps more graphics memory free", "A download stopped", "driver is too old", "Port 8080 is already in use",
+    "couldn't find an engine for this computer", "needs a newer engine", "strata doctor", "Sending logs for a bug report",
+    "froze, or got very slow", "A download stopped", "driver is too old", "Port 8080 is already in use",
     "Smart App Control", "new engine misbehaves", "git pull did not succeed", "build tools could not be installed", "does not compile",
     "Startup takes a long time", "does not match GitHub's checksum", "It is slow and the disk light", "engine stopped unexpectedly", "exit code -9",
     "exceeds the context", "slower than the tables", "came back empty", "Turing card", "--expert-cache N", "--resident-budget-gib N",

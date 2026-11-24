@@ -1,14 +1,23 @@
 // src/kernels/pf_wmma_parity.cpp - gemm_iq_f16_grouped (the Volta prompt experts, STRATA_PF_WMMA) against a double
 // reference over the same FP16 weights (iq_dequant_f16, the FP16 path's dequantization) and FP16 activations.
 //
-//     build/pf_wmma_parity            (needs a CUDA GPU with FP16 tensor cores: sm_70+; synthetic blobs, no model)
+//     build/pf_wmma_parity            (needs a CUDA GPU with FP16 tensor cores: sm_70+, or in a HIP build an RDNA3 /
+//                                      RDNA4 card, whose 64 KiB of LDS take the tiles of 128 values a row only;
+//                                      synthetic blobs, no model)
 //
 // Every gate/up format the prompt path gives it (IQ2_XXS, IQ2_S, IQ1_M, and this pack's IQ4_NL / IQ3_S / IQ4_XS: 1280
 // rows of 2560) and the down products (Q2_0, and IQ4_NL: 2560 rows of 640); a group of experts with 0, 1, 63, 64, 65,
-// 200 and 300 rows (one past the 256-row chunk); the rows placed past a nonzero first bound.  The sums are FP32 on
+// 200 and 300 rows (one past the 256-row chunk); the rows placed past a nonzero first bound.  Inkling 2 Mini's experts:
+// 2304 rows of 2304 (gate|up) and 2304 rows of 1152 (down), IQ4_NL, NVFP4 and Q2_0, and on HIP Q8_0 (the 128-value
+// tiles there).  A row's sums must not depend on its launch: the same rows as the only rows of a one-expert launch
+// give the same bits.  The sums are FP32 on
 // tensor cores in another order than the reference, so the check is a tolerance: max |got - ref| <= 2e-3 * (max |ref|
 // of the matrix) + 1e-6.
 #include "strata/kernels/iq_kernels.hpp"
+#if defined(__HIPCC__) || defined(STRATA_USE_HIP) || defined(__HIP_PLATFORM_AMD__)
+#include "strata/kernels/gfx_arch.hpp"
+#define PF_HIP 1
+#endif
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -24,6 +33,8 @@
 namespace k = strata::kernels;
 
 namespace {
+
+int launched = 0;   // the shapes that ran (a card that skipped every one has checked nothing)
 
 void ck(cudaError_t e, const char* what) {
     if (e != cudaSuccess) {
@@ -43,6 +54,7 @@ const char* name_of(int t) {
         case 23: return "IQ4_XS";
         case 29: return "IQ1_M";
         case 42: return "Q2_0";
+        case 40: return "NVFP4";
         case 12: return "Q4_K";
         case 13: return "Q5_K";
         case 14: return "Q6_K";
@@ -51,7 +63,7 @@ const char* name_of(int t) {
         default: return "?";
     }
 }
-int block_values(int t) { return t == 20 || t == 7 || t == 8 ? 32 : t == 42 ? 64 : 256; }
+int block_values(int t) { return t == 20 || t == 7 || t == 8 ? 32 : t == 42 || t == 40 ? 64 : 256; }
 
 // `rows` rows of `n` values of format t: random bytes, then a finite fp16 scale in every block
 std::vector<uint8_t> random_rows(int t, int64_t rows, int64_t n, std::mt19937& rng) {
@@ -60,7 +72,10 @@ std::vector<uint8_t> random_rows(int t, int64_t rows, int64_t n, std::mt19937& r
     std::uniform_int_distribution<int> byte(0, 255), ex(2, 8), man(0, 1023), sgn(0, 1);
     for (auto& b : w) b = (uint8_t) byte(rng);
     for (size_t o = 0; o < w.size(); o += bs) {
-        if (t == 29) {
+        if (t == 40) {
+            // NVFP4: four UE4M3 scales a block of 64 (bytes 0..3), 2^-6 .. 2^-1, positive (bit 7 clear)
+            for (int s4 = 0; s4 < 4; ++s4) w[o + s4] = (uint8_t) ((1 + byte(rng) % 6) << 3 | (byte(rng) & 7));
+        } else if (t == 29) {
             // IQ1_M: the fp16 scale is the top nibbles of its four scale words (bytes 48..55), the sign and the
             // exponent's top bits in the last: 0x1 / 0x2 there (0x9 / 0xA negative) keeps it in 2^-11 .. 2^-3
             const uint8_t nib = (uint8_t) ((sgn(rng) ? 0x8 : 0x0) | (1 + (byte(rng) & 1)));
@@ -107,14 +122,23 @@ int run(int ty, int n_out, int K, std::mt19937& rng) {
     const int maxr = *std::max_element(rows.begin(), rows.end());
     {   // the kernel's shared memory (iq_kernels.cu: WG_BN 128 weight columns of wk + 8 halves, WG_BM 64 rows of WG_XK 128 + 8 halves; wk 128 for Q2_0 and the IQ4_NL down, else 256): a card whose
         // opt-in limit is lower (Turing: 64 KB) has no launch of it - skipped with that reason, not a failure
-        const int wk = (ty == 42 || (ty == 20 && K % 256 != 0)) ? 128 : 256;
+#ifdef PF_HIP
+        const int wk = (ty == 42 || ty == 20 || ty == 40 || ty == 8) ? 128 : 256;   // (the HIP lanes)
+#else
+        const int wk = (ty == 42 || ((ty == 20 || ty == 40) && K % 256 != 0)) ? 128 : 256;
+#endif
         const size_t need = (size_t) 128 * (wk + 8) * 2 + (size_t) 64 * (128 + 8) * 2;
         int cur = 0, optin = 0;
-        cudaGetDevice(&cur);
-        cudaDeviceGetAttribute(&optin, cudaDevAttrMaxSharedMemoryPerBlockOptin, cur);
+        (void) cudaGetDevice(&cur);
+#ifdef PF_HIP
+        cudaDeviceProp p;   // (a block's LDS: HIP has no larger opt-in limit)
+        if (cudaGetDeviceProperties(&p, cur) == cudaSuccess) optin = (int) p.sharedMemPerBlock;
+#else
+        (void) cudaDeviceGetAttribute(&optin, cudaDevAttrMaxSharedMemoryPerBlockOptin, cur);
+#endif
         if (need > (size_t) optin) {
             std::printf("%-8s %5d x %4d: skipped, its tile needs %zu B of shared memory and this card allows %d B per block\n", name_of(ty), n_out, K, need, optin);
-            cudaFree(dw); cudaFree(dx); cudaFree(db); cudaFree(dy); cudaFree(dq);
+            (void) cudaFree(dw); (void) cudaFree(dx); (void) cudaFree(db); (void) cudaFree(dy); (void) cudaFree(dq);
             return 0;
         }
     }
@@ -122,6 +146,7 @@ int run(int ty, int n_out, int K, std::mt19937& rng) {
         std::printf("%-8s %5d x %4d: not launched\n", name_of(ty), n_out, K);
         return 1;
     }
+    ++launched;
     for (int e = 0; e < E; ++e) k::iq_dequant_f16(ty, dw + e * eb, (int64_t) n_out * K, dq + (size_t) e * n_out * K, nullptr);
     ck(cudaDeviceSynchronize(), "run");
     std::vector<float> y((size_t) total * n_out);
@@ -141,10 +166,25 @@ int run(int ty, int n_out, int K, std::mt19937& rng) {
                 scale = std::max(scale, std::fabs(s));
                 worst = std::max(worst, std::fabs(s - (double) y[(size_t) r * n_out + n]));
             }
-    const bool ok = worst <= 2e-3 * scale + 1e-6;
-    std::printf("%-8s %5d x %4d, %d rows in %d experts: max |err| %.3g of max |ref| %.3g  %s\n", name_of(ty), n_out, K,
-                total - base, E, worst, scale, ok ? "ok" : "FAIL");
-    cudaFree(dw); cudaFree(dx); cudaFree(db); cudaFree(dy); cudaFree(dq);
+    // the 300-row expert (the last) again as the only expert of its launch, its rows from 0: the same bits
+    bool alone = true;
+    {
+        const int e = E - 1, r0 = bounds[e], nr = rows[e];
+        const int32_t b1[2] = {0, nr};
+        float* dy1;
+        ck(cudaMemcpy(db, b1, sizeof b1, cudaMemcpyHostToDevice), "b1");
+        ck(cudaMalloc(&dy1, (size_t) nr * n_out * 4), "y1");
+        if (!k::gemm_iq_f16_grouped(ty, dw + e * eb, eb, n_out, K, dx + (size_t) r0 * K, K, db, 1, nr, dy1, n_out, nullptr)) alone = false;
+        ck(cudaDeviceSynchronize(), "run alone");
+        std::vector<float> y1((size_t) nr * n_out);
+        ck(cudaMemcpy(y1.data(), dy1, y1.size() * 4, cudaMemcpyDeviceToHost), "y1");
+        alone = alone && std::memcmp(y1.data(), &y[(size_t) r0 * n_out], y1.size() * 4) == 0;
+        (void) cudaFree(dy1);
+    }
+    const bool ok = worst <= 2e-3 * scale + 1e-6 && alone;
+    std::printf("%-8s %5d x %4d, %d rows in %d experts: max |err| %.3g of max |ref| %.3g, alone %s  %s\n", name_of(ty), n_out, K,
+                total - base, E, worst, scale, alone ? "same bits" : "OTHER BITS", ok ? "ok" : "FAIL");
+    (void) cudaFree(dw); (void) cudaFree(dx); (void) cudaFree(db); (void) cudaFree(dy); (void) cudaFree(dq);
     return ok ? 0 : 1;
 }
 
@@ -153,12 +193,20 @@ int run(int ty, int n_out, int K, std::mt19937& rng) {
 int main() {
     // every sm_70+ card in one process, in turn: a layer split launches the tiles on its second card after the first
     int n_dev = 0, ran = 0, fails = 0;
-    cudaGetDeviceCount(&n_dev);
+    (void) cudaGetDeviceCount(&n_dev);
     for (int dev = 0; dev < n_dev; ++dev) {
+#ifdef PF_HIP
+        cudaDeviceProp p;
+        if (cudaGetDeviceProperties(&p, dev) != cudaSuccess ||
+            !(k::gfx_arch_is_gfx11_wmma(p.gcnArchName) || k::gfx_arch_is_gfx12_wmma(p.gcnArchName)))
+            continue;
+        std::printf("%s\n", p.gcnArchName);
+#else
         int major = 0;
-        cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
+        (void) cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
         if (major < 7) continue;
-        cudaSetDevice(dev);
+#endif
+        (void) cudaSetDevice(dev);
         std::printf("device %d\n", dev);
         ++ran;
         std::mt19937 rng(70);
@@ -166,8 +214,17 @@ int main() {
         fails += run(42, 2560, 640, rng);
         for (int ty : {20, 21, 23}) fails += run(ty, 1280, 2560, rng);   // this pack's gate/up formats, generic WK=256 path
         fails += run(20, 2560, 640, rng);                                // the IQ4_NL down, the new WK=128 lane
+#ifdef PF_HIP
+        for (int ty : {20, 40, 42, 8}) {                                 // Inkling 2 Mini's experts: gate|up, down
+#else
+        for (int ty : {20, 40, 42}) {
+#endif
+            fails += run(ty, 2304, 2304, rng);
+            fails += run(ty, 2304, 1152, rng);
+        }
     }
-    if (!ran) { std::printf("pf_wmma_parity: needs sm_70+, skipped\n"); return 77; }
-    std::printf("pf_wmma_parity: %d failures on %d devices\n", fails, ran);
+    if (!ran) { std::printf("pf_wmma_parity: needs sm_70+ (or an RDNA3 / RDNA4 card), skipped\n"); return 77; }
+    if (!launched) { std::printf("pf_wmma_parity: every shape was skipped on %d devices: FAIL\n", ran); return 1; }
+    std::printf("pf_wmma_parity: %d failures on %d devices (%d shapes run)\n", fails, ran, launched);
     return fails ? 1 : 0;
 }

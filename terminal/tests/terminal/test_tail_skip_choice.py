@@ -4,7 +4,7 @@ test_tail_skip_default_off.py), On is 7 and is written as STRATA_ROUTE_TAIL_SKIP
 strata_control/speed_switches.py serves both."""
 import unittest
 
-from strata_control import app_policy, speed_switches as ss
+from strata_control import speed_switches as ss
 
 CUDA = [{"name": "NVIDIA GeForce RTX 5070", "vendor": "nvidia", "arch": "120", "vram_gb": 12.0}]
 R9700 = [{"name": "AMD Radeon AI PRO R9700", "vendor": "amd", "arch": "gfx1201", "vram_gb": 32.0}]
@@ -40,14 +40,6 @@ class TailSkipChoice(unittest.TestCase):
                          "Skip rarely used parts of the model (off by default; set 7 to turn it on, or 1 to 9 to choose how much is skipped). "
                          "Faster answers: parts of the model that matter least for a word are skipped when they are not on the graphics card yet. "
                          "Answers can change slightly. Off by default. " + NOTE)
-
-    def test_the_app_table_carries_the_choices_in_order(self):
-        row = next(r for r in app_policy.table() if r["id"] == "route_tail_skip")
-        self.assertEqual(row["env"], {"STRATA_ROUTE_TAIL_SKIP": "7"})
-        self.assertEqual(row["default"], "off")
-        self.assertEqual(row["words"], {"on": "On", "off": "Off (default)"})
-        self.assertEqual([v for v, _ in row["choices"]], ["7", "1", "2", "3", "4", "5", "6", "8", "9"])
-        self.assertEqual(row["choiceNote"], NOTE)
 
     def test_the_other_switches_keep_their_two_state_sentence(self):
         self.assertEqual(ss.env_words("STRATA_KVA").split(". ")[0], "Faster long prompts (off by default; set 1 to turn on)")

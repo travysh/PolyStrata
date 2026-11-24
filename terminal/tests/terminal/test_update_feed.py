@@ -55,21 +55,6 @@ class Ed25519(unittest.TestCase):
         with self.assertRaises(signing.SignatureError):
             signing.parse_public(entry)
 
-    def test_minisign_app_signature(self):
-        public, secret = fx.minisign_pair()
-        blob = os.urandom(5000)
-        sig = fx.minisign_sign(blob, secret)
-        signing.minisign_verify(public, sig, [blob[:1000], blob[1000:]])
-        with self.assertRaises(signing.SignatureError):
-            signing.minisign_verify(public, sig, [blob + b"x"])
-        other_public, _ = fx.minisign_pair()
-        with self.assertRaisesRegex(signing.SignatureError, "different key"):
-            signing.minisign_verify(other_public, sig, [blob])
-        text = base64.b64decode(sig).decode().replace("timestamp:1", "timestamp:2")
-        with self.assertRaisesRegex(signing.SignatureError, "comment was changed"):
-            signing.minisign_verify(public, base64.b64encode(text.encode()).decode(), [blob])
-
-
 def entry(version="0.1.46", backend="cuda", variant="cuda13", archs=("sm_86", "compute_89"), driver="580.65", **extra):
     base = {"version": version, "platform": "linux-x86_64", "backend": backend, "variant": variant, "archs": list(archs),
             "min_driver": {"nvidia": driver} if backend == "cuda" else {}, "min_runtime": None, "build_id": f"b-{version}-{variant}",
@@ -313,92 +298,6 @@ class DeepSeekEnginePackages(FeedChecks):
         self.assertFalse(hasattr(feed, "dsv41"))
         self.assertEqual([p.version for p in feed.engine], ["0.1.46"], "a DeepSeek package is not an engine package")
         self.assertEqual(feed.skipped, ())
-
-class AppPlatform(unittest.TestCase):
-    """`feed_tool.py set-app-platform`: the signed Mac archive goes into the Tauri updater json, and only if it verifies."""
-
-    def setUp(self):
-        import io
-        import tarfile
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
-        self.public, self.secret = fx.minisign_pair()
-        self.archive = self.root / "Strata.app.tar.gz"
-        with tarfile.open(self.archive, "w:gz") as tar:
-            for name, data in (("Strata.app/Contents/Info.plist", b"<plist/>"), ("Strata.app/Contents/MacOS/strata-desktop", b"bin")):
-                info = tarfile.TarInfo(name)
-                info.size = len(data)
-                tar.addfile(info, io.BytesIO(data))
-        self.sig = self.root / "Strata.app.tar.gz.sig"
-        self.sig.write_text(fx.minisign_sign(self.archive.read_bytes(), self.secret) + "\n")
-        self.app_json = self.root / "latest.json"
-
-    def run_tool(self, **extra):
-        from feed_tool import set_app_platform
-        args = dict(target="darwin-aarch64", archive=self.archive, signature_file=self.sig, url="https://example.invalid/Strata.app.tar.gz",
-                    version="0.2.0", pubkey=self.public)
-        args.update(extra)
-        return set_app_platform(self.app_json, **args)
-
-    def test_a_signed_mac_archive_is_added_with_its_hash_and_size(self):
-        import hashlib
-        entry = self.run_tool()
-        document = json.loads(self.app_json.read_text())
-        self.assertEqual(document["version"], "0.2.0")
-        self.assertEqual(document["platforms"]["darwin-aarch64"], entry)
-        self.assertEqual(entry["sha256"], hashlib.sha256(self.archive.read_bytes()).hexdigest())
-        self.assertEqual(entry["size"], self.archive.stat().st_size)
-        self.assertEqual(entry["signature"], self.sig.read_text().strip())
-
-    def test_the_result_is_a_feed_app_member_control_accepts(self):
-        from feed_tool import build_feed, keygen
-        self.run_tool()
-        keygen(self.root / "keys")
-        key = json.loads((self.root / "keys" / "feed-key.json").read_text())
-        document = build_feed(self.root / "release", key=key, sequence=1, app_json=self.app_json)
-        self.assertIn("darwin-aarch64", document["app"]["platforms"])
-        self.assertTrue((self.root / "release" / "app" / "latest.json").exists())
-
-    def test_a_second_platform_is_added_beside_the_first(self):
-        self.run_tool()
-        self.run_tool(target="windows-x86_64")
-        self.assertEqual(sorted(json.loads(self.app_json.read_text())["platforms"]), ["darwin-aarch64", "windows-x86_64"])
-
-    def test_a_signature_of_a_different_file_is_refused_and_nothing_is_written(self):
-        """What `tauri build` left behind (the unsigned app) signs different bytes than the notarised archive we upload."""
-        self.archive.write_bytes(self.archive.read_bytes() + b"x")
-        with self.assertRaises(SystemExit) as caught:
-            self.run_tool()
-        self.assertIn("does not verify", str(caught.exception))
-        self.assertFalse(self.app_json.exists())
-
-    def test_a_signature_from_another_key_is_refused(self):
-        other_public, _ = fx.minisign_pair()
-        with self.assertRaises(SystemExit):
-            self.run_tool(pubkey=other_public)
-
-    def test_a_mac_archive_must_hold_the_app_at_its_root(self):
-        import io
-        import tarfile
-        with tarfile.open(self.archive, "w:gz") as tar:
-            info = tarfile.TarInfo("build/Strata.app/Contents/Info.plist")
-            info.size = 1
-            tar.addfile(info, io.BytesIO(b"x"))
-        self.sig.write_text(fx.minisign_sign(self.archive.read_bytes(), self.secret))
-        with self.assertRaises(SystemExit) as caught:
-            self.run_tool()
-        self.assertIn("root", str(caught.exception))
-
-    def test_the_default_key_is_the_one_in_tauri_conf(self):
-        from feed_tool import _default_app_pubkey
-        self.assertEqual(_default_app_pubkey(), json.loads((fx.ROOT.parent / "app" / "desktop" / "src-tauri" / "tauri.conf.json").read_text())["plugins"]["updater"]["pubkey"])
-
-    def test_a_version_mismatch_is_refused(self):
-        self.run_tool()
-        with self.assertRaises(SystemExit):
-            self.run_tool(version="0.2.1")
-
 
 if __name__ == "__main__":
     unittest.main()

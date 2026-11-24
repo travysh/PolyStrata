@@ -16,6 +16,9 @@
 #include "strata/kernels/i8_expert_rule.hpp"
 #include "strata/kernels/dp4a.hpp"
 #include "strata/kernels/q8_1_finite.hpp"
+#if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
+#include "strata/kernels/hip_unsloth_wmma.hpp"
+#endif
 #include "s26_tsum.cuh"
 #include "slots.cuh"
 
@@ -62,7 +65,7 @@ __device__ __forceinline__ uint32_t unpack_ksigns(const uint8_t v) {
     return s * 0x01010101;
 }
 __device__ __forceinline__ int2 get_int_from_table_16(const int& q4, const int8_t* table) {
-#if defined(STRATA_HIP_GFX906)
+#if defined(__HIPCC__) || defined(STRATA_HIP_GFX906)
     // AMD: llama.cpp's HIP lookup (vecdotq.cuh) - v_perm_b32 takes 3-bit byte indices, so the low and high halves
     // of the table are looked up and the index MSB picks between them: 4 perms per 8 values.
     const uint32_t* v32 = reinterpret_cast<const uint32_t*>(table);
@@ -611,6 +614,73 @@ __device__ __forceinline__ float vec_dot_q8_0_q8_1(const void* __restrict__ vbq,
     const float d8_0 = __half2float(bq8_0->d), d8_1 = __low2float(bq8_1->ds);
     return d8_0 * d8_1 * ((float) sumi);
 }
+// Warp-uniform fast 32-bit load when 4B-aligned, 2B-safe fallback on 2-byte-shifted mixed blobs.
+__device__ __forceinline__ int ld_i32_b2_or_b4(const void* p, int i) {
+    return (((uintptr_t) p & 3u) == 0u) ? get_int_b4(p, i) : get_int_b2(p, i);
+}
+// Q2_K (ggml type 10, 84 B / 256 values): 8 calls of 32 values (iqs in 0..7 = two 16-value sub-blocks with 4-bit scale & min).
+__device__ __forceinline__ float vec_dot_q2_K_q8_1(const void* __restrict__ vbq, const block_q8_1* __restrict__ bq8_1,
+                                                   const int& kbx, const int& iqs) {
+    const block_q2_K* b = (const block_q2_K*) vbq + kbx;
+    const int n = iqs >> 2, j = iqs & 3, shift = 2 * j;
+    const uint8_t* q = b->qs + 32 * n;
+    const int* u = (const int*) bq8_1[iqs].qs;
+    int sumi0 = 0, sumu0 = 0, sumi1 = 0, sumu1 = 0;
+#pragma unroll
+    for (int k = 0; k < 4; ++k) {
+        const int q0 = (ld_i32_b2_or_b4(q, k) >> shift) & 0x03030303;
+        const int q1 = (ld_i32_b2_or_b4(q, k + 4) >> shift) & 0x03030303;
+        sumi0 = ggml_cuda_dp4a(q0, u[k], sumi0);
+        sumu0 = ggml_cuda_dp4a(0x01010101, u[k], sumu0);
+        sumi1 = ggml_cuda_dp4a(q1, u[k + 4], sumi1);
+        sumu1 = ggml_cuda_dp4a(0x01010101, u[k + 4], sumu1);
+    }
+    const uint8_t sc0 = b->scales[2 * iqs + 0], sc1 = b->scales[2 * iqs + 1];
+    const int sumi = sumi0 * (int) (sc0 & 0x0F) + sumi1 * (int) (sc1 & 0x0F);
+    const int sumu = sumu0 * (int) (sc0 >> 4) + sumu1 * (int) (sc1 >> 4);
+    const float2 dm = __half22float2(b->dm);
+    const float d8 = __low2float(bq8_1[iqs].ds);
+    return d8 * (dm.x * (float) sumi - dm.y * (float) sumu);
+}
+// Q3_K (ggml type 11, 110 B / 256 values): 8 calls of 32 values (iqs in 0..7 = two 16-value sub-blocks with 6-bit signed scales).
+__device__ __forceinline__ int q3_k_scale_at(const uint8_t* __restrict__ scales, int is) {
+    const int us = is < 4  ? ((scales[is] & 0xF) | (((scales[is + 8] >> 0) & 3) << 4)) :
+                   is < 8  ? ((scales[is] & 0xF) | (((scales[is + 4] >> 2) & 3) << 4)) :
+                   is < 12 ? ((scales[is - 8] >> 4) | (((scales[is] >> 4) & 3) << 4)) :
+                             ((scales[is - 8] >> 4) | (((scales[is - 4] >> 6) & 3) << 4));
+    return us - 32;
+}
+__device__ __forceinline__ float vec_dot_q3_K_q8_1(const void* __restrict__ vbq, const block_q8_1* __restrict__ bq8_1,
+                                                   const int& kbx, const int& iqs) {
+    const block_q3_K* b = (const block_q3_K*) vbq + kbx;
+    const int n = iqs >> 2, j = iqs & 3, shift = 2 * j;
+    const uint8_t* q = b->qs + 32 * n;
+    const int* u = (const int*) bq8_1[iqs].qs;
+    int sumi0 = 0, sumi1 = 0;
+#pragma unroll
+    for (int k = 0; k < 4; ++k) {
+        const uint32_t ql0 = ((uint32_t) get_int_b2(q, k) >> shift) & 0x03030303u;
+        const uint32_t hm0 = ((uint32_t) get_int_b2(b->hmask, k) >> iqs) & 0x01010101u;
+        const int w0 = __vsub4((int) (ql0 | (hm0 << 2)), 0x04040404);
+        sumi0 = ggml_cuda_dp4a(w0, u[k], sumi0);
+        const uint32_t ql1 = ((uint32_t) get_int_b2(q, k + 4) >> shift) & 0x03030303u;
+        const uint32_t hm1 = ((uint32_t) get_int_b2(b->hmask, k + 4) >> iqs) & 0x01010101u;
+        const int w1 = __vsub4((int) (ql1 | (hm1 << 2)), 0x04040404);
+        sumi1 = ggml_cuda_dp4a(w1, u[k + 4], sumi1);
+    }
+    const int s0 = q3_k_scale_at(b->scales, 2 * iqs + 0);
+    const int s1 = q3_k_scale_at(b->scales, 2 * iqs + 1);
+    return __half2float(b->d) * __low2float(bq8_1[iqs].ds) * (float) (sumi0 * s0 + sumi1 * s1);
+}
+// Unaligned-safe FP32 load for NVFP4 expert tail scales {s_gate, s_up, s_down, 0} on mixed (gu_type, d_type) blobs.
+__device__ __forceinline__ float ld_f32_u(const uint8_t* p) {
+    if (((uintptr_t) p & 3u) == 0u) return *(const float*) p;
+    const uint32_t v = (uint32_t) p[0] | ((uint32_t) p[1] << 8) | ((uint32_t) p[2] << 16) | ((uint32_t) p[3] << 24);
+    return __uint_as_float(v);
+}
+__device__ __forceinline__ float ld_tail_f32(const uint8_t* blob, size_t tail_off, int idx) {
+    return ld_f32_u(blob + tail_off + (size_t) idx * 4u);
+}
 // NVFP4 (ModelOpt): 64 values = 4 sub-blocks of 16, one UE4M3 scale each, E2M1 codes split-half like Q4_0.
 // kvalues_fp4 holds the E2M1 values doubled (0, 1, 2, 3, 4, 6, 8, 12), so the scale is halved here - exactly
 // ggml's ggml_cuda_ue4m3_to_fp32, decoded in software so the GPU and ggml-cpu agree bit for bit (NaN -> 0).
@@ -618,7 +688,7 @@ __device__ __forceinline__ float ue4m3_to_f32_half(uint8_t x) {
     // The same value as ldexpf(1 + man/8, exp - 7) * 0.5 (ldexpf(man, -9) * 0.5 for exp 0), built from its bits: every
     // such value is exact in FP32, so this is equal for all 256 inputs - without the ldexpf and the branches it cost
     // in the decode experts' inner loop.  Normal: 2^(exp-8) * (1 + man/8) = exponent field exp + 119, mantissa man<<20.
-    if (x == 0 || x == 0x7F) return 0.0f;
+    if (x == 0 || x == 0x7F || x == 0xFF) return 0.0f;
     const uint32_t exp = (x >> 3) & 0xF, man = x & 0x7;
     return exp == 0 ? (float) man * 0.0009765625f : __uint_as_float(((exp + 119u) << 23) | (man << 20));
 }
@@ -631,8 +701,8 @@ __device__ __forceinline__ float vec_dot_nvfp4_q8_1(const void* __restrict__ vbq
 #pragma unroll
     for (int i = 0; i < 2; i++) {
         const int iqs0 = iqs + 2 * i, iqs1 = iqs0 + 1, is = iqs0 >> 1;
-        const int2 v0 = get_int_from_table_16(get_int_b4(bq4->qs, iqs0), kvalues_fp4);
-        const int2 v1 = get_int_from_table_16(get_int_b4(bq4->qs, iqs1), kvalues_fp4);
+        const int2 v0 = get_int_from_table_16(ld_i32_b2_or_b4(bq4->qs, iqs0), kvalues_fp4);
+        const int2 v1 = get_int_from_table_16(ld_i32_b2_or_b4(bq4->qs, iqs1), kvalues_fp4);
         const block_q8_1* bq8 = bq8_1 + (is >> 1);
         const int i8 = (is & 1) << 2;
         int sumi = ggml_cuda_dp4a(v0.x, get_int_b4(bq8->qs, i8 + 0), 0);
@@ -843,6 +913,10 @@ template<> struct Fmt<29> { static constexpr int qk = 256, ipb = 8, step = 1;
     __device__ static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_iq1_m_q8_1(v, y, kbx, iqs); } };
 template<> struct Fmt<42> { static constexpr int qk = 64, ipb = 2, step = 1;
     __device__ static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_q2_0_q8_1(v, y, kbx, iqs); } };
+template<> struct Fmt<10> { static constexpr int qk = 256, ipb = 8, step = 1;
+    __device__ static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_q2_K_q8_1(v, y, kbx, iqs); } };
+template<> struct Fmt<11> { static constexpr int qk = 256, ipb = 8, step = 1;
+    __device__ static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_q3_K_q8_1(v, y, kbx, iqs); } };
 template<> struct Fmt<12> { static constexpr int qk = 256, ipb = QI4_K / VDR_Q4_K, step = VDR_Q4_K;
     __device__ static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_q4_K_q8_1(v, y, kbx, iqs); } };
 template<> struct Fmt<13> { static constexpr int qk = 256, ipb = QI5_K / VDR_Q5_K, step = VDR_Q5_K;
@@ -877,18 +951,18 @@ STRATA_TQP_FMT(149)
 // The formats of each role, one list each so a type cannot be in one switch and missing from another.  Every
 // entry is a kernel template for each CUDA architecture of the build, hence two lists rather than one.
 #ifdef STRATA_Q6K_EXPERTS   // opt-in build (-DSTRATA_Q6K_EXPERTS=ON): one more instance per kernel, loaded at start
-#define STRATA_GU_FMTS(X) X(16) X(17) X(18) X(21) X(22) X(23) X(29) X(19) X(42) X(12) X(13) X(14) X(6) X(2) X(3) X(8) X(40) X(144) X(145) X(147) X(148) X(149)
+#define STRATA_GU_FMTS(X) X(16) X(17) X(18) X(20) X(21) X(22) X(23) X(29) X(19) X(42) X(10) X(11) X(12) X(13) X(14) X(6) X(2) X(3) X(8) X(40) X(144) X(145) X(147) X(148) X(149)
 #else
-#define STRATA_GU_FMTS(X) X(16) X(17) X(18) X(21) X(22) X(23) X(29) X(19) X(42) X(12) X(13) X(6) X(2) X(3) X(8) X(40) X(144) X(145) X(147) X(148) X(149)
+#define STRATA_GU_FMTS(X) X(16) X(17) X(18) X(20) X(21) X(22) X(23) X(29) X(19) X(42) X(10) X(11) X(12) X(13) X(6) X(2) X(3) X(8) X(40) X(144) X(145) X(147) X(148) X(149)
 #endif
 // Q5_K / Q6_K downs: Qwen3.6-35B-A3B (FF 512, whole 256-blocks per row); Flash-Next's FF 640 never selects them
-// Q4_K as well: heretic's down experts are Q4_K; without 12 here d_qk(12)=0 and STRATA_DOWN reaches its exit(1)
+// Q4_K / IQ3_XXS / IQ3_S / Q3_K / Q2_K as well: Unsloth UD-* and heretic down experts
 #ifdef STRATA_Q6K_EXPERTS
-#define STRATA_D_FMTS(X) X(20) X(23) X(42) X(19) X(7) X(6) X(12) X(2) X(3) X(8) X(13) X(14) X(40) X(144) X(146) X(147) X(148) X(149)
+#define STRATA_D_FMTS(X) X(18) X(20) X(21) X(23) X(42) X(19) X(7) X(6) X(10) X(11) X(12) X(2) X(3) X(8) X(13) X(14) X(40) X(144) X(146) X(147) X(148) X(149)
 #else
-#define STRATA_D_FMTS(X) X(20) X(23) X(42) X(19) X(7) X(6) X(12) X(2) X(3) X(8) X(13) X(40) X(144) X(146) X(147) X(148) X(149)
+#define STRATA_D_FMTS(X) X(18) X(20) X(21) X(23) X(42) X(19) X(7) X(6) X(10) X(11) X(12) X(2) X(3) X(8) X(13) X(40) X(144) X(146) X(147) X(148) X(149)
 #endif
-#define STRATA_MMVQ_FMTS(X) X(16) X(17) X(18) X(20) X(21) X(22) X(23) X(29) X(19) X(42) X(12) X(13) X(7) X(6) X(2) X(3) X(8) X(40) X(144) X(145) X(146) X(147) X(148) X(149)
+#define STRATA_MMVQ_FMTS(X) X(16) X(17) X(18) X(20) X(21) X(22) X(23) X(29) X(19) X(42) X(10) X(11) X(12) X(13) X(7) X(6) X(2) X(3) X(8) X(40) X(144) X(145) X(146) X(147) X(148) X(149)
 template<> struct Fmt<40> { static constexpr int qk = 64, ipb = 2, step = 4;     // NVFP4: 2 calls of 32 values
     __device__ static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_nvfp4_q8_1(v, y, kbx, iqs); } };
 
@@ -1503,6 +1577,105 @@ template<> inline constexpr bool kSplit<8> = true;
 template<> struct Split<12> : SplitK<12> {};
 template<> struct Split<13> : SplitK<13> {};
 template<> struct Split<8> : SplitK<8> {};
+template<> inline constexpr bool kSplit<10> = true;
+template<> struct Split<10> {   // Q2_K: exact same operations & order as vec_dot_q2_K_q8_1
+    struct W { int q[8]; int s0, s1, m0, m1; half2 dm; };
+    template<bool STAGE_GRID = false>
+    __device__ static W load(const void* __restrict__ vbq, int kbx, int iqs, const uint32_t* __restrict__ = nullptr) {
+        const block_q2_K* b = (const block_q2_K*) vbq + kbx;
+        const int n = iqs >> 2, j = iqs & 3, shift = 2 * j;
+        const uint8_t* q = b->qs + 32 * n;
+        W r;
+#pragma unroll
+        for (int k = 0; k < 8; ++k) r.q[k] = (ld_i32_b2_or_b4(q, k) >> shift) & 0x03030303;
+        const uint8_t sc0 = b->scales[2 * iqs + 0], sc1 = b->scales[2 * iqs + 1];
+        r.s0 = (int) (sc0 & 0x0F); r.m0 = (int) (sc0 >> 4);
+        r.s1 = (int) (sc1 & 0x0F); r.m1 = (int) (sc1 >> 4);
+        r.dm = b->dm;
+        return r;
+    }
+    __device__ static float apply(const W& r, const block_q8_1* __restrict__ bq8_1, int iqs) {
+        const int* u = (const int*) bq8_1[iqs].qs;
+        int sumi0 = 0, sumu0 = 0, sumi1 = 0, sumu1 = 0;
+#pragma unroll
+        for (int k = 0; k < 4; ++k) {
+            sumi0 = ggml_cuda_dp4a(r.q[k], u[k], sumi0);
+            sumu0 = ggml_cuda_dp4a(0x01010101, u[k], sumu0);
+            sumi1 = ggml_cuda_dp4a(r.q[k + 4], u[k + 4], sumi1);
+            sumu1 = ggml_cuda_dp4a(0x01010101, u[k + 4], sumu1);
+        }
+        const int sumi = sumi0 * r.s0 + sumi1 * r.s1;
+        const int sumu = sumu0 * r.m0 + sumu1 * r.m1;
+        const float2 dm = __half22float2(r.dm);
+        const float d8 = __low2float(bq8_1[iqs].ds);
+        return d8 * (dm.x * (float) sumi - dm.y * (float) sumu);
+    }
+};
+template<> inline constexpr bool kSplit<11> = true;
+template<> struct Split<11> {   // Q3_K: exact same operations & order as vec_dot_q3_K_q8_1
+    struct W { int w[8]; int s0, s1; float d; };
+    template<bool STAGE_GRID = false>
+    __device__ static W load(const void* __restrict__ vbq, int kbx, int iqs, const uint32_t* __restrict__ = nullptr) {
+        const block_q3_K* b = (const block_q3_K*) vbq + kbx;
+        const int n = iqs >> 2, j = iqs & 3, shift = 2 * j;
+        const uint8_t* q = b->qs + 32 * n;
+        W r;
+#pragma unroll
+        for (int k = 0; k < 8; ++k) {
+            const uint32_t ql = ((uint32_t) get_int_b2(q, k) >> shift) & 0x03030303u;
+            const uint32_t hm = ((uint32_t) get_int_b2(b->hmask, k) >> iqs) & 0x01010101u;
+            r.w[k] = __vsub4((int) (ql | (hm << 2)), 0x04040404);
+        }
+        r.s0 = q3_k_scale_at(b->scales, 2 * iqs + 0);
+        r.s1 = q3_k_scale_at(b->scales, 2 * iqs + 1);
+        r.d = __half2float(b->d);
+        return r;
+    }
+    __device__ static float apply(const W& r, const block_q8_1* __restrict__ bq8_1, int iqs) {
+        const int* u = (const int*) bq8_1[iqs].qs;
+        int sumi0 = 0, sumi1 = 0;
+#pragma unroll
+        for (int k = 0; k < 4; ++k) {
+            sumi0 = ggml_cuda_dp4a(r.w[k], u[k], sumi0);
+            sumi1 = ggml_cuda_dp4a(r.w[k + 4], u[k + 4], sumi1);
+        }
+        return r.d * __low2float(bq8_1[iqs].ds) * (float) (sumi0 * r.s0 + sumi1 * r.s1);
+    }
+};
+template<> inline constexpr bool kSplit<14> = true;
+template<> struct Split<14> {   // Q6_K: exact same operations & order as vec_dot_q6_K_q8_1
+    struct W { int vi[QR6_K]; int sc[QR6_K]; float d; };
+    template<bool STAGE_GRID = false>
+    __device__ static W load(const void* __restrict__ vbq, int kbx, int iqs, const uint32_t* __restrict__ = nullptr) {
+        const block_q6_K* bq6_K = (const block_q6_K*) vbq + kbx;
+        const int scale_offset = (QI6_K / 4) * (iqs / (QI6_K / 2)) + (iqs % (QI6_K / 2)) / (QI6_K / 8);
+        const int vh_shift = 2 * ((iqs % (QI6_K / 2)) / (QI6_K / 4));
+        const int vl = get_int_b2(bq6_K->ql, iqs);
+        const int vh = get_int_b2(bq6_K->qh, (QI6_K / 4) * (iqs / (QI6_K / 2)) + iqs % (QI6_K / 4)) >> vh_shift;
+        const int8_t* scales = bq6_K->scales + scale_offset;
+        W r;
+#pragma unroll
+        for (int i = 0; i < QR6_K; ++i) {
+            r.sc[i] = scales[4 * i];
+            const int vil = (vl >> (4 * i)) & 0x0F0F0F0F;
+            const int vih = ((vh >> (4 * i)) << 4) & 0x30303030;
+            r.vi[i] = __vsubss4(vil | vih, 0x20202020);
+        }
+        r.d = __half2float(bq6_K->d);
+        return r;
+    }
+    __device__ static float apply(const W& r, const block_q8_1* __restrict__ bq8_1, int iqs) {
+        const int bq8_offset = 2 * QR6_K * (iqs / (QI6_K / 2)) + (iqs % (QI6_K / 2)) / (QI6_K / 4);
+        float sumf = 0.0f;
+#pragma unroll
+        for (int i = 0; i < QR6_K; ++i) {
+            const int u = get_int_b4(bq8_1[bq8_offset + 2 * i].qs, iqs % QI8_1);
+            const float d8 = __low2float(bq8_1[bq8_offset + 2 * i].ds);
+            sumf += d8 * (STRATA_DP4A(r.vi[i], u, 0) * r.sc[i]);
+        }
+        return r.d * sumf;
+    }
+};
 template<> inline constexpr bool kSplit<40> = true;
 template<> struct Split<40> {   // NVFP4: vec_dot_nvfp4_q8_1's two 16-value sub-blocks, weights decoded once per call
     struct W { int2 v0[2], v1[2]; float sc[2]; };
@@ -1513,8 +1686,8 @@ template<> struct Split<40> {   // NVFP4: vec_dot_nvfp4_q8_1's two 16-value sub-
 #pragma unroll
         for (int i = 0; i < 2; i++) {
             const int iqs0 = iqs + 2 * i, iqs1 = iqs0 + 1, is = iqs0 >> 1;
-            r.v0[i] = get_int_from_table_16(get_int_b4(bq4->qs, iqs0), kvalues_fp4);
-            r.v1[i] = get_int_from_table_16(get_int_b4(bq4->qs, iqs1), kvalues_fp4);
+            r.v0[i] = get_int_from_table_16(ld_i32_b2_or_b4(bq4->qs, iqs0), kvalues_fp4);
+            r.v1[i] = get_int_from_table_16(ld_i32_b2_or_b4(bq4->qs, iqs1), kvalues_fp4);
             r.sc[i] = ue4m3_to_f32_half(bq4->d[is]);
         }
         return r;
@@ -2018,16 +2191,16 @@ __global__ void __launch_bounds__(256) native_gu_kernel(const unsigned long long
     const int nb = (int) (L.n_embd / Fmt<TG>::qk), xb = (int) (L.n_embd / 32);
     const int ng = *n_groups;
     for (int g = blockIdx.y; g < ng; g += gridDim.y) {
+        const int e0 = grp_start[g], e1 = grp_start[g + 1];
+        if (e0 >= e1) continue;
         const uint8_t* blob = (const uint8_t*) grp_ptr[g];
         const uint8_t* wr = blob + off;
         // NVFP4: the expert's global scales from the blob's tail; s_down goes on the down output (native_down_kernel):
         // folded into up it left the hidden near 1e-5, whose q8_1 block scale is an FP16 subnormal
         float scale = 1.0f;
-        if (L.tail_off) {
-            const float* tail = (const float*) (blob + L.tail_off);
-            scale = is_up ? tail[1] : tail[0];
+        if constexpr (TG == 40) {
+            if (L.tail_off) scale = ld_tail_f32(blob, L.tail_off, is_up ? 1 : 0);
         }
-        const int e0 = grp_start[g], e1 = grp_start[g + 1];
         for (int e = e0; e < e1; ++e) {
             const float s = row_dot<TG>(wr, xq + (size_t) ent_tok[e] * xb, nb, lane);
             if (lane == 0) (is_up ? up : gate)[(size_t) e * L.n_ff + r] = s * scale;
@@ -2062,9 +2235,11 @@ __global__ void __launch_bounds__(256) native_gu_multi_kernel(const unsigned lon
             const size_t w_off = (is_up ? L.up_off : 0) + (size_t) r * L.gu_row;
             float* dst = is_up ? up : gate;
             for (int g = blockIdx.y; g < ng; g += gridDim.y) {
-                const uint8_t* wr = (const uint8_t*) grp_ptr[g] + w_off;
-                const float sc = L.tail_off ? ((const float*) (grp_ptr[g] + L.tail_off))[is_up ? 1 : 0] : 1.0f;
                 const int e0 = grp_start[g], e1 = grp_start[g + 1];
+                if (e0 >= e1) continue;
+                const uint8_t* blob = (const uint8_t*) grp_ptr[g];
+                const uint8_t* wr = blob + w_off;
+                const float sc = (TG == 40 && L.tail_off) ? ld_tail_f32(blob, L.tail_off, is_up ? 1 : 0) : 1.0f;
                 for (int e = e0; e < e1; e += GRP_NC) {
                     const int n = min(GRP_NC, e1 - e);
                     if (n == 1) {
@@ -2102,10 +2277,12 @@ __global__ void __launch_bounds__(256) native_gu_multi_kernel(const unsigned lon
             const size_t w_off = (is_up ? L.up_off : 0) + (size_t) r * L.gu_row;
             float* dst = is_up ? up : gate;
             for (int g = blockIdx.y; g < ng; g += gridDim.y) {
-                const uint8_t* wr = (const uint8_t*) grp_ptr[g] + w_off;
-                // NVFP4: the expert's s_gate / s_up on the FP32 output, as native_gu_kernel (1 otherwise: exact)
-                const float sc = L.tail_off ? ((const float*) (grp_ptr[g] + L.tail_off))[is_up ? 1 : 0] : 1.0f;
                 const int e0 = grp_start[g], e1 = grp_start[g + 1];
+                if (e0 >= e1) continue;
+                const uint8_t* blob = (const uint8_t*) grp_ptr[g];
+                const uint8_t* wr = blob + w_off;
+                // NVFP4: the expert's s_gate / s_up on the FP32 output, as native_gu_kernel (1 otherwise: exact)
+                const float sc = (TG == 40 && L.tail_off) ? ld_tail_f32(blob, L.tail_off, is_up ? 1 : 0) : 1.0f;
                 for (int e = e0; e < e1; e += GRP_NC) {
                     const int n = min(GRP_NC, e1 - e);
                     if (n == 1) {
@@ -2166,7 +2343,7 @@ __global__ void __launch_bounds__(256) native_gu_multi_kernel(const unsigned lon
                         const size_t w_off = (is_up ? L.up_off : 0) + (size_t) r * L.gu_row;
                         float* dst = is_up ? up : gate;
                         const uint8_t* wr = gp + w_off;
-                        const float sc = L.tail_off ? ((const float*) (grp_ptr[g] + L.tail_off))[is_up ? 1 : 0] : 1.0f;
+                        const float sc = (TG == 40 && L.tail_off) ? ld_tail_f32(gp, L.tail_off, is_up ? 1 : 0) : 1.0f;
                         if (n == 1) {
                             const int off1[1] = { 0 };
                             float s1[1];
@@ -2202,10 +2379,12 @@ __global__ void __launch_bounds__(256) native_gu_multi_kernel(const unsigned lon
     const size_t w_off = (is_up ? L.up_off : 0) + (size_t) r * L.gu_row;
     float* dst = is_up ? up : gate;
     for (int g = blockIdx.y; g < ng; g += gridDim.y) {   // the group stride, as native_gu_kernel
-        const uint8_t* wr = (const uint8_t*) grp_ptr[g] + w_off;
-                // NVFP4: the expert's s_gate / s_up on the FP32 output, as native_gu_kernel (1 otherwise: exact)
-                const float sc = L.tail_off ? ((const float*) (grp_ptr[g] + L.tail_off))[is_up ? 1 : 0] : 1.0f;
         const int e0 = grp_start[g], e1 = grp_start[g + 1];
+        if (e0 >= e1) continue;
+        const uint8_t* blob = (const uint8_t*) grp_ptr[g];
+        const uint8_t* wr = blob + w_off;
+        // NVFP4: the expert's s_gate / s_up on the FP32 output, as native_gu_kernel (1 otherwise: exact)
+        const float sc = (TG == 40 && L.tail_off) ? ld_tail_f32(blob, L.tail_off, is_up ? 1 : 0) : 1.0f;
         for (int e = e0; e < e1; e += GRP_NC) {
             const int n = min(GRP_NC, e1 - e);
             if (n == 1) {
@@ -2285,10 +2464,11 @@ __global__ void __launch_bounds__(256) native_down_kernel(const unsigned long lo
     const int nb = (int) (L.n_ff / Fmt<TD>::qk), hb = (int) (L.n_ff / 32);
     const int ng = *n_groups;
     for (int g = blockIdx.y; g < ng; g += gridDim.y) {   // as native_gu_kernel
+        const int e0 = grp_start[g], e1 = grp_start[g + 1];
+        if (e0 >= e1) continue;
         const uint8_t* blob = (const uint8_t*) grp_ptr[g];
         const uint8_t* wr = blob + off;
-        const float sd = L.tail_off ? ((const float*) (blob + L.tail_off))[2] : 1.0f;   // NVFP4: s_down
-        const int e0 = grp_start[g], e1 = grp_start[g + 1];
+        const float sd = (TD == 40 && L.tail_off) ? ld_tail_f32(blob, L.tail_off, 2) : 1.0f;   // NVFP4: s_down
         for (int e = e0; e < e1; ++e) {
             const float s = row_dot<TD>(wr, hq + (size_t) e * hb, nb, lane);
             if (lane == 0) out[(size_t) ent_dst[e] * L.n_embd + r] = s * sd;
@@ -2326,9 +2506,10 @@ __global__ void __launch_bounds__(256) native_down_multi_kernel(const unsigned l
             const int t = threadIdx.x & 7;
             const block_q8_1* s_hq = reinterpret_cast<const block_q8_1*>(s_hq_buf);
             for (int g = blockIdx.y; g < ng; g += gridDim.y) {
-                const uint8_t* gp = (const uint8_t*) grp_ptr[g];
-                const float sd = L.tail_off ? ((const float*) (grp_ptr[g] + L.tail_off))[2] : 1.0f;
                 const int e0 = grp_start[g], e1 = grp_start[g + 1];
+                if (e0 >= e1) continue;
+                const uint8_t* gp = (const uint8_t*) grp_ptr[g];
+                const float sd = (TD == 40 && L.tail_off) ? ld_tail_f32(gp, L.tail_off, 2) : 1.0f;
                 for (int e = e0; e < e1; e += GRP_NC) {
                     const int n = min(GRP_NC, e1 - e);
                     const uint32_t* src = reinterpret_cast<const uint32_t*>(hq + (size_t) e * 20);
@@ -2375,9 +2556,11 @@ __global__ void __launch_bounds__(256) native_down_multi_kernel(const unsigned l
             const size_t w_off = L.down_off + (size_t) (valid_r ? r : 0) * L.d_row;
             const block_q8_1* s_hq = reinterpret_cast<const block_q8_1*>(s_hq_buf);
             for (int g = blockIdx.y; g < ng; g += gridDim.y) {
-                const uint8_t* wr = (const uint8_t*) grp_ptr[g] + w_off;
-                const float sd = L.tail_off ? ((const float*) (grp_ptr[g] + L.tail_off))[2] : 1.0f;   // NVFP4: s_down
                 const int e0 = grp_start[g], e1 = grp_start[g + 1];
+                if (e0 >= e1) continue;
+                const uint8_t* blob = (const uint8_t*) grp_ptr[g];
+                const uint8_t* wr = blob + w_off;
+                const float sd = (TD == 40 && L.tail_off) ? ld_tail_f32(blob, L.tail_off, 2) : 1.0f;   // NVFP4: s_down
                 for (int e = e0; e < e1; e += GRP_NC) {
                     const int n = min(GRP_NC, e1 - e);
                     const uint32_t* src = reinterpret_cast<const uint32_t*>(hq + (size_t) e * 20);
@@ -2420,9 +2603,11 @@ __global__ void __launch_bounds__(256) native_down_multi_kernel(const unsigned l
             const size_t w_off = L.down_off + (size_t) (valid_r ? r : 0) * L.d_row;
             const block_q8_1* s_hq = reinterpret_cast<const block_q8_1*>(s_hq_buf);
             for (int g = blockIdx.y; g < ng; g += gridDim.y) {
-                const uint8_t* wr = (const uint8_t*) grp_ptr[g] + w_off;
-                const float sd = L.tail_off ? ((const float*) (grp_ptr[g] + L.tail_off))[2] : 1.0f;   // NVFP4: s_down
                 const int e0 = grp_start[g], e1 = grp_start[g + 1];
+                if (e0 >= e1) continue;
+                const uint8_t* blob = (const uint8_t*) grp_ptr[g];
+                const uint8_t* wr = blob + w_off;
+                const float sd = (TD == 40 && L.tail_off) ? ld_tail_f32(blob, L.tail_off, 2) : 1.0f;   // NVFP4: s_down
                 for (int e = e0; e < e1; e += GRP_NC) {
                     const int n = min(GRP_NC, e1 - e);
                     const uint32_t* src = reinterpret_cast<const uint32_t*>(hq + (size_t) e * 20);
@@ -2463,9 +2648,11 @@ __global__ void __launch_bounds__(256) native_down_multi_kernel(const unsigned l
     const bool valid_r = (r < L.n_embd);
     const size_t w_off = L.down_off + (size_t) (valid_r ? r : 0) * L.d_row;
     for (int g = blockIdx.y; g < ng; g += gridDim.y) {   // the group stride, as native_gu_kernel
-        const uint8_t* wr = (const uint8_t*) grp_ptr[g] + w_off;
-                const float sd = L.tail_off ? ((const float*) (grp_ptr[g] + L.tail_off))[2] : 1.0f;   // NVFP4: s_down
         const int e0 = grp_start[g], e1 = grp_start[g + 1];
+        if (e0 >= e1) continue;
+        const uint8_t* blob = (const uint8_t*) grp_ptr[g];
+        const uint8_t* wr = blob + w_off;
+        const float sd = (TD == 40 && L.tail_off) ? ld_tail_f32(blob, L.tail_off, 2) : 1.0f;   // NVFP4: s_down
         if (hb == 20) {
             const block_q8_1* s_hq = reinterpret_cast<const block_q8_1*>(s_hq_buf);
             for (int e = e0; e < e1; e += GRP_NC) {
@@ -2889,6 +3076,58 @@ __global__ void __launch_bounds__(256, STRATA_EXPDEC_MINB) expdec_down_kernel(co
     }
 }
 
+// STRATA_SM86_DOWN_WS: zero-spill (REG:64, STACK:0, 2,880 B smem) IQ4_NL down kernel for sm_86.
+// Eliminates native_down_multi_kernel<20>'s 64-byte stack spill by staging up to ED_NC=4 q8_1 hidden rows
+// (n_ff = 640 -> ED_HB = 20 blocks) in shared memory and running 32 sub-warps of 8 lanes via ed_d20_rows<1, NC>.
+// Bit-exact with native_down_multi_kernel<20> (same dp4a order and reduction tree).
+__global__ void __launch_bounds__(256, 4) sm86_down_iq4nl_clean_kernel(const unsigned long long* __restrict__ grp_ptr,
+                                                                       const int32_t* __restrict__ grp_start,
+                                                                       const int32_t* __restrict__ n_groups,
+                                                                       const int32_t* __restrict__ ent_dst,
+                                                                       const block_q8_1* __restrict__ hq,
+                                                                       NativeExpertLayout L, float* __restrict__ out) {
+    const int ng = *n_groups;
+    if ((int) blockIdx.y >= ng) return;
+    STRATA_SHARED_ALIGN16(int4, s_u, ED_NC * 2 * ED_HB);
+    __shared__ float s_ds[ED_NC * ED_HB];
+    const int tid = threadIdx.x;
+    const int r = (int) blockIdx.x * 32 + (tid >> 3);
+    const int t = tid & 7;
+    const bool valid_r = r < (int) L.n_embd;
+    const size_t w_off = L.down_off + (size_t) (valid_r ? r : 0) * L.d_row;
+    const int2* s_p = reinterpret_cast<const int2*>(s_u);
+    for (int g = blockIdx.y; g < ng; g += gridDim.y) {
+        const uint8_t* blob = (const uint8_t*) grp_ptr[g];
+        const uint8_t* wr = blob + w_off;
+        const float sd = L.tail_off ? ((const float*) (blob + L.tail_off))[2] : 1.0f;
+        const int e0 = grp_start[g], e1 = grp_start[g + 1];
+        for (int e = e0; e < e1; e += ED_NC) {
+            const int n = min(ED_NC, e1 - e);
+            if (g > (int) blockIdx.y || e > e0) iq_sync_lds();
+            for (int c = 0; c < n; ++c)
+                ed_stage_entry<ED_HB, false>(s_u, s_ds, c, hq + (size_t) (e + c) * ED_HB, tid);
+            iq_sync_lds();
+            if (valid_r) {
+                const uint8_t* wr1[1] = { wr };
+                auto exec = [&](auto nc) {
+                    constexpr int NC = decltype(nc)::value;
+                    float s[1][NC];
+                    ed_d20_rows<1, NC>(wr1, s_p, s_ds, t, s);
+#pragma unroll
+                    for (int c = 0; c < NC; ++c)
+                        if (t == c) out[(size_t) ent_dst[e + c] * L.n_embd + r] = L.tail_off ? s[0][c] * sd : s[0][c];
+                };
+                switch (n) {
+                    case 1: exec(std::integral_constant<int, 1>{}); break;
+                    case 2: exec(std::integral_constant<int, 2>{}); break;
+                    case 3: exec(std::integral_constant<int, 3>{}); break;
+                    default: exec(std::integral_constant<int, 4>{}); break;
+                }
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------- q8_1 (quantize.cu)
 // value i of a q8_1 row set (the warp holds block i / 32, lane = i % 32)
 __device__ __forceinline__ void q8_1_store(const float xi, block_q8_1* __restrict__ y, const long long i) {
@@ -2965,10 +3204,11 @@ __global__ void __launch_bounds__(512) native_gu_swiglu_kernel(const unsigned lo
     const int r = blockIdx.x * 32 + sw;                       // the hidden column (gate row r, up row r)
     const size_t g_off = (size_t) r * L.gu_row, u_off = L.up_off + (size_t) r * L.gu_row;
     for (int g = blockIdx.y; g < ng; g += gridDim.y) {
-        const uint8_t* blob = (const uint8_t*) grp_ptr[g];
-        const float sg = L.tail_off ? ((const float*) (blob + L.tail_off))[0] : 1.0f;   // NVFP4: s_gate / s_up
-        const float su = L.tail_off ? ((const float*) (blob + L.tail_off))[1] : 1.0f;
         const int e0 = grp_start[g], e1 = grp_start[g + 1];
+        if (e0 >= e1) continue;
+        const uint8_t* blob = (const uint8_t*) grp_ptr[g];
+        const float sg = (TG == 40 && L.tail_off) ? ld_tail_f32(blob, L.tail_off, 0) : 1.0f;   // NVFP4: s_gate / s_up
+        const float su = (TG == 40 && L.tail_off) ? ld_tail_f32(blob, L.tail_off, 1) : 1.0f;
         for (int e = e0; e < e1; e += GRP_NC) {
             const int n = min(GRP_NC, e1 - e);
             float gv[GRP_NC], uv[GRP_NC];
@@ -3480,7 +3720,7 @@ __global__ void dequant_flat_kernel(int ty, const void* __restrict__ vx, dst_t* 
     dq_dispatch<dst_t>(ty, vx, i, y + i * QK_K, threadIdx.x);
     if (scale != nullptr) {       // NVFP4 down: s_down (the weights stay in FP16's normal range)
         __syncwarp();
-        const float sc = *scale;
+        const float sc = ld_f32_u((const uint8_t*) scale);
         for (int k = 0; k < 8; ++k) {
             const int j = threadIdx.x * 8 + k;
             y[i * QK_K + j] = cvt<dst_t>((float) y[i * QK_K + j] * sc);
@@ -3497,7 +3737,7 @@ __global__ void dequant_gu_kernel(int ty, const void* __restrict__ gate, const v
     dq_dispatch<__half>(ty, parity ? up : gate, i, dst, threadIdx.x);
     if (tail != nullptr) {        // NVFP4: gate * s_gate, up * s_up (s_down on the down output: FP16 would underflow)
         __syncwarp();
-        const float sc = parity ? tail[1] : tail[0];
+        const float sc = ld_f32_u((const uint8_t*) tail + (parity ? 4u : 0u));
         for (int k = 0; k < 8; ++k) {
             const int j = threadIdx.x * 8 + k;
             dst[j] = __float2half(__half2float(dst[j]) * sc);
@@ -3507,7 +3747,7 @@ __global__ void dequant_gu_kernel(int ty, const void* __restrict__ gate, const v
 
 // the types dq_dispatch dequantizes
 bool is_iq(int t) {
-    return t == 16 || t == 17 || t == 18 || t == 20 || t == 21 || t == 22 || t == 23 || t == 29 || t == 19 || t == 42 || t == 11 ||
+    return t == 16 || t == 17 || t == 18 || t == 20 || t == 21 || t == 22 || t == 23 || t == 29 || t == 19 || t == 42 || t == 10 || t == 11 ||
 #ifdef STRATA_Q6K_EXPERTS
            t == 12 || t == 13 || t == 14 || t == 7 || t == 6 || t == 2 || t == 3 || t == 8 || t == 40 || t == 144 || t == 145 || t == 146 || t == 147 || t == 148 || t == 149;
 #else
@@ -4243,10 +4483,10 @@ int expdec_dr() { return g_expdec_dr == 1 || g_expdec_dr == 2 ? g_expdec_dr : 4;
 
 bool expdec_gu_ok(const NativeExpertLayout& L) {
     const bool fmt = L.gu_type == 16 || L.gu_type == 17 || L.gu_type == 18 || L.gu_type == 21 || L.gu_type == 22;
-    return fmt && L.n_embd == 32 * ED_XB && L.n_ff % 64 == 0 && L.n_ff > 0;
+    return fmt && L.had_block == 0 && L.tail_off == 0 && L.n_embd == 32 * ED_XB && L.n_ff % 64 == 0 && L.n_ff > 0;
 }
 bool expdec_down_ok(const NativeExpertLayout& L) {
-    return expdec_down_on() && ((L.d_type == 20 && g_expdec_d20) || L.d_type == 42) && L.n_ff == 32 * ED_HB && L.n_embd % 128 == 0 &&
+    return expdec_down_on() && L.had_block == 0 && L.tail_off == 0 && ((L.d_type == 20 && g_expdec_d20) || L.d_type == 42) && L.n_ff == 32 * ED_HB && L.n_embd % 128 == 0 &&
            L.n_embd > 0;
 }
 // rows per block: `knob` rounded up to the rows per pass, or (0) doubled from one pass while ceil(nrow / rb) x
@@ -4359,6 +4599,51 @@ bool expdec_down(const NativeExpertLayout& L, int64_t gy, int64_t cap_groups, cu
     return true;
 }
 
+// STRATA_SM86_DOWN_WS (opt-in, default 0 = off): bit-exact sm_86 down kernels for n_ff=640:
+//   =1 or =6: IQ4_NL (20) -> sm86_down_iq4nl_clean_kernel (rb=32, 0 stack spill); Q2_0 (42) -> expdec_down_kernel<42,2> (rb=64)
+//   =5:       Q2_0-only (expdec_down_kernel<42,2>, rb=64), leaving IQ4_NL on default
+int sm86_down_ws_mode() {
+    static const int mode = [] {
+        const int v = env_int_or("STRATA_SM86_DOWN_WS", 0);
+        return (v == 1 || v == 5 || v == 6) ? v : 0;
+    }();
+    return mode;
+}
+bool sm86_down_ws_ok(const NativeExpertLayout& L) {
+    return (L.d_type == 20 || (L.d_type == 42 && L.n_embd % 2 == 0)) && L.n_ff == 32 * ED_HB && L.n_embd > 0 &&
+           L.had_block == 0 && L.d_row == (size_t) (L.d_type == 20 ? 360 : 180);
+}
+void sm86_down_ws_note(const NativeExpertLayout& L, int mode, cudaStream_t s, int64_t gy, int64_t cap_groups) {
+    static bool seen[64] = {};
+    if (L.d_type < 0 || L.d_type >= 64 || seen[L.d_type]) return;
+    seen[L.d_type] = true;
+    cudaStreamCaptureStatus cs = cudaStreamCaptureStatusNone;
+    (void) cudaStreamIsCapturing(s, &cs);
+    int dev = -1;
+    (void) cudaGetDevice(&dev);
+    const int rb = L.d_type == 20 ? 32 : 64;
+    const char* kname = L.d_type == 20 ? "sm86_down_iq4nl_clean_kernel" : "expdec_down_kernel<42,2>";
+    std::fprintf(stderr, "strata sm86-down-ws: CUDA%d down type %d: %s (mode=%d rb=%d), grid %d x %lld (cap %lld)%s\n",
+                 dev, L.d_type, kname, mode, rb, ((int) L.n_embd + rb - 1) / rb, (long long) gy, (long long) cap_groups,
+                 cs != cudaStreamCaptureStatusNone ? ", captured into a graph" : "");
+}
+bool sm86_down_ws(const NativeExpertLayout& L, int64_t gy, int64_t cap_groups, cudaStream_t s,
+                  const unsigned long long* grp_ptr, const int32_t* grp_start, const int32_t* n_groups,
+                  const int32_t* ent_dst, const block_q8_1* hq, float* out) {
+    const int mode = sm86_down_ws_mode();
+    if (mode == 0 || g_old_kernels || g_no_sub16_gu || !sm86_down_ws_ok(L)) return false;
+    if (mode == 5 && L.d_type != 42) return false;
+    sm86_down_ws_note(L, mode, s, gy, cap_groups);
+    if (L.d_type == 20) {
+        const dim3 grid((unsigned) ((L.n_embd + 31) / 32), (unsigned) gy);
+        sm86_down_iq4nl_clean_kernel<<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
+    } else {
+        const dim3 grid((unsigned) ((L.n_embd + 63) / 64), (unsigned) gy);
+        expdec_down_kernel<42, 2><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out, 64);
+    }
+    return true;
+}
+
 template<int TG>
 void launch_gu(dim3 grid, cudaStream_t s, const unsigned long long* grp_ptr, const int32_t* grp_start,
                const int32_t* n_groups, const int32_t* ent_tok, const block_q8_1* X, const NativeExpertLayout& L,
@@ -4422,7 +4707,7 @@ bool launch_gu_swiglu(const NativeExpertLayout& L, int64_t gy, cudaStream_t s, c
     if constexpr (!kSplit<TG>) {
         return false;
     } else {
-        if (g_old_kernels || split_off<TG>() || g_no_sub16_gu || L.n_embd != 2560 || L.n_ff % 32 != 0 || L.n_ff <= 0) return false;
+        if (g_old_kernels || split_off<TG>() || g_no_sub16_gu || L.had_block != 0 || L.n_embd != 2560 || L.n_ff % 32 != 0 || L.n_ff <= 0) return false;
         // the 16-lane rows assume 80 dots a row (as launch_gu): the 256-value K-quants and the APR trellis types (TQ2_T /
         // TQK6 gate/up: qk 128, ipb 8) have 160 at n_embd 2560 and take launch_gu's full-warp multi kernel.  Gyro-S (TQK6
         // gate/up) went through here on every 12.0 card from 147-verify on: half of each gate/up row, looping answers.
@@ -5543,10 +5828,187 @@ __global__ void __launch_bounds__(128) mmvq_slots_kernel(S slots, size_t row_byt
     if (lane == 0) at.y[row] = s;
 }
 
+#if !defined(__HIPCC__)
+// IQ3_S and IQ3_XXS rows for MmvqSlots::lanes (Inkling 2's cached experts; CUDA only).  mmvq_slots_kernel gives a
+// row a warp: a 2304-value row is 72 calls, so the third pass over the lanes keeps 8 of 32 busy.  Here a warp takes
+// R rows as one run of R x C calls (C = calls a row), lane p taking call 32 i + p of the run.  Row r's calls
+// c = L (mod 32) all land on lane (L + r C) mod 32, in increasing c: that lane holds row_dot's lane-L sum, term for
+// term.  A shuffle moves it back to lane L before the same warp_sum, so a row's sum is mmvq_slots_kernel's to the
+// bit.  The grid is read from shared memory, and the sign bytes are made by a multiply (nibble bit k -> byte k) and
+// applied with xor + add: the same integers as __vcmpne4 / __vsub4 (every grid byte is at least 1, so no byte
+// carries).  Both ideas from merbanan's inkling2-turing decode kernels (his Strata branch); this is our own code.
+// The same bits hold where the compiler contracts both kernels' float steps alike: checked on sm_75 (Turing) and
+// sm_89 (Ada).  On sm_120 (CUDA 12.8) poly_iq3_lanes_test finds about half of the outputs one rounding apart, so
+// there, and on the cards not checked, mmvq_slots_kernel stays the default.  STRATA_IQ3_LANES=0 keeps
+// mmvq_slots_kernel on every card, =1 takes the lanes kernel on every card.
+// ponytail: decided once a process, by the card current at the first launch; a split over unlike cards follows it.
+bool iq3_lanes_on() {
+    static const bool on = [] {
+        if (const char* v = std::getenv("STRATA_IQ3_LANES"); v && *v) return v[0] != '0';
+        int dev = 0, major = 0, minor = 0;
+        if (cudaGetDevice(&dev) != cudaSuccess ||
+            cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess ||
+            cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev) != cudaSuccess)
+            return false;
+        return (major == 7 && minor == 5) || (major == 8 && minor == 9);
+    }();
+    return on;
+}
+// sign bits b0..b3 -> 0x01 in the bytes whose bit is set
+__device__ __forceinline__ uint32_t sign_ones(uint32_t nibble) { return (nibble * 0x00204081u) & 0x01010101u; }
+__device__ __forceinline__ int signed_grid(uint32_t g, uint32_t ones) { return (int) ((g ^ (ones * 0xFFu)) + ones); }
+template<int TY> struct Iq3Lane;
+template<> struct Iq3Lane<21> {   // vec_dot_iq3_s_q8_1
+    static constexpr int GRID = 512;
+    __device__ static const uint32_t* src() { return iq3s_grid; }
+    __device__ static float dot(const uint8_t* row, const block_q8_1* bq8_1, int kbx, int iqs, const uint32_t* g) {
+        const block_iq3_s* bq3 = (const block_iq3_s*) row + kbx;
+        const int2 qs_packed = make_int2(get_int_b2(bq3->qs, iqs + 0), get_int_b2(bq3->qs, iqs + 1));
+        const uint8_t* qs = (const uint8_t*) &qs_packed;
+        const int qh = bq3->qh[iqs / 2];
+        const uint32_t sg = (uint32_t) get_int_b2(bq3->signs, iqs / 2);
+        int sumi = 0;
+#pragma unroll
+        for (int l0 = 0; l0 < 8; l0 += 2) {
+            const uint32_t g0 = g[qs[l0 + 0] | ((qh << (8 - l0)) & 0x100)], g1 = g[qs[l0 + 1] | ((qh << (7 - l0)) & 0x100)];
+            const int grid_l = signed_grid(g0, sign_ones((sg >> (4 * l0)) & 0xF));
+            const int grid_h = signed_grid(g1, sign_ones((sg >> (4 * l0 + 4)) & 0xF));
+            sumi = ggml_cuda_dp4a(grid_l, get_int_b4(bq8_1[iqs / 2].qs, l0 + 0), sumi);
+            sumi = ggml_cuda_dp4a(grid_h, get_int_b4(bq8_1[iqs / 2].qs, l0 + 1), sumi);
+        }
+        sumi *= 1 + 2 * ((bq3->scales[iqs / 4] >> ((iqs << 1) & 0x04)) & 0x0F);
+        const float d = __half2float(bq3->d) * __low2float(bq8_1[iqs / 2].ds);
+        return d * sumi;
+    }
+};
+template<> struct Iq3Lane<18> {   // vec_dot_iq3_xxs_q8_1
+    static constexpr int GRID = 256;
+    __device__ static const uint32_t* src() { return iq3xxs_grid; }
+    __device__ static float dot(const uint8_t* row, const block_q8_1* bq8_1, int kbx, int iqs, const uint32_t* g) {
+        const block_iq3_xxs* bq3 = (const block_iq3_xxs*) row + kbx;
+        const int2 q3_packed = make_int2(get_int_b2(bq3->qs, iqs), get_int_b2(bq3->qs, iqs + 1));
+        const uint8_t* q3 = (const uint8_t*) &q3_packed;
+        const uint32_t aux32 = get_int_b2(bq3->qs, QK_K / 16 + iqs / 2);
+        int sumi = 0;
+#pragma unroll
+        for (int l0 = 0; l0 < 8; l0 += 2) {
+            const uint32_t v = (aux32 >> (7 * l0 / 2)) & 0x7F, s8 = v ^ ((__popc(v) & 1) << 7);   // unpack_ksigns' byte
+            const int grid_l = signed_grid(g[q3[l0 + 0]], sign_ones(s8 & 0xF));
+            const int grid_h = signed_grid(g[q3[l0 + 1]], sign_ones(s8 >> 4));
+            sumi = ggml_cuda_dp4a(grid_l, get_int_b4(bq8_1[iqs / 2].qs, l0 + 0), sumi);
+            sumi = ggml_cuda_dp4a(grid_h, get_int_b4(bq8_1[iqs / 2].qs, l0 + 1), sumi);
+        }
+        const int ls = aux32 >> 28;
+        sumi = (ls * sumi + sumi / 2) / 2;
+        const float d = __half2float(bq3->d) * __low2float(bq8_1[iqs / 2].ds);
+        return d * sumi;
+    }
+};
+
+template<int TY, int R, typename S>
+__global__ void __launch_bounds__(128) mmvq_slots_iq3_kernel(S slots, size_t row_bytes, int n_in, int n_out) {
+    using T = Iq3Lane<TY>;
+    __shared__ uint32_t s_grid[T::GRID];
+    for (int i = threadIdx.y * 32 + threadIdx.x; i < T::GRID; i += 128) s_grid[i] = T::src()[i];
+    __syncthreads();
+    const int row0 = (blockIdx.x * 4 + threadIdx.y) * R;
+    if (row0 >= n_out) return;
+    const SlotPtrs at = slot_ptrs(slots, int(blockIdx.y));
+    const int lane = threadIdx.x, C = (n_in / 256) * 8, rows = min(R, n_out - row0);
+    const uint8_t* w = (const uint8_t*) at.w + (size_t) row0 * row_bytes;
+    const block_q8_1* x = (const block_q8_1*) at.x;
+    float acc[R];
+#pragma unroll
+    for (int q = 0; q < R; ++q) acc[q] = 0.0f;
+    for (int f = lane; f < rows * C; f += 32) {
+        const int r = f / C, c = f - r * C, kbx = c / 8, iqs = 2 * (c % 8);
+        const float v = T::dot(w + (size_t) r * row_bytes, x + kbx * 8, kbx, iqs, s_grid);
+#pragma unroll
+        for (int q = 0; q < R; ++q)
+            if (q == r) acc[q] += v;
+    }
+#pragma unroll
+    for (int q = 0; q < R; ++q) {
+        float v = __shfl_sync(0xffffffffu, acc[q], (lane + q * C) & 31);
+        v = warp_sum(v);
+        if (q < rows && lane == 0) at.y[row0 + q] = v;
+    }
+}
+#endif
+
+#if !defined(__HIPCC__)
+// mmvq_slots_kernel for MmvqSlots::lanes / MmvqIds::lanes (Inkling 2's cached experts, CUDA) in the formats whose
+// codebook stage_iq_grid puts in shared memory (IQ2_XXS, IQ2_XS, IQ2_S, IQ1_S, IQ1_M).  mmvq_slots_kernel reads the
+// codebook from global memory and gives a block 4 rows; here a block of 4 warps stages it once and each warp takes
+// kLaneRows rows, so the copy is paid for 32 rows.  A row is row_dot_multi's for one column, which is row_dot's
+// arithmetic in its order (the same calls, lane-strided the same way, the same warp_sum), and the staged words are the
+// table's: mmvq_slots_kernel's bits.  STRATA_IQ_SLOT_LANES=0, STRATA_OLD_IQ_MMVQ=1 or STRATA_IQ_STAGE_GRID=0 keep
+// mmvq_slots_kernel (and so do the cards slot_lanes_on() has not been checked on).  Ported from our PR 200's a4fa51021 / 2b5363d88.
+constexpr int kLaneRows = 8;
+template<int TY, typename S>
+__global__ void __launch_bounds__(128) mmvq_slots_staged_kernel(S slots, size_t row_bytes, int n_in, int n_out) {
+    STRATA_SHARED_ALIGN16_U32(s_grid_buf, IqGridWords<TY, true>::value);
+    const uint32_t* s_grid = stage_iq_grid<TY, true>(s_grid_buf, threadIdx.y * 32 + threadIdx.x, 128);
+    const SlotPtrs at = slot_ptrs(slots, int(blockIdx.y));
+    const int lane = threadIdx.x, nb = n_in / Fmt<TY>::qk;
+    const int off[1] = {0};
+    for (int r = 0; r < kLaneRows; ++r) {
+        const int row = (blockIdx.x * 4 + threadIdx.y) * kLaneRows + r;
+        if (row >= n_out) return;   // whole warps, and no barrier after the staging
+        float s[1];
+        row_dot_multi<TY, 1, true, true>((const uint8_t*) at.w + (size_t) row * row_bytes, (const block_q8_1*) at.x,
+                                         off, 1, nb, lane, s, s_grid);
+        if (lane == 0) at.y[row] = s[0];
+    }
+}
+// The same bits are shown on sm_75 (Turing; poly_iq_slot_lanes_test), so unset it is on there only, and the other
+// cards keep mmvq_slots_kernel until they are checked, as iq3_lanes_on() does for the IQ3 kernels.
+// STRATA_IQ_SLOT_LANES=0 keeps mmvq_slots_kernel on every card, =1 takes the lane kernel on every card.
+// Decided once a process, by the card current at the first launch.
+bool slot_lanes_on() {
+    static const bool on = [] {
+        if (const char* v = std::getenv("STRATA_IQ_SLOT_LANES"); v && *v) return v[0] != '0';
+        int dev = 0, major = 0, minor = 0;
+        if (cudaGetDevice(&dev) != cudaSuccess ||
+            cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess ||
+            cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev) != cudaSuccess)
+            return false;
+        return major == 7 && minor == 5;
+    }();
+    return on;
+}
+#endif
+
 template<typename S>
 void slots_of(int t, const S& slots, int count, int n_in, int n_out, void* stream) {
     const size_t rb = iq_row_bytes(t, n_in);
     const dim3 grid((unsigned) ((n_out + 3) / 4), (unsigned) count), block(32, 4);
+#if !defined(__HIPCC__)
+    if ((t == 21 || t == 18) && slots.lanes && !g_old_kernels && iq3_lanes_on()) {
+        constexpr int R = 4;   // 72 calls a 2304 row: 4 rows are 9 full passes over the lanes
+        const dim3 g4((unsigned) ((n_out + 4 * R - 1) / (4 * R)), (unsigned) count);
+        if (t == 21) mmvq_slots_iq3_kernel<21, R, S><<<g4, block, 0, (cudaStream_t) stream>>>(slots, rb, n_in, n_out);
+        else mmvq_slots_iq3_kernel<18, R, S><<<g4, block, 0, (cudaStream_t) stream>>>(slots, rb, n_in, n_out);
+        check("iq_mmvq_slots");
+        return;
+    }
+#endif
+#if !defined(__HIPCC__)
+    if ((t == 16 || t == 17 || t == 22 || t == 29 || t == 19) && slots.lanes && !g_old_kernels && g_stage_grid &&
+        slot_lanes_on()) {
+        const dim3 g8((unsigned) ((n_out + 4 * kLaneRows - 1) / (4 * kLaneRows)), (unsigned) count);
+        const cudaStream_t s = (cudaStream_t) stream;
+        switch (t) {
+        case 16: mmvq_slots_staged_kernel<16, S><<<g8, block, 0, s>>>(slots, rb, n_in, n_out); break;
+        case 17: mmvq_slots_staged_kernel<17, S><<<g8, block, 0, s>>>(slots, rb, n_in, n_out); break;
+        case 22: mmvq_slots_staged_kernel<22, S><<<g8, block, 0, s>>>(slots, rb, n_in, n_out); break;
+        case 29: mmvq_slots_staged_kernel<29, S><<<g8, block, 0, s>>>(slots, rb, n_in, n_out); break;
+        default: mmvq_slots_staged_kernel<19, S><<<g8, block, 0, s>>>(slots, rb, n_in, n_out); break;
+        }
+        check("iq_mmvq_slots");
+        return;
+    }
+#endif
     switch (t) {
 #define STRATA_MMVQ(T) case T: mmvq_slots_kernel<T, S><<<grid, block, 0, (cudaStream_t) stream>>>(slots, rb, n_in, n_out); break;
         STRATA_MMVQ_FMTS(STRATA_MMVQ)
@@ -5769,8 +6231,8 @@ __device__ __forceinline__ float row_dot64(const uint8_t* row, const block_q8_1*
         const int kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
         s += F::dot(row, x + kbx * (F::qk / 32), kbx, iqs);
     }
-#pragma unroll
 #if defined(__HIPCC__)
+#pragma unroll
     for (int o = 32; o > 0; o >>= 1) s += __shfl_xor(s, o, 64);
 #else
     __trap();   // a 64-lane wavefront: mode 1 is gfx906's only
@@ -6221,18 +6683,34 @@ __global__ void __launch_bounds__(256) native_down_lds_kernel(const unsigned lon
                                                               const block_q8_1* __restrict__ hq, NativeExpertLayout L,
                                                               float* __restrict__ out) {
     using F = Fmt<TD>;
+    constexpr bool kStageSplit = (TD == 18 || TD == 21);
+    constexpr int kGridN = (TD == 21) ? 1024 : (TD == 18) ? 512 : 1;
+    __shared__ uint32_t sgrid[kGridN];
     extern __shared__ int sh_raw[];   // LDS_NT entries x hb blocks of q8_1
     const int g = blockIdx.y;
     if (g >= *n_groups) return;
+    const int e0 = grp_start[g], e1 = grp_start[g + 1];
+    if (e0 >= e1) return;
     const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
+    if constexpr (TD == 18) {
+        sgrid[tid] = iq3xxs_grid[tid];
+        stage_iq3xxs_masks(sgrid, tid, 256);
+    } else if constexpr (TD == 21) {
+        for (int i = tid; i < 512; i += 256) sgrid[i] = iq3s_grid[i];
+        sgrid[512 + tid] = (uint32_t) nib_mask((uint32_t) tid);
+        sgrid[768 + tid] = (uint32_t) nib_mask((uint32_t) tid >> 4);
+    }
     const uint8_t* blob = (const uint8_t*) grp_ptr[g];
+    const float sd = (TD == 40 && L.tail_off) ? ld_tail_f32(blob, L.tail_off, 2) : 1.0f;
     const int nb = (int) (L.n_ff / F::qk), hb = (int) (L.n_ff / 32);
     const int n_items = nb * F::ipb;
-    const int e0 = grp_start[g], e1 = grp_start[g + 1];
     const int nrow = (int) L.n_embd;
     const block_q8_1* sh = (const block_q8_1*) sh_raw;
     constexpr bool kDownSplit = kSplit<TD> || (TD == 7);
-    const bool use_sub8 = kDownSplit && (n_items == 40 || n_items == 20);
+    constexpr bool kCanSub8 = kDownSplit && (TD != 8);
+    constexpr bool kCanSub16 = kSplit<TD> && (TD != 40 && TD != 42 && TD != 20);
+    const bool use_sub8 = kCanSub8 && (n_items == 40 || n_items == 20 || n_items == 24);
+    const bool use_sub16 = kCanSub16 && !use_sub8 && (n_items == 80 || n_items == 16 || n_items == 48);
     for (int c0 = e0; c0 < e1; c0 += LDS_NT) {
         const int cn = min(LDS_NT, e1 - c0);
         __syncthreads();
@@ -6241,7 +6719,7 @@ __global__ void __launch_bounds__(256) native_down_lds_kernel(const unsigned lon
             for (int i = tid; i < cn * hb * 9; i += 256) sh_raw[i] = src[i];
         }
         __syncthreads();
-        if (use_sub8) {
+        if constexpr (kCanSub8) if (use_sub8) {
             // 8-lane sub-warp (4 rows/warp = 32 rows/block in 2 passes of 32 = 64 rows), 100% active lanes + hoisted load!
             const int sub_row = (tid >> 3);   // 0..31 within block
             const int slane = tid & 7;        // 0..7 within sub-warp
@@ -6252,12 +6730,43 @@ __global__ void __launch_bounds__(256) native_down_lds_kernel(const unsigned lon
                 auto pass8 = [&](auto ntc) {
                     constexpr int NTC = decltype(ntc)::value;
                     float s[NTC];
+                    if constexpr (kSplit<TD> && (TD == 20)) {
+                        if (n_items == 40) {
+                            int off[NTC];
+#pragma unroll
+                            for (int j = 0; j < NTC; ++j) off[j] = j * hb;
+                            row_dot_40_sub8<TD, NTC, true, kStageSplit>(w, sh, off, NTC, slane, s, sgrid);
+                            if (slane == 0) {
+#pragma unroll
+                                for (int j = 0; j < NTC; ++j)
+                                    out[(size_t) ent_dst[c0 + j] * L.n_embd + r] = s[j];
+                            }
+                            return;
+                        }
+                    }
+                    if constexpr (kSplit<TD> && (TD == 40 || TD == 42)) {
+                        if (n_items == 20) {
+                            int off[NTC];
+#pragma unroll
+                            for (int j = 0; j < NTC; ++j) off[j] = j * hb;
+                            row_dot_20_sub8<TD, NTC, true>(w, sh, off, NTC, slane, s);
+                            if (slane == 0) {
+#pragma unroll
+                                for (int j = 0; j < NTC; ++j) {
+                                    float v = s[j];
+                                    if constexpr (TD == 40) v *= sd;
+                                    out[(size_t) ent_dst[c0 + j] * L.n_embd + r] = v;
+                                }
+                            }
+                            return;
+                        }
+                    }
 #pragma unroll
                     for (int j = 0; j < NTC; ++j) s[j] = 0.0f;
                     for (int k = slane; k < n_items; k += 8) {
                         const int kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
                         if constexpr (kSplit<TD>) {
-                            const auto rw = Split<TD>::load(w, kbx, iqs);
+                            const auto rw = Split<TD>::template load<kStageSplit>(w, kbx, iqs, sgrid);
 #pragma unroll
                             for (int j = 0; j < NTC; ++j) {
                                 const block_q8_1* xk = sh + (size_t) j * hb + kbx * (F::qk / 32);
@@ -6277,7 +6786,10 @@ __global__ void __launch_bounds__(256) native_down_lds_kernel(const unsigned lon
                         float v = s[j];
 #pragma unroll
                         for (int o = 4; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffu, v, o);
-                        if (slane == 0) out[(size_t) ent_dst[c0 + j] * L.n_embd + r] = v;
+                        if (slane == 0) {
+                            if constexpr (TD == 40) v *= sd;
+                            out[(size_t) ent_dst[c0 + j] * L.n_embd + r] = v;
+                        }
                     }
                 };
                 switch (cn) {
@@ -6285,6 +6797,64 @@ __global__ void __launch_bounds__(256) native_down_lds_kernel(const unsigned lon
                     case 2: pass8(std::integral_constant<int, 2>{}); break;
                     case 3: pass8(std::integral_constant<int, 3>{}); break;
                     default: pass8(std::integral_constant<int, 4>{}); break;
+                }
+            }
+            continue;
+        }
+        if constexpr (kCanSub16) if (use_sub16) {
+            // 16-lane sub-warp (2 rows/warp = 16 rows/pass x 4 passes = 64 rows), 100% active lanes + hoisted load!
+            const int sub_row = (tid >> 4);   // 0..15 within block
+            const int t16 = tid & 15;         // 0..15 within sub-warp
+            for (int p = 0; p < 4; ++p) {
+                const int r = blockIdx.x * LDS_RB + p * 16 + sub_row;
+                if (r >= nrow) break;
+                const uint8_t* w = blob + L.down_off + (size_t) r * L.d_row;
+                auto pass16 = [&](auto ntc) {
+                    constexpr int NTC = decltype(ntc)::value;
+                    if constexpr (kSplit<TD>) {
+                        float s[NTC];
+                        if constexpr (TD == 8) {
+                            if (n_items == 80) {
+                                int off[NTC];
+#pragma unroll
+                                for (int j = 0; j < NTC; ++j) off[j] = j * hb;
+                                row_dot_80_sub16<TD, NTC, true, kStageSplit>(w, sh, off, NTC, t16, s, sgrid);
+                                if (t16 == 0) {
+#pragma unroll
+                                    for (int j = 0; j < NTC; ++j)
+                                        out[(size_t) ent_dst[c0 + j] * L.n_embd + r] = s[j];
+                                }
+                                return;
+                            }
+                        }
+#pragma unroll
+                        for (int j = 0; j < NTC; ++j) s[j] = 0.0f;
+                        for (int k = t16; k < n_items; k += 16) {
+                            const int kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
+                            const auto rw = Split<TD>::template load<kStageSplit>(w, kbx, iqs, sgrid);
+#pragma unroll
+                            for (int j = 0; j < NTC; ++j) {
+                                const block_q8_1* xk = sh + (size_t) j * hb + kbx * (F::qk / 32);
+                                s[j] += Split<TD>::apply(rw, xk, iqs);
+                            }
+                        }
+#pragma unroll
+                        for (int j = 0; j < NTC; ++j) {
+                            float v = s[j];
+#pragma unroll
+                            for (int o = 8; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffu, v, o);
+                            if (t16 == 0) {
+                                if constexpr (TD == 40) v *= sd;
+                                out[(size_t) ent_dst[c0 + j] * L.n_embd + r] = v;
+                            }
+                        }
+                    }
+                };
+                switch (cn) {
+                    case 1: pass16(std::integral_constant<int, 1>{}); break;
+                    case 2: pass16(std::integral_constant<int, 2>{}); break;
+                    case 3: pass16(std::integral_constant<int, 3>{}); break;
+                    default: pass16(std::integral_constant<int, 4>{}); break;
                 }
             }
             continue;
@@ -6303,8 +6873,8 @@ __global__ void __launch_bounds__(256) native_down_lds_kernel(const unsigned lon
                 for (int k = lane; k < n_items; k += 32) {
                     const int kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
                     if constexpr (kSplit<TD>) {
-                        const auto rw0 = Split<TD>::load(w0, kbx, iqs);
-                        const auto rw1 = Split<TD>::load(w1, kbx, iqs);
+                        const auto rw0 = Split<TD>::template load<kStageSplit>(w0, kbx, iqs, sgrid);
+                        const auto rw1 = Split<TD>::template load<kStageSplit>(w1, kbx, iqs, sgrid);
 #pragma unroll
                         for (int j = 0; j < NTC; ++j) {
                             const block_q8_1* xk = sh + (size_t) j * hb + kbx * (F::qk / 32);
@@ -6324,7 +6894,6 @@ __global__ void __launch_bounds__(256) native_down_lds_kernel(const unsigned lon
                 }
 #pragma unroll
                 for (int j = 0; j < NTC; ++j) {
-                    const float sd = (TD == 40 && L.tail_off) ? ((const float*) (blob + L.tail_off))[2] : 1.0f;
                     const float a = warp_sum(s0[j]) * sd, b = warp_sum(s1[j]) * sd;
                     if (lane == 0) {
                         out[(size_t) ent_dst[c0 + j] * L.n_embd + r0] = a;
@@ -6347,7 +6916,7 @@ __global__ void __launch_bounds__(256) native_down_lds_kernel(const unsigned lon
 // one 32-lane warp per entry holds exactly one q8_1 block of h and runs quantize_q8_1_kernel's own code on it -
 // bitwise the separate kernels' hq, two launches fewer per call.
 // Hoists Split<TG>::load outside the per-entry loop (j = 0..NTC-1) so multi-token verify hits decode weights ONCE
-// instead of NTC times, and supports Q4_K (12), Q5_K (13), and NVFP4 (40) with exact tail scales in addition to IQ*.
+// instead of NTC times, and supports all Unsloth K-quants, Q8_0, IQ*, Q2_0, and NVFP4 with exact tail scales.
 template<int TG>
 __global__ void __launch_bounds__(256) native_gu_fused_kernel(const unsigned long long* __restrict__ grp_ptr,
                                                               const int32_t* __restrict__ grp_start,
@@ -6357,19 +6926,23 @@ __global__ void __launch_bounds__(256) native_gu_fused_kernel(const unsigned lon
                                                               block_q8_1* __restrict__ hq) {
     using F = Fmt<TG>;
     constexpr bool kHasGrid = (TG == 16 || TG == 17 || TG == 18 || TG == 21 || TG == 22);
-    // TG == 21 (IQ3_S): stage 512 grid entries + 256 lo-nibble + 256 hi-nibble sign masks = 1024 uint32s for Split<21>::load<true>!
-    constexpr int kGridN = kHasGrid ? (TG == 22 ? 1024 : TG == 21 ? 1024 : TG == 17 ? 512 : 256) : 1;
+    // TG == 18 (IQ3_XXS): 256 grid + 256 sign masks = 512 u32s; TG == 21 (IQ3_S): 512 grid + 512 sign masks = 1024 u32s!
+    constexpr int kGridN = kHasGrid ? (TG == 22 ? 1024 : TG == 21 ? 1024 : (TG == 17 || TG == 18) ? 512 : 256) : 1;
     using GT = typename std::conditional<(TG == 16 || TG == 17 || TG == 22), uint64_t, uint32_t>::type;
     __shared__ GT sgrid[kGridN];
     __shared__ float res[LDS_NT][64];
     extern __shared__ int sx_raw[];
     const int g = blockIdx.y;
     if (g >= *n_groups) return;
+    const int e0 = grp_start[g], e1 = grp_start[g + 1];
+    if (e0 >= e1) return;
     const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
     if constexpr (kHasGrid) {
         const GT* gsrc = GridOf<TG>::src();
         for (int i = tid; i < GridOf<TG>::N; i += 256) sgrid[i] = gsrc[i];
-        if constexpr (TG == 21) {
+        if constexpr (TG == 18) {
+            stage_iq3xxs_masks((uint32_t*) sgrid, tid, 256);
+        } else if constexpr (TG == 21) {
             // Fill sign mask tables at [512..767] (low nibble) and [768..1023] (high nibble) for Split<21>::load<true>.
             const uint32_t m_lo = (uint32_t) nib_mask((uint32_t) tid);
             const uint32_t m_hi = (uint32_t) nib_mask((uint32_t) tid >> 4);
@@ -6378,15 +6951,15 @@ __global__ void __launch_bounds__(256) native_gu_fused_kernel(const unsigned lon
         }
     }
     const uint8_t* blob = (const uint8_t*) grp_ptr[g];
-    const float s_gate = (TG == 40 && L.tail_off) ? ((const float*) (blob + L.tail_off))[0] : 1.0f;
-    const float s_up   = (TG == 40 && L.tail_off) ? ((const float*) (blob + L.tail_off))[1] : 1.0f;
+    const float s_gate = (TG == 40 && L.tail_off) ? ld_tail_f32(blob, L.tail_off, 0) : 1.0f;
+    const float s_up   = (TG == 40 && L.tail_off) ? ld_tail_f32(blob, L.tail_off, 1) : 1.0f;
     const int nb = (int) (L.n_embd / F::qk), xb = (int) (L.n_embd / 32), hb = (int) (L.n_ff / 32);
-    const int e0 = grp_start[g], e1 = grp_start[g + 1];
     const int r0 = blockIdx.x * 32;
     const block_q8_1* sx = (const block_q8_1*) sx_raw;
     auto wrow = [&](int i) -> const uint8_t* {   // i < 32: gate row r0 + i, else up row r0 + i - 32
         return blob + (i < 32 ? (size_t) 0 : L.up_off) + (size_t) (r0 + (i & 31)) * L.gu_row;
     };
+    constexpr bool kStageSplit = (TG == 16 || TG == 17 || TG == 18 || TG == 21 || TG == 22);
     for (int c0 = e0; c0 < e1; c0 += LDS_NT) {
         const int cn = min(LDS_NT, e1 - c0);
         __syncthreads();
@@ -6408,7 +6981,6 @@ __global__ void __launch_bounds__(256) native_gu_fused_kernel(const unsigned lon
                 auto pass16 = [&](auto ntc) {
                     constexpr int NTC = decltype(ntc)::value;
                     if constexpr (kSplit<TG>) {
-                        constexpr bool kStageSplit = (TG == 16 || TG == 21 || TG == 22);
                         int off[NTC];
 #pragma unroll
                         for (int j = 0; j < NTC; ++j) off[j] = j * xb;
@@ -6441,8 +7013,6 @@ __global__ void __launch_bounds__(256) native_gu_fused_kernel(const unsigned lon
                     for (int k = lane; k < nb * F::ipb; k += 32) {
                         const int kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
                         if constexpr (kSplit<TG>) {
-                            // Stage grid + sign masks in smem for IQ2_XXS (16), IQ3_S (21), and IQ2_S (22).
-                            constexpr bool kStageSplit = (TG == 16 || TG == 21 || TG == 22);
                             const auto rw0 = Split<TG>::template load<kStageSplit>(w0, kbx, iqs, (const uint32_t*) sgrid);
                             const auto rw1 = Split<TG>::template load<kStageSplit>(w1, kbx, iqs, (const uint32_t*) sgrid);
 #pragma unroll
@@ -6479,7 +7049,11 @@ __global__ void __launch_bounds__(256) native_gu_fused_kernel(const unsigned lon
         __syncthreads();
         if (warp < cn) {   // swiglu_entries_kernel + quantize_q8_1_kernel, one block of 32 h values per entry
             const float gg = res[warp][lane] * s_gate, uu = res[warp][32 + lane] * s_up;
+#if defined(__HIPCC__)
             const float xi = (gg / (1.0f + __expf(-gg))) * uu;
+#else
+            const float xi = __fmul_rn(gg / (1.0f + __expf(-gg)), uu);
+#endif
             float amax = fabsf(xi), sum = xi;
 #pragma unroll
             for (int o = 16; o > 0; o >>= 1) {
@@ -6502,25 +7076,7 @@ __global__ void __launch_bounds__(256) native_gu_fused_kernel(const unsigned lon
 // STRATA_GFX1151_EXP8=0 (or STRATA_GFX11_EXP8=0 / STRATA_GFX11_DEFAULTS=0 on discrete gfx11) keeps the old layout.
 bool gfx1151_exp8(int dev) {
 #if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
-    static int per_dev[64];   // 0 unknown, 1 no, 2 yes
-    if (dev < 0 || dev >= 64) return false;
-    if (!per_dev[dev]) {
-        const char* v = std::getenv("STRATA_GFX1151_EXP8");
-        const char* v11 = std::getenv("STRATA_GFX11_EXP8");
-        const char* off11 = std::getenv("STRATA_GFX11_DEFAULTS");
-        cudaDeviceProp p;
-        bool yes = false;
-        if (cudaGetDeviceProperties(&p, dev) == cudaSuccess) {
-            if (strata::kernels::gfx_arch_is_gfx1151(p.gcnArchName)) {
-                yes = !(v != nullptr && v[0] == '0') && !(v11 != nullptr && v11[0] == '0');
-            } else if (strata::kernels::gfx_arch_is_discrete_rdna3(p.gcnArchName)) {
-                yes = !(v != nullptr && v[0] == '0') && !(v11 != nullptr && v11[0] == '0') && !(off11 != nullptr && off11[0] == '0');
-            }
-        }
-        per_dev[dev] = yes ? 2 : 1;
-        (void) cudaGetLastError();
-    }
-    return per_dev[dev] == 2;
+    return strata::kernels::hip_unsloth::hip_exp8_auto_enabled(dev);
 #else
     (void) dev;
     return false;
@@ -6647,7 +7203,7 @@ I8Volta i8_volta() {
         cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
         cudaDeviceGetAttribute(&sm, cudaDevAttrMaxSharedMemoryPerMultiprocessor, dev);
         if (cudaDeviceGetAttribute(&res, cudaDevAttrReservedSharedMemoryPerBlock, dev) != cudaSuccess) { cudaGetLastError(); res = 0; }
-        per[dev] = {strata::cc_major_of(major) == 7 && strata::cc_minor_of(minor) == 0 && sm > 0, (size_t) sm, (size_t) res};
+        per[dev] = {strata::cc_of(major, minor) == 70 && sm > 0, (size_t) sm, (size_t) res};
     }
     return per[dev];
 #endif
@@ -6857,7 +7413,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     if (L.n_ff % 32 != 0) { std::fprintf(stderr, "native_expert_grouped: n_ff %lld\n", (long long) L.n_ff); std::exit(1); }
     // Blackwell sm_120/sm_121 Tensor Core NVFP4 grouped verify (T >= 2, cap_entries > 10):
     // single-token T=1 (cap_entries <= 10) stays on sub-warp row_dot_20_sub8 to avoid m16n8k16 N=8 padding.
-    if (!g_grouped_v1 && cap_entries > 10 && L.gu_type == 40 && L.d_type == 40 && !L.gu_nib && g_exp_phase == 0 &&
+    if (!g_grouped_v1 && cap_entries > 10 && L.gu_type == 40 && L.d_type == 40 && !L.gu_nib && L.had_block == 0 && g_exp_phase == 0 &&
         nvfp4_decode_sm120_available()) {
         const size_t f0 = (size_t) cap_entries * (size_t) L.n_ff * sizeof(float);
         const size_t fa0 = (f0 + 255) & ~(size_t) 255;
@@ -6885,7 +7441,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     // STRATA_EXPERT_NIBBLE (nib_layout): only the gate/up step below takes another kernel (launch_gu_nib, in place of
     // launch_gu); SwiGLU, the q8_1 quantization and the down rows (GGUF, at L.down_off) are the layout's own
     static const bool v2 = [] { const char* v = std::getenv("STRATA_EXPERT_V2"); return v && v[0] == '1'; }();
-    if (v2 && !nib_layout(L) && L.gu_type == 21 && L.d_type == 20 && L.n_embd == 2560 && L.n_ff == 640) {   // S26: see s26_gu_l_kernel
+    if (v2 && !nib_layout(L) && L.had_block == 0 && L.tail_off == 0 && L.gu_type == 21 && L.d_type == 20 && L.n_embd == 2560 && L.n_ff == 640) {   // S26: see s26_gu_l_kernel
         // S26 STRATA_TSUM=1: the sums as one transposed butterfly per warp (s26_tsum.cuh; bitwise the same values)
         static const bool ts = [] { const char* v = std::getenv("STRATA_TSUM"); return v && v[0] == '1'; }();
         // (+ down rows' items spread evenly over the lanes, one load group: bitwise, harness 1.09-1.12x vs 1.03-1.06x;
@@ -6924,7 +7480,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     }();
     // Qwen3.6-35B-A3B (n_embd 2048, n_ff 512, Q4_K / Q5_K gate+up, Q5_K down): the same kernels, the geometry only sizes the grid
     const bool q36geo = L.n_embd == 2048 && L.n_ff == 512 && L.d_type == 13;
-    if (v2k && (L.gu_type == 12 || L.gu_type == 13) &&
+    if (v2k && L.had_block == 0 && L.tail_off == 0 && (L.gu_type == 12 || L.gu_type == 13) &&
         (((L.d_type == 7 || L.d_type == 8) && L.n_embd == 2560 && L.n_ff == 640) || q36geo)) {
         static const bool ts = [] { const char* v = std::getenv("STRATA_TSUM"); return v && v[0] == '1'; }();
         const long long nh = (long long) cap_entries * L.n_ff;
@@ -6969,22 +7525,36 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
 #endif
 #endif
 #if STRATA_EXP_LAYOUTS
-    const bool fused_gu = !nib_layout(L) && em0 == 8 &&
-                          ((kExpLds16 && L.gu_type == 16) || L.gu_type == 17 || L.gu_type == 18 || L.gu_type == 21 ||
-                           L.gu_type == 22 || L.gu_type == 23 || L.gu_type == 12 || L.gu_type == 13 || L.gu_type == 40) &&
+    const bool fused_gu = !nib_layout(L) && L.had_block == 0 && em0 == 8 && L.n_embd <= 4096 &&
+                          ((kExpLds16 && L.gu_type == 16) || L.gu_type == 17 || L.gu_type == 18 || L.gu_type == 20 ||
+                           L.gu_type == 21 || L.gu_type == 22 || L.gu_type == 23 || L.gu_type == 29 || L.gu_type == 42 ||
+                           L.gu_type == 8 || L.gu_type == 10 || L.gu_type == 11 || L.gu_type == 12 || L.gu_type == 13 ||
+#ifdef STRATA_Q6K_EXPERTS
+                           L.gu_type == 14 ||
+#endif
+                           L.gu_type == 40) &&
                           L.n_ff % 32 == 0;
     if (fused_gu && g_exp_phase != 2) {
         const dim3 gl((unsigned) (L.n_ff / 32), (unsigned) cap_groups);
         const size_t sh = (size_t) LDS_NT * (size_t) (L.n_embd / 32) * sizeof(block_q8_1);
         switch (L.gu_type) {
+            case 8:  native_gu_fused_kernel<8><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); break;
+            case 10: native_gu_fused_kernel<10><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); break;
+            case 11: native_gu_fused_kernel<11><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); break;
             case 12: native_gu_fused_kernel<12><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); break;
             case 13: native_gu_fused_kernel<13><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); break;
+#ifdef STRATA_Q6K_EXPERTS
+            case 14: native_gu_fused_kernel<14><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); break;
+#endif
             case 16: native_gu_fused_kernel<16><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); break;
             case 17: native_gu_fused_kernel<17><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); break;
             case 18: native_gu_fused_kernel<18><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); break;
+            case 20: native_gu_fused_kernel<20><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); break;
             case 21: native_gu_fused_kernel<21><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); break;
             case 23: native_gu_fused_kernel<23><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); break;
+            case 29: native_gu_fused_kernel<29><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); break;
             case 40: native_gu_fused_kernel<40><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); break;
+            case 42: native_gu_fused_kernel<42><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); break;
             default: native_gu_fused_kernel<22><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); break;
         }
         check("native_expert_grouped/gu fused");
@@ -6993,7 +7563,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     // 147-verify STRATA_GU_SWIGLU=1: gate/up + SwiGLU + q8_1 in one launch where the CUDA layout's 16-lane kernel would run
     bool gs_done = false;
 #if STRATA_EXP_LAYOUTS
-    const bool gs_layout = !fused_gu && em0 == 0;
+    const bool gs_layout = !fused_gu && (em0 == 0 || (em0 >= 5 && kExpFallback == 0));
 #else
     const bool gs_layout = true;
 #endif
@@ -7100,18 +7670,39 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
         return;
     }
 #endif
+    if (sm86_down_ws(L, gy, cap_groups, s, grp_ptr, grp_start, n_groups, ent_dst, hq, out)) {
+        check("native_expert_grouped/down sm86_ws");
+        return;
+    }
 #if STRATA_EXP_LAYOUTS
     const int em0d = sm75_down_em(em0, cap_groups);
     int dev_d = 0;
     cudaGetDevice(&dev_d);
     // gfx1151: the LDS down kernel is slower than the CUDA layout for IQ4_NL (86 vs 63 us, 24 groups) and faster for Q2_0 (-18%)
-    const bool lds_down_ok = L.d_type == 42 || L.d_type == 40 || (L.d_type == 20 && !gfx1151_exp8(dev_d));
+    const bool lds_down_ok = L.n_ff <= 4096 &&
+                             (L.d_type == 8 || L.d_type == 12 || L.d_type == 13 ||
+#ifdef STRATA_Q6K_EXPERTS
+                              L.d_type == 14 ||
+#endif
+                              L.d_type == 18 || L.d_type == 21 || L.d_type == 23 ||
+                              L.d_type == 42 || L.d_type == 40 || (L.d_type == 20 && !gfx1151_exp8(dev_d)));
     if ((em0d == 7 || em0d == 8) && lds_down_ok) {
         const dim3 gl((unsigned) ((L.n_embd + LDS_RB - 1) / LDS_RB), (unsigned) cap_groups);
         const size_t sh = (size_t) LDS_NT * (size_t) (L.n_ff / 32) * sizeof(block_q8_1);
-        if (L.d_type == 20) native_down_lds_kernel<20><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
-        else if (L.d_type == 40) native_down_lds_kernel<40><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
-        else native_down_lds_kernel<42><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
+        switch (L.d_type) {
+            case 8:  native_down_lds_kernel<8><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
+            case 12: native_down_lds_kernel<12><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
+            case 13: native_down_lds_kernel<13><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
+#ifdef STRATA_Q6K_EXPERTS
+            case 14: native_down_lds_kernel<14><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
+#endif
+            case 18: native_down_lds_kernel<18><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
+            case 20: native_down_lds_kernel<20><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
+            case 21: native_down_lds_kernel<21><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
+            case 23: native_down_lds_kernel<23><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
+            case 40: native_down_lds_kernel<40><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
+            default: native_down_lds_kernel<42><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
+        }
         check("native_expert_grouped/down");
         return;
     }
@@ -7303,8 +7894,100 @@ int hash_slots(const LayerVram& L, const unsigned long long* slot_ptrs, int64_t 
 // ---- Volta prompt experts (STRATA_PF_WMMA): a group's experts as one launch of FP16 tensor-core tiles, the weights
 // dequantized into shared memory by dq_dispatch (the FP16 path's own formulas), the activations FP16, FP32 sums.
 // Replaces MMQ's dp4a products on sm_70, and the FP16 path's dequantize-to-global + one cuBLAS call per expert.
+// On HIP the same kernel runs on RDNA3/RDNA4's matrix cores (v_wmma_f32_16x16x16_f16, wave32) through the few
+// nvcuda::wmma calls below, written for the two lane layouts; the tiles that fit 64 KiB of LDS (WK 128) only, which
+// there take IQ4_NL, NVFP4 and Q2_0 rows of any whole 128s and Q8_0's.
 #if !defined(__HIPCC__)
 #include <mma.h>
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700   // the sm_60 pass of a multi-arch build has no nvcuda::wmma (the host never launches these there)
+#define STRATA_WG_TC 1
+#else
+#define STRATA_WG_TC 0
+#endif
+#define STRATA_WG_NS nvcuda
+#else
+// The device pass's architectures with the instructions: the list gfx_arch.hpp's gfx_arch_is_gfx11_wmma /
+// gfx_arch_is_gfx12_wmma match at run time (another AMD card keeps the BLAS path and compiles the kernel empty).
+#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || defined(__gfx1150__) || \
+    defined(__gfx1151__)
+#define STRATA_WG_TC 1
+#define STRATA_WG_GFX12 0
+#elif defined(__gfx1200__) || defined(__gfx1201__)
+#define STRATA_WG_TC 1
+#define STRATA_WG_GFX12 1
+#else
+#define STRATA_WG_TC 0
+#endif
+#define STRATA_WG_NS strata_wg_hip
+#if STRATA_WG_TC
+// 16 x 16 x 16 halves to FP32.  A wave's lane l holds row l % 16 of A (row-major) and column l % 16 of B (col-major),
+// read the same way: on gfx11 all 16 values of K (lanes l and l + 16 the same), on gfx12 the 8 values from
+// (l / 16) * 8.  Its 8 sums are D[2 i + l / 16][l % 16] on gfx11 and D[(l / 16) * 8 + i][l % 16] on gfx12.
+namespace strata_wg_hip::wmma {
+struct matrix_a {};
+struct matrix_b {};
+struct accumulator {};
+struct row_major {};
+struct col_major {};
+enum layout_t { mem_row_major };
+#if STRATA_WG_GFX12
+typedef _Float16 wg_hv __attribute__((ext_vector_type(8)));
+#else
+typedef _Float16 wg_hv __attribute__((ext_vector_type(16)));
+#endif
+typedef float wg_fv __attribute__((ext_vector_type(8)));
+template <class Use, int M, int N, int K, class T = float, class L = void>
+struct fragment {
+    wg_hv x;
+};
+template <int M, int N, int K, class T, class L>
+struct fragment<accumulator, M, N, K, T, L> {
+    wg_fv x;
+};
+__device__ __forceinline__ int wg_lane() { return (int) (threadIdx.x & 31); }
+template <int M, int N, int K, class T>
+__device__ __forceinline__ void fill_fragment(fragment<accumulator, M, N, K, T>& f, float v) {
+#pragma unroll
+    for (int i = 0; i < 8; ++i) f.x[i] = v;
+}
+// (A row-major and B col-major: both a lane's row l % 16 of the pointer)
+template <class Use, class L>
+__device__ __forceinline__ void load_matrix_sync(fragment<Use, 16, 16, 16, __half, L>& f, const __half* p, unsigned ld) {
+    const int l = wg_lane();
+    // (16-byte reads: the tiles' rows and steps are whole 16 bytes)
+#if STRATA_WG_GFX12
+    const uint4 q = *reinterpret_cast<const uint4*>(p + (size_t) (l % 16) * ld + (l / 16) * 8);
+    __builtin_memcpy(&f.x, &q, sizeof f.x);
+#else
+    const uint4* r = reinterpret_cast<const uint4*>(p + (size_t) (l % 16) * ld);
+    const uint4 q[2] = {r[0], r[1]};
+    __builtin_memcpy(&f.x, q, sizeof f.x);
+#endif
+}
+template <class LA, class LB>
+__device__ __forceinline__ void mma_sync(fragment<accumulator, 16, 16, 16, float>& d, const fragment<matrix_a, 16, 16, 16, __half, LA>& a,
+                                         const fragment<matrix_b, 16, 16, 16, __half, LB>& b,
+                                         const fragment<accumulator, 16, 16, 16, float>& c) {
+#if STRATA_WG_GFX12
+    d.x = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(a.x, b.x, c.x);
+#else
+    d.x = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(a.x, b.x, c.x);
+#endif
+}
+__device__ __forceinline__ void store_matrix_sync(float* p, const fragment<accumulator, 16, 16, 16, float>& f, unsigned ld, layout_t) {
+    const int l = wg_lane();
+#pragma unroll
+    for (int i = 0; i < 8; ++i) {
+#if STRATA_WG_GFX12
+        p[(size_t) ((l / 16) * 8 + i) * ld + l % 16] = f.x[i];
+#else
+        p[(size_t) (2 * i + l / 16) * ld + l % 16] = f.x[i];
+#endif
+    }
+}
+}  // namespace strata_wg_hip::wmma
+#endif
+#endif
 namespace strata::kernels {
 namespace {
 constexpr int WG_BM = 64, WG_BN = 128, WG_THREADS = 256, WG_XK = 128, WG_MT = 4;
@@ -7318,8 +8001,8 @@ __global__ void __launch_bounds__(WG_THREADS) gemm_iq_f16_grouped_kernel(int ty,
                                                                          const __half* __restrict__ X, int ldx,
                                                                          const int32_t* __restrict__ bounds, int ch_per_e,
                                                                          float* __restrict__ Y, int ldy) {
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700   // the sm_60 pass of a multi-arch build has no nvcuda::wmma (the host never launches these there)
-    using namespace nvcuda;
+#if STRATA_WG_TC
+    using namespace STRATA_WG_NS;
     constexpr int LDW = WK + 8, LDX = WG_XK + 8;
     extern __shared__ __align__(16) unsigned char wg_smem[];
     __half* sw = reinterpret_cast<__half*>(wg_smem);            // [BN][LDW]
@@ -7389,6 +8072,18 @@ __global__ void __launch_bounds__(WG_THREADS) gemm_iq_f16_grouped_kernel(int ty,
                     o[s * 16 + k] = cvt<__half>((float) kvalues_fp4[byte & 0x0F] * d);
                     o[s * 16 + k + 8] = cvt<__half>((float) kvalues_fp4[byte >> 4] * d);
                 }
+            }
+        } else if constexpr (WK == 128 && !Q20) {
+            // Q8_0 (a HIP build only: its 64 KiB of LDS take no WK 256 tile): one thread per (row, 64-value half) of
+            // the 128-value window, two blocks of 32, each value dq_q8_0()'s
+            const int r = tid >> 1, half = tid & 1;
+            const block_q8_0* bp = reinterpret_cast<const block_q8_0*>(we + (size_t) (n0 + r) * row_bytes) + k0 / 32 + half * 2;
+            __half* o = sw + r * LDW + half * 64;
+#pragma unroll
+            for (int bl = 0; bl < 2; ++bl) {
+                const float d = __half2float(bp[bl].d);
+#pragma unroll
+                for (int j = 0; j < 32; ++j) o[bl * 32 + j] = cvt<__half>((float) bp[bl].qs[j] * d);
             }
         } else if constexpr (!Q20) {
             for (int r = warp; r < WG_BN; r += WG_THREADS / 32)
@@ -7460,6 +8155,7 @@ __global__ void __launch_bounds__(WG_THREADS) gemm_iq_f16_grouped_kernel(int ty,
 #endif
 }
 
+#if !defined(__HIPCC__)   // (CUDA only)
 // ---- STRATA_PF_WMMA2=1 (opt-in): IQ2_S gate/up and IQ4_NL down, tiled like a Volta MoE kernel in the
 // PR author's own unpublished llama.cpp patches.
 // A block: W2_RB = 128 weight rows of one expert x W2_CB = 64 of its sorted rows, K stages of W2_KT = 64. Thread t dequantizes
@@ -7663,11 +8359,30 @@ bool w2_on() {
     static const bool v = [] { const char* e = std::getenv("STRATA_PF_WMMA2"); return e && e[0] == '1'; }();
     return v;
 }
+#else
+// The current card has the instructions the device pass built the tiles for, and LDS for `bytes` a block
+bool wg_card(size_t bytes) {
+    // a device's, in one word: 0 not yet asked, -1 no instructions, else its LDS a block (read by any thread at once)
+    static std::atomic<long long> known[64];
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return false;
+    long long v = known[dev].load(std::memory_order_acquire);
+    if (v == 0) {
+        cudaDeviceProp p;
+        const bool ok = cudaGetDeviceProperties(&p, dev) == cudaSuccess &&
+                        (gfx_arch_is_gfx11_wmma(p.gcnArchName) || gfx_arch_is_gfx12_wmma(p.gcnArchName)) && p.sharedMemPerBlock > 0;
+        v = ok ? (long long) p.sharedMemPerBlock : -1;
+        known[dev].store(v, std::memory_order_release);
+    }
+    return v > 0 && bytes <= (size_t) v;
+}
+#endif
 }  // namespace
 
 bool gemm_iq_f16_grouped(int ty, const void* W, size_t expert_bytes, int n_out, int K, const void* X, int ldx,
                          const int32_t* bounds, int n_experts, int max_rows, float* Y, int ldy, void* stream) {
     if (n_out % WG_BN != 0 || n_experts <= 0 || max_rows <= 0 || ldy % 4 != 0) return false;
+#if !defined(__HIPCC__)
     {   // the tiles are tensor-core kernels: a pre-Volta card has no body for them (the sm_60 pass compiles them empty)
         int cur = 0, major = 0;
         if (cudaGetDevice(&cur) != cudaSuccess || cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, cur) != cudaSuccess ||
@@ -7689,15 +8404,28 @@ bool gemm_iq_f16_grouped(int ty, const void* W, size_t expert_bytes, int n_out, 
             return cudaGetLastError() == cudaSuccess;
         }
     }
+#endif
     const bool q20 = ty == 42;
+#if !defined(__HIPCC__)
     const bool nl = ty == 20 && K % 256 != 0;   // IQ4_NL down (K=640): there is no WK=256 path for this K
     const bool nv4 = ty == 40 && K % 256 != 0;   // NVFP4 down (Inkling 2's K=1,152): the same
-    if (q20 || nl || nv4 ? K % 128 != 0 : (K % 256 != 0 || !dq_supported(ty))) return false;
+    constexpr bool q80 = false;
+#else
+    // RDNA: the WK 128 lanes for any K of whole 128s (the WK 256 tile does not fit the LDS), and Q8_0's lane: Inkling 2
+    // Mini's experts (gate|up K = 2,304, down K = 1,152) are IQ4_NL or Q8_0
+    const bool nl = ty == 20, nv4 = ty == 40, q80 = ty == 8;
+#endif
+    if (q20 || nl || nv4 || q80 ? K % 128 != 0 : (K % 256 != 0 || !dq_supported(ty))) return false;
     const size_t row_bytes = iq_row_bytes(ty, K);
     const int mt = (max_rows + WG_MT * WG_BM - 1) / (WG_MT * WG_BM);   // row chunks per expert
     const dim3 grid((unsigned) (n_out / WG_BN), (unsigned) (n_experts * mt));
     cudaStream_t s = (cudaStream_t) stream;
     auto smem = [](int wk) { return (size_t) WG_BN * (wk + 8) * 2 + (size_t) WG_BM * (WG_XK + 8) * 2; };
+#if defined(__HIPCC__)
+    // RDNA3/RDNA4 only, and a tile that fits the LDS of a block (64 KiB: the WK 256 tiles' 85,000 bytes do not); the
+    // dynamic LDS needs no attribute below 64 KiB
+    if (!wg_card(smem(q20 || nl || nv4 || q80 ? 128 : 256))) return false;
+#else
     // the shared-memory attribute belongs to the current device, so it is set on each card: with one flag for the
     // process a layer split's second card launched without it and the prompt stopped ("the WMMA expert tiles could not launch")
     static bool attr[64];
@@ -7711,6 +8439,7 @@ bool gemm_iq_f16_grouped(int ty, const void* W, size_t expert_bytes, int n_out, 
                              (int) smem(128));
         attr[dev] = true;
     }
+#endif
     if (q20)
         gemm_iq_f16_grouped_kernel<128, true><<<grid, WG_THREADS, smem(128), s>>>(ty, (const uint8_t*) W, expert_bytes, row_bytes, K,
                                                                                  (const __half*) X, ldx, bounds, mt, Y, ldy);
@@ -7720,6 +8449,11 @@ bool gemm_iq_f16_grouped(int ty, const void* W, size_t expert_bytes, int n_out, 
     else if (nv4)
         gemm_iq_f16_grouped_kernel<128, false, false, true><<<grid, WG_THREADS, smem(128), s>>>(
             ty, (const uint8_t*) W, expert_bytes, row_bytes, K, (const __half*) X, ldx, bounds, mt, Y, ldy);
+#if defined(__HIPCC__)
+    else if (q80)
+        gemm_iq_f16_grouped_kernel<128, false><<<grid, WG_THREADS, smem(128), s>>>(ty, (const uint8_t*) W, expert_bytes, row_bytes, K,
+                                                                                  (const __half*) X, ldx, bounds, mt, Y, ldy);
+#endif
     else
         gemm_iq_f16_grouped_kernel<256, false><<<grid, WG_THREADS, smem(256), s>>>(ty, (const uint8_t*) W, expert_bytes, row_bytes, K,
                                                                                   (const __half*) X, ldx, bounds, mt, Y, ldy);
@@ -7727,15 +8461,14 @@ bool gemm_iq_f16_grouped(int ty, const void* W, size_t expert_bytes, int n_out, 
 }
 
 }  // namespace strata::kernels
-#else
+#if defined(__HIPCC__)
 namespace strata::kernels {
-bool gemm_iq_f16_grouped(int, const void*, size_t, int, int, const void*, int, const int32_t*, int, int, float*, int, void*) {
-    return false;
-}
 bool gemm_iq_i8_takes(int, int) { return false; }
+void gemm_iq_i8_turing(bool) {}
+void gemm_iq_i8_allow(int, bool) {}
 void gemm_iq_i8_quantize(const float*, const int32_t*, int64_t, int64_t, int, void*, void*) {}
 bool gemm_iq_i8_grouped(int, const void*, size_t, int, int, const void*, int64_t, const int32_t*, int, int, const int32_t*, float*,
-                        int64_t, void*, const int32_t*) {
+                        int64_t, void*, const int32_t*, const int64_t*) {
     return false;
 }
 }  // namespace strata::kernels

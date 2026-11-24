@@ -81,8 +81,8 @@ class EngineMissing(acquisition.AcquisitionRefused):
         where = f" in {root}" if root else ""
         RuntimeError.__init__(
             self,
-            (f"{notice} (" if notice else "") + f"No engine for this PC was found{where}: {reason}" + (")" if notice else "") + ". The app never downloads an engine while it "
-            f"starts or serves. Download the engine for your GPU with Update engine in the app's Settings, or with "
+            (f"{notice} (" if notice else "") + f"No engine for this PC was found{where}: {reason}" + (")" if notice else "") + ". A start never downloads an engine, "
+            f"and neither does serving. Download the engine for your GPU with "
             f"`strata update` (or `strata install`) in the Terminal, or copy an engine package into the component folder.")
         self.what = "the engine component"
         self.command = "strata install"
@@ -101,8 +101,8 @@ class EngineIntegrityError(EngineMissing):
         RuntimeError.__init__(
             self,
             f"The engine package failed its integrity check, so it was not started: {reason}. Repair or reinstall "
-            f"the engine component with Update engine in the app's Settings or `strata update` in the Terminal "
-            f"(`strata install` also works); the app never downloads one while it runs.")
+            f"the engine component with `strata update` in the Terminal (`strata install` also works); "
+            f"nothing downloads one while a model runs.")
         self.what = "the engine component"
         self.command = "strata install"
 
@@ -207,18 +207,17 @@ def cached_notice(root: Path | None = None) -> str | None:
     touches the network, so showing it at a start does not break the rule that only an update step downloads.
 
     The notice belongs to the versions the check was made for: it is dropped when Control or the installed engine is not the one
-    recorded then (an app install, an update, a rollback), and an engine that is not newer than the installed one is never offered."""
-    offers = cached_offers(root)
-    parts = ([f"engine {offers['engine']}"] if offers.get("engine") else []) + ([f"app {offers['app']}"] if offers.get("app") else [])
-    return f"update available ({', '.join(parts)}): run `strata update`" if parts else None
+    recorded then (an install, an update, a rollback), and an engine that is not newer than the installed one is never offered."""
+    engine = cached_offers(root).get("engine")
+    return f"update available (engine {engine}): run `strata update`" if engine else None
 
 
 def cached_offers(root: Path | None = None) -> dict:
-    """What the last explicit check found newer, as {"engine": version|None, "app": version|None}; local reads only (the cached
+    """What the last explicit check found newer, as {"engine": version|None}; local reads only (the cached
     check, the installed packages), never the network.  The same rules as `cached_notice`: it belongs to the Control and the packages it was made for,
     and a package that is not newer than the installed one is never offered."""
     base = root or components_dir()
-    none = {"engine": None, "app": None}
+    none = {"engine": None}
     try:
         last = (json.loads((base / UPDATE_STATE).read_text(encoding="utf-8-sig")).get("last_check") or {})
     except (OSError, ValueError, AttributeError):
@@ -228,13 +227,13 @@ def cached_offers(root: Path | None = None) -> dict:
     control = runtime_version()
     if "control" in last and last["control"] != control:
         return none
-    engine, app = last.get("engine"), last.get("app")
+    engine = last.get("engine")
     installed = newest_installed_version(base)
     if "engine_installed" in last and last["engine_installed"] != installed:
         engine = None
     if engine and installed and _version_key(str(engine)) <= _version_key(installed):
         engine = None
-    return {"engine": engine or None, "app": app or None}
+    return {"engine": engine or None}
 
 
 def previous_folder(root: Path | None = None) -> str | None:
@@ -1154,6 +1153,9 @@ def resolve(root: Path | None = None, *, backend: str | None = None, target: str
     archs_here = cuda_archs_present() if wanted == "cuda" else []
     driver_here = nvidia_driver_version() if wanted == "cuda" else None
     hip_here = hip_archs_present() if wanted == "hip" else []
+    if wanted == "hip" and not hip_here and os.name != "nt":
+        hip_here = hip_archs_from_pci()
+    hip_here_base = {a.split(":", 1)[0].lower() for a in hip_here}
     have_runtime = runtime if runtime is not None else runtime_version()
     for item in found:
         label = f"{item.version} {item.platform}-{item.backend}"
@@ -1175,7 +1177,7 @@ def resolve(root: Path | None = None, *, backend: str | None = None, target: str
             reasons.append(f"{label} has code for {', '.join(item.cuda_archs)}, this PC's GPU is "
                            f"{', '.join(archs_here)}")
             continue
-        if item.hip_archs and hip_here and not set(item.hip_archs) & set(hip_here):
+        if item.hip_archs and hip_here_base and not ({a.split(":", 1)[0].lower() for a in item.hip_archs} & hip_here_base):
             reasons.append(f"{label} has code for {', '.join(item.hip_archs)}, this PC's GPU is "
                            f"{', '.join(hip_here)}")
             arch_blocked.append(item)

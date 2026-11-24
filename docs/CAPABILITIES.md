@@ -1,6 +1,6 @@
 # Which model runs on which hardware
 
-This page is built by `tools/capability_table.py` from [docs/data/capabilities.json](data/capabilities.json) and the package names of the Strata project's release v0.2.19 ([docs/data/release.json](data/release.json)). Do not edit it by hand.
+This page is built by `tools/capability_table.py` from [docs/data/capabilities.json](data/capabilities.json) and the package names of the Strata project's release v0.2.20 ([docs/data/release.json](data/release.json)). Do not edit it by hand.
 
 Those packages are the Strata project's engine for its own desktop app and Terminal, which this repository does not publish. PolyStrata's setup installs the same engine for these two families; the hardware setup covers is in [INSTALL.md](INSTALL.md#what-you-need). The models of PolyStrata's own engine are not on this page: see [the README](../README.md#what-you-need) and each model's page.
 
@@ -8,7 +8,7 @@ Those packages are the Strata project's engine for its own desktop app and Termi
 - **Supported**: what these docs commit to. *untested* means a package exists and nothing is claimed.
 - **Measured**: where numbers for that combination are published. Empty means none are published; it does not mean the combination fails.
 
-App and Terminal 0.2.19, Control and engines 0.1.65; these packages stay at 0.1.59: DeepSeek engines linux-x86_64-cuda-cuda13, linux-x86_64-hip-rx9070, macos-arm64-metal, windows-x86_64-cuda-cuda13, windows-x86_64-hip-rdna3. App, Control and engine versions differ on purpose.
+App and Terminal 0.2.20, Control and engines 0.1.66; these packages stay at 0.1.59: DeepSeek engines linux-x86_64-cuda-cuda13, linux-x86_64-hip-rx9070, macos-arm64-metal, windows-x86_64-cuda-cuda13, windows-x86_64-hip-rdna3. App, Control and engine versions differ on purpose.
 
 ## At a glance
 

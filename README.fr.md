@@ -7,14 +7,13 @@ Qwen3.8-Flash-Next, Hy4-Flash, GLM 5.3 Flash, DeepSeek V4 Flash, LFM2.5, Flint, 
 
 <p align="center"><a href="https://github.com/simplexai-labs/linger"><img height="28" alt="Used by Linger" src="docs/media/used-by-linger.svg"></a></p>
 
-<p align="center"><img src="docs/media/speed.svg" width="820" alt="Tokens par seconde pendant l'écriture d'une réponse : Qwen3.6-35B-A3B écrit 98 sur un portable à carte 8 Go et 536 sur une RTX 5090"></p>
+<p align="center"><img src="docs/media/speed.svg" width="820" alt="Tokens par seconde pendant l'écriture d'une réponse : Qwen3.6-35B-A3B écrit 106 sur un portable à carte 8 Go et 536 sur une RTX 5090"></p>
 
 <p align="center"><img src="docs/media/claude-code-demo.gif" width="820" alt="Claude Code dans un terminal à côté de l'API Monitor de PolyStrata"><br>
 <sub>Claude Code avec Qwen3.6-35B-A3B UD-Q3_K_M sur le portable à carte de 8 Go, en temps réel : il ajoute une option <code>--json</code> à un petit programme, écrit un test et lance les tests. Le serveur avait lu le prompt système de Claude Code à son démarrage (<code>"warm_start": true</code>).</sub></p>
 
-<p align="center"><a href="https://github.com/Niko1221/Strata/releases/download/v0.1.10/Pagoda.mp4"><img src="docs/media/pagoda-preview.webp" width="720" alt="Un jardin de pagode en voxels écrit par le modèle de PolyStrata, qui tourne dans le navigateur"></a><br>
-<sub>Un jardin de pagode en voxels, généré en une seule requête sur une RTX 5070 avec <a href="https://github.com/Niko1221/Strata">Strata</a> (Qwen3.8-Flash-Next IQ3_S, contexte de 128K) ·
-<a href="https://github.com/Niko1221/Strata/releases/download/v0.1.10/Pagoda.mp4">vidéo complète (49 s)</a></sub></p>
+<p align="center"><img src="docs/media/linger-inkling-3d.gif" width="820" alt="Linger sur PolyStrata écrit un village en 3D"><br>
+<sub><a href="https://github.com/simplexai-labs/linger">Linger</a> sur PolyStrata : Inkling 2 Mini UD-Q3_K_XL, sur le portable à carte 8 Go, à environ 33 tokens par seconde, écrit un village low-poly dans un seul fichier three.js, et Linger l'ouvre.</sub></p>
 
 PolyStrata fait tourner de grands modèles d'IA sur un PC normal, des modèles qui demandent d'habitude un serveur.
 Ils discutent, écrivent du code et fonctionnent avec vos applications et vos agents de code. Rien ne quitte votre PC.
@@ -77,19 +76,19 @@ Le tableau donne la taille que l'installeur prend pour chaque modèle, en tokens
 
 | Modèle | Portable avec une carte de 8 Go<br>écrit / lit | RTX 5090<br>écrit / lit | Toutes les tailles |
 | --- | ---: | ---: | --- |
-| LFM2.5-24B-A2B | 87 / 3,955 | 492 / 25,275 | [LFM2.5](docs/models/lfm25.fr.md) |
-| Flint 40B-A2.5B | 66 / 2,648 | 261 / 15,033 | [Flint](docs/models/flint.fr.md) |
-| Qwen3.6-35B-A3B | 98 / 2,445 | 536 / 15,319 | [Qwen3.6](docs/models/qwen36.fr.md) |
-| Clover-35B-A3B-Preview | 77 / 2,266 | 308 / 13,918 | [Clover](docs/models/clover.fr.md) |
-| Ornith 1.5 | 89 / 2,298 | 366 / 14,438 | [Ornith](docs/models/ornith.fr.md) |
-| Gemma 4 26B-A4B | 96 / 2,174 | 370 / 11,478 | [Gemma 4](docs/models/gemma4.fr.md) |
-| Tiel Coder 35B-A3B | 91 / 2,455 | 440 / 15,109 | [Tiel Coder](docs/models/tiel.fr.md) |
-| MiniCPM-V 4.7 35B-A3B | 79 / 2,288 | 331 / 14,615 | [MiniCPM-V](docs/models/minicpmv.fr.md) |
-| Kolibri 1 | 63 / 843 | 207 / 6,133 | [Kolibri 1](docs/models/kolibri.fr.md) |
+| LFM2.5-24B-A2B | 86 / 4,035 | 492 / 25,275 | [LFM2.5](docs/models/lfm25.fr.md) |
+| Flint 40B-A2.5B | 64 / 2,643 | 261 / 15,033 | [Flint](docs/models/flint.fr.md) |
+| Qwen3.6-35B-A3B | 106 / 2,483 | 536 / 15,319 | [Qwen3.6](docs/models/qwen36.fr.md) |
+| Clover-35B-A3B-Preview | 83 / 2,242 | 308 / 13,918 | [Clover](docs/models/clover.fr.md) |
+| Ornith 1.5 | 87 / 2,362 | 366 / 14,438 | [Ornith](docs/models/ornith.fr.md) |
+| Gemma 4 26B-A4B | 92 / 2,187 | 370 / 11,478 | [Gemma 4](docs/models/gemma4.fr.md) |
+| Tiel Coder 35B-A3B | 89 / 2,517 | 440 / 15,109 | [Tiel Coder](docs/models/tiel.fr.md) |
+| MiniCPM-V 4.7 35B-A3B | 79 / 2,263 | 331 / 14,615 | [MiniCPM-V](docs/models/minicpmv.fr.md) |
+| Kolibri 1 | 66 / 851 | 207 / 6,133 | [Kolibri 1](docs/models/kolibri.fr.md) |
 | GLM 5.3 Flash | ne tourne pas : il faut une carte de 32 Go | 52 / 863 | [GLM](docs/models/glm.fr.md) |
 | DeepSeek V4 Flash | ne tourne pas : il faut une carte de 32 Go | 54 / 1,926 | [DeepSeek](docs/models/deepseek.fr.md) |
-| Inkling 2 Mini | 56 / 887 | 196 / 6,706 | [Inkling 2 Mini](docs/models/inkling.md) |
-| Groot 19B-A3B 261023 | 91 / 2,789 | 458 / 15,634 | [Groot](docs/models/groot.md) |
+| Inkling 2 Mini | 53 / 892 | 196 / 6,706 | [Inkling 2 Mini](docs/models/inkling.md) |
+| Groot 19B-A3B 261023 | 97 / 2,785 | 458 / 15,634 | [Groot](docs/models/groot.md) |
 | Hy4-Flash | ne tourne pas : il faut 64 Go de RAM | 90-111 / 1,694 | [Hy4-Flash](https://github.com/Niko1221/Strata/releases/tag/v0.2.18) |
 
 Portable : RTX 4070 Laptop (8 Go), Core i7-14700HX, 32 Go de RAM. Station de travail : RTX 5090 (32 Go), Xeon Platinum 8470Q (25 vCPU), 90 à 120 Go de RAM. Flint est en UD-Q3_K_XL sur le portable, la taille que l'installeur prend avec 32 Go de RAM, et en UD-Q4_K_XL sur la station de travail. Kolibri 1 est en Q2_K sur les deux ; sur la station de travail, l'installeur prend Q4_K_M, qui n'a pas été mesuré.
@@ -217,8 +216,9 @@ Il vous pose quelques questions :
 
 Appuyez sur Entrée à chaque fois pour garder la réponse recommandée. Ensuite il télécharge le modèle (environ 70 Go pour
 Qwen3.8-Flash-Next, 79 à 114 Go pour GLM 5.3 Flash, 91 Go pour DeepSeek V4 Flash, 29 à 48 Go pour Kolibri 1, 11 à 42 Go pour les huit autres)
-et le démarre. Si le téléchargement s'arrête, relancez-le : il reprend là où il s'était arrêté. Votre navigateur
-ouvre l'application PolyStrata à l'adresse `http://127.0.0.1:8080`.
+et le démarre. Si le téléchargement s'arrête, relancez-le : il reprend là où il s'était arrêté. Quand le modèle est
+prêt, son API est à l'adresse `http://127.0.0.1:8080/v1`. Si vous voulez une application pour discuter avec lui, nous
+recommandons [Linger](https://github.com/simplexai-labs/linger). Toute application compatible avec l'API d'OpenAI ou d'Anthropic marche aussi.
 
 Les quatorze figurent dans la liste des modèles de l'installeur. `./setup.sh --family glm`, `deepseek`, `lfm25`, `flint`, `qwen36`, `clover`,
 `ornith`, `gemma4`, `tiel`, `minicpmv`, `kolibri`, `groot` ou `inkling` mène directement à l'un d'eux ([ce qu'il demande et écrit](docs/GLM.md#install), en anglais).
@@ -229,6 +229,7 @@ Les quatorze figurent dans la liste des modèles de l'installeur. `./setup.sh --
 
 **La fois suivante**, relancez `START-HERE.bat` (ou `./setup.sh`). Il démarre tout de suite et ne télécharge rien
 deux fois. Fermez sa fenêtre pour arrêter le modèle. `UPDATE.bat` (`./setup.sh --update`) met PolyStrata à jour sans le démarrer.
+Depuis 0.1.45-poly.10 ou plus ancien : les fichiers de setup sont maintenant dans `terminal/` ([quoi changer](docs/INSTALL.md#coming-from-0145-poly10-or-older)).
 Mises à jour, plusieurs cartes, emplacement des fichiers et toutes les options : [docs/INSTALL.md](docs/INSTALL.md).
 
 **C'est rapide sur votre PC ?** Lancez `tools/BENCH.bat` (`tools/bench.sh`) : 5 à 10 minutes environ ; il mesure le chat, des prompts de 4K/16K et une session de type agent avec vos propres réglages, et écrit un rapport à partager ([comment](docs/COMMUNITY_BENCHMARKS.md#run-the-benchmark)).
@@ -259,20 +260,19 @@ Ce qu'est chaque taille, son téléchargement, la RAM qu'elle demande à côté 
 
 ## Utilisation
 
-Les quatorze modèles s'utilisent de la même façon : la même application, la même API.
+Les quatorze modèles s'utilisent de la même façon, avec la même API.
 
-<p align="center"><img src="docs/media/runpagoda.png" width="900" alt="L'onglet Monitor de l'application PolyStrata à côté d'un agent de code"><br>
-<sub>Le <b>Monitor</b> de l'application PolyStrata (à gauche) pendant qu'un agent de code écrit le jardin de pagode de la vidéo (à droite). Une capture d'écran de <a href="https://github.com/Niko1221/Strata">Strata</a>.</sub></p>
+<p align="center"><a href="https://github.com/simplexai-labs/linger"><img src="docs/media/linger-desktop.jpg" width="900" alt="Linger sur un Mac : un salon de discussion où les agents rendent compte de leur travail, à côté des fenêtres Chrome où ils travaillent"></a><br>
+<sub><a href="https://github.com/simplexai-labs/linger">Linger</a> : plusieurs agents se partagent un ordinateur et le navigateur où vous êtes déjà connecté. Une image du projet Linger.</sub></p>
 
-- **Dans le navigateur :** ouvrez `http://127.0.0.1:8080`. Vous y trouvez **Chat**, un **Monitor** en direct du
-  modèle et de votre GPU/CPU/RAM, **Requests**, qui ouvre le [moniteur des requêtes de l'API](docs/DETAILS.md#api-request-monitor)
-  dans un onglet à part une fois activé, et **About** avec les réglages et les adresses. Avec plusieurs modèles installés,
-  la liste en haut de la page passe de l'un à l'autre ; un changement ouvre une nouvelle conversation, et **Undo** ramène
-  l'ancienne.
+- **Comme agent personnel :** nous recommandons [Linger](https://github.com/simplexai-labs/linger). Téléchargez-le pour Mac (Apple Silicon), Windows ou
+  Linux depuis [sa dernière version](https://github.com/simplexai-labs/linger/releases/latest).
 - **Dans un terminal :** `python polystrata.py --model <name>` dans le dossier PolyStrata ouvre une discussion avec un
   modèle installé, et `--list-models` les liste ([plus](docs/INSTALL.md#the-terminal)).
-- **Comme agent personnel :** téléchargez [Linger](https://github.com/simplexai-labs/linger) pour [Mac (Apple Silicon)](https://github.com/simplexai-labs/linger/releases/download/desktop-v0.1.2/Linger-0.1.2-macos-arm64.dmg) ·
-  [Windows](https://github.com/simplexai-labs/linger/releases/download/desktop-v0.1.2/Linger-0.1.2-windows-x64-setup.exe) · [Linux](https://github.com/simplexai-labs/linger/releases/download/desktop-v0.1.2/Linger-0.1.2-linux-x64.tar.gz).
+- **Dans le navigateur :** `http://127.0.0.1:8080` affiche un **Monitor** en direct du
+  modèle et de votre GPU/CPU/RAM, **Requests**, qui ouvre le [moniteur des requêtes de l'API](docs/DETAILS.md#api-request-monitor)
+  dans un onglet à part une fois activé, et **About** avec les réglages et les adresses. Avec plusieurs modèles installés,
+  la liste en haut de la page passe de l'un à l'autre.
 - **Vos applications et agents de code :** ajoutez un fournisseur « OpenAI-compatible » avec l'URL de base
   **`http://127.0.0.1:8080/v1`**. N'importe quelle clé API et n'importe quel nom de modèle fonctionnent.
   - Applications qui utilisent l'API d'Anthropic : `http://127.0.0.1:8080/v1/messages` (Claude Code :
@@ -280,7 +280,7 @@ Les quatorze modèles s'utilisent de la même façon : la même application, la 
     ([pourquoi](docs/FAQ.md#can-i-use-it-with-claude-code-codex-or-other-apps))).
   - Codex CLI et les autres applications qui utilisent l'API OpenAI Responses : `/v1/responses`
     ([configuration](docs/DETAILS.md#the-responses-api-and-codex-cli)).
-- **Réflexion :** choisissez **off, low, medium ou high** dans le menu du chat ou dans le « reasoning effort » de
+- **Réflexion :** choisissez **off, low, medium ou high** dans le réglage « reasoning effort » de
   votre application. Off est le plus rapide. High est le meilleur pour les questions difficiles.
 - **Depuis votre téléphone ou un autre PC :** `START-HERE.bat --setup --host 0.0.0.0 --api-key <secret>`. Définissez
   toujours une clé.
@@ -289,12 +289,12 @@ Là où ils diffèrent :
 
 | | Qwen3.8-Flash-Next | GLM 5.3 Flash | DeepSeek V4 Flash | LFM2.5-24B-A2B | Flint 40B-A2.5B | Kolibri 1 | Qwen3.6-35B-A3B, Clover-35B-A3B-Preview, Ornith 1.5, Gemma 4 26B-A4B, Tiel Coder 35B-A3B, MiniCPM-V 4.7 35B-A3B |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| **Images** | Répondez oui à « Images? » pendant l'installation. Ensuite cliquez sur **Picture** dans le chat, ou joignez des images dans votre application. Avec moins de 24 Go de mémoire graphique, l'encodeur d'images tourne sur le processeur, chez NVIDIA comme chez AMD. | Pas encore. | Il ne lit que du texte. | Il ne lit que du texte. | Il ne lit que du texte. | Il ne lit que du texte. | Répondez oui à « Images? » pendant l'installation, puis comme avec Qwen3.8-Flash-Next. Sur une carte de moins de 16 Go, l'encodeur d'images tourne sur le processeur, et une image prend quelques secondes. Clover ne lit que du texte. |
+| **Images** | Répondez oui à « Images? » pendant l'installation. Ensuite joignez des images dans votre application. Avec moins de 24 Go de mémoire graphique, l'encodeur d'images tourne sur le processeur, chez NVIDIA comme chez AMD. | Pas encore. | Il ne lit que du texte. | Il ne lit que du texte. | Il ne lit que du texte. | Il ne lit que du texte. | Répondez oui à « Images? » pendant l'installation, puis comme avec Qwen3.8-Flash-Next. Sur une carte de moins de 16 Go, l'encodeur d'images tourne sur le processeur, et une image prend quelques secondes. Clover ne lit que du texte. |
 | **Une requête à la fois** | Par défaut, PolyStrata répond à une requête et les autres attendent. Pour répondre à plusieurs en même temps, mettez `"parallel": 2` ([BATCHING.md](docs/BATCHING.md)). Sur une carte de 12 Go, chaque réponse devient alors plus lente. | Une à la fois, les autres attendent. | Une à la fois, les autres attendent. | Une à la fois, les autres attendent. | Une à la fois, les autres attendent. | Une à la fois, les autres attendent. | Une à la fois, les autres attendent. |
 | **Plusieurs discussions** | Par défaut, plusieurs restent en RAM tant qu'il y a la place, donc les messages suivants et les agents qui se relaient démarrent en quelques secondes ([détails](docs/DETAILS.md#conversation-cache)). | La dernière est conservée. L'installation demande s'il faut en garder plusieurs en RAM, pour qu'un agent et ses sous-agents se relaient sans que leurs prompts soient relus ([comment](docs/GLM.md#several-conversations-at-once)). | Comme GLM 5.3 Flash. | Comme GLM 5.3 Flash. | Comme GLM 5.3 Flash. | Comme GLM 5.3 Flash. | Comme GLM 5.3 Flash. |
 | **Longs prompts** | PolyStrata lit en entier le premier message d'une discussion, environ 1 minute pour 30,000 tokens. Les messages suivants démarrent en quelques secondes. | Le premier message est lu en entier, environ 40 secondes pour 30,000 tokens. | Le premier message est lu en entier, environ 29 secondes pour 30,000 tokens. | Le premier message est lu en entier : 30,000 tokens prennent 1,3 à 1,5 seconde sur la station de travail et 8 à 10 secondes sur le portable de 8 Go. | Le premier message est lu en entier : 30,000 tokens prennent environ 2,3 secondes sur la station de travail et 15 à 22 secondes sur le portable de 8 Go. | Le premier message est lu en entier : 30,000 tokens prennent avec Q2_K environ 6 secondes sur la station de travail et environ 40 secondes sur le portable de 8 Go. | Le premier message est lu en entier : 30,000 tokens prennent 4 à 5 secondes sur la station de travail et 14 à 27 secondes sur le portable de 8 Go. |
 
-Plus d'infos : [où sont stockées vos discussions](docs/INSTALL.md#where-things-are-stored), [l'API](docs/DETAILS.md#using-it).
+Plus d'infos : [où sont stockés les fichiers](docs/INSTALL.md#where-things-are-stored), [l'API](docs/DETAILS.md#using-it).
 
 ### Optionnel : plus de vitesse sur une seule carte quand tout le modèle tient en RAM
 

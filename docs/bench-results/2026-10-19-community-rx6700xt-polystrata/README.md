@@ -36,21 +36,21 @@ Short-chat decode speed is not generation speed after a full context. Read the l
 
 | Profile | Short-chat median, tok/s | 16K prompt median, tok/s | Official report |
 | --- | ---: | ---: | --- |
-| qwen36-ud-q3_k_m-reserve1024-ctx32768 | 75.8 | 1104.0 | [report](runs/qwen36-ud-q3_k_m-reserve1024-ctx32768/official-standard/2026-10-19-community-cpu-qwen3-6-35b-a3b-ud-q3-k-m/README.md) |
-| qwen36-ud-q3_k_m-reserve1024-ctx65536 | 79.9 | 1103.4 | [report](runs/qwen36-ud-q3_k_m-reserve1024-ctx65536/official-long/2026-10-19-community-cpu-qwen3-6-35b-a3b-ud-q3-k-m/README.md) |
-| ornith-apex-i-compact-reserve1024-ctx32768 | 68.5 | 989.2 | [report](runs/ornith-apex-i-compact-reserve1024-ctx32768/official-standard/2026-10-19-community-cpu-ornith-1-5-35b-a3b-apex-i-compact/README.md) |
-| ornith-apex-i-compact-reserve1024-ctx65536 | 69.2 | 991.5 | [report](runs/ornith-apex-i-compact-reserve1024-ctx65536/official-long/2026-10-19-community-cpu-ornith-1-5-35b-a3b-apex-i-compact/README.md) |
-| tiel-ud-q3_k_xl-reserve1024-ctx32768 | 71.0 | 1077.7 | [report](runs/tiel-ud-q3_k_xl-reserve1024-ctx32768/official-standard/2026-10-19-community-cpu-tiel-coder-35b-a3b-ud-q3-k-xl/README.md) |
-| tiel-ud-q3_k_xl-reserve1024-ctx65536 | 68.7 | 1088.3 | [report](runs/tiel-ud-q3_k_xl-reserve1024-ctx65536/official-long/2026-10-19-community-cpu-tiel-coder-35b-a3b-ud-q3-k-xl/README.md) |
-| gemma4-ud-q4_k_m-reserve1024-ctx32768 | 73.5 | 988.3 | [report](runs/gemma4-ud-q4_k_m-reserve1024-ctx32768/official-standard/2026-10-19-community-cpu-gemma-4-26b-a4b-ud-q4-k-m/README.md) |
-| gemma4-ud-q4_k_m-reserve1024-ctx65536 | 73.9 | 985.3 | [report](runs/gemma4-ud-q4_k_m-reserve1024-ctx65536/official-long/2026-10-19-community-cpu-gemma-4-26b-a4b-ud-q4-k-m/README.md) |
-| minicpmv-mix_q3gud_im-reserve1024-ctx32768 | 59.2 | 1008.2 | [report](runs/minicpmv-mix_q3gud_im-reserve1024-ctx32768/official-standard/2026-10-19-community-cpu-minicpm-v-4-7-35b-a3b-mix-q3gud-im/README.md) |
-| minicpmv-mix_q3gud_im-reserve1024-ctx65536 | 59.2 | 1006.1 | [report](runs/minicpmv-mix_q3gud_im-reserve1024-ctx65536/official-long/2026-10-19-community-cpu-minicpm-v-4-7-35b-a3b-mix-q3gud-im/README.md) |
-| lfm25-ud-q4_k_xl-reserve1024-ctx32768 | 84.0 | 1501.2 | [report](runs/lfm25-ud-q4_k_xl-reserve1024-ctx32768/official-standard/2026-10-19-community-cpu-lfm2-5-24b-a2b-ud-q4-k-xl/README.md) |
-| lfm25-ud-q4_k_xl-reserve1024-ctx65536 | 80.5 | 1490.1 | [report](runs/lfm25-ud-q4_k_xl-reserve1024-ctx65536/official-long/2026-10-19-community-cpu-lfm2-5-24b-a2b-ud-q4-k-xl/README.md) |
-| qwen36-ud-q4_k_m-control-reserve1024-ctx32768 | 80.7 | 1019.4 | [report](runs/qwen36-ud-q4_k_m-control-reserve1024-ctx32768/official-control/2026-10-19-community-cpu-qwen3-6-35b-a3b-ud-q4-k-m/README.md) |
-| qwen36-ud-q4_k_m-control-reserve1024-ctx65536 | 79.7 | 1021.3 | [report](runs/qwen36-ud-q4_k_m-control-reserve1024-ctx65536/official-control/2026-10-19-community-cpu-qwen3-6-35b-a3b-ud-q4-k-m/README.md) |
-| qwen36-ud-q3_k_m-ctx32768 | 78.2 | 1103.6 | [report](runs/qwen36-ud-q3_k_m-ctx32768/official-standard/2026-10-19-community-cpu-qwen3-6-35b-a3b-ud-q3-k-m/README.md) |
+| qwen36-ud-q3_k_m-reserve1024-ctx32768 | 75.8 | 1104.0 | [report](runs/qwen36-ud-q3_k_m-reserve1024-ctx32768/official-standard/report/README.md) |
+| qwen36-ud-q3_k_m-reserve1024-ctx65536 | 79.9 | 1103.4 | [report](runs/qwen36-ud-q3_k_m-reserve1024-ctx65536/official-long/report/README.md) |
+| ornith-apex-i-compact-reserve1024-ctx32768 | 68.5 | 989.2 | [report](runs/ornith-apex-i-compact-reserve1024-ctx32768/official-standard/report/README.md) |
+| ornith-apex-i-compact-reserve1024-ctx65536 | 69.2 | 991.5 | [report](runs/ornith-apex-i-compact-reserve1024-ctx65536/official-long/report/README.md) |
+| tiel-ud-q3_k_xl-reserve1024-ctx32768 | 71.0 | 1077.7 | [report](runs/tiel-ud-q3_k_xl-reserve1024-ctx32768/official-standard/report/README.md) |
+| tiel-ud-q3_k_xl-reserve1024-ctx65536 | 68.7 | 1088.3 | [report](runs/tiel-ud-q3_k_xl-reserve1024-ctx65536/official-long/report/README.md) |
+| gemma4-ud-q4_k_m-reserve1024-ctx32768 | 73.5 | 988.3 | [report](runs/gemma4-ud-q4_k_m-reserve1024-ctx32768/official-standard/report/README.md) |
+| gemma4-ud-q4_k_m-reserve1024-ctx65536 | 73.9 | 985.3 | [report](runs/gemma4-ud-q4_k_m-reserve1024-ctx65536/official-long/report/README.md) |
+| minicpmv-mix_q3gud_im-reserve1024-ctx32768 | 59.2 | 1008.2 | [report](runs/minicpmv-mix_q3gud_im-reserve1024-ctx32768/official-standard/report/README.md) |
+| minicpmv-mix_q3gud_im-reserve1024-ctx65536 | 59.2 | 1006.1 | [report](runs/minicpmv-mix_q3gud_im-reserve1024-ctx65536/official-long/report/README.md) |
+| lfm25-ud-q4_k_xl-reserve1024-ctx32768 | 84.0 | 1501.2 | [report](runs/lfm25-ud-q4_k_xl-reserve1024-ctx32768/official-standard/report/README.md) |
+| lfm25-ud-q4_k_xl-reserve1024-ctx65536 | 80.5 | 1490.1 | [report](runs/lfm25-ud-q4_k_xl-reserve1024-ctx65536/official-long/report/README.md) |
+| qwen36-ud-q4_k_m-control-reserve1024-ctx32768 | 80.7 | 1019.4 | [report](runs/qwen36-ud-q4_k_m-control-reserve1024-ctx32768/official-control/report/README.md) |
+| qwen36-ud-q4_k_m-control-reserve1024-ctx65536 | 79.7 | 1021.3 | [report](runs/qwen36-ud-q4_k_m-control-reserve1024-ctx65536/official-control/report/README.md) |
+| qwen36-ud-q3_k_m-ctx32768 | 78.2 | 1103.6 | [report](runs/qwen36-ud-q3_k_m-ctx32768/official-standard/report/README.md) |
 
 ## Failures and limits
 

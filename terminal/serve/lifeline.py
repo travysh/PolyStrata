@@ -270,6 +270,27 @@ def _own_group(then=None):
     return run
 
 
+def _open_or_devnull(target, role: str):
+    """stdout / stderr for Popen: as given, or DEVNULL when it is a file whose descriptor has no open file behind it.
+    #154: a server log closed under its file object (v0.2.19-poly.1's vision_log_tail, #6467) made Popen raise
+    OSError [Errno 0] in msvcrt.get_osfhandle when the CPU picture reader started, and the server ended over a log.
+    A child's output is not worth a start, so it goes nowhere, with one line that says so."""
+    if target is None or isinstance(target, int) and target < 0:      # inherited, PIPE, STDOUT, DEVNULL
+        return target
+    try:
+        fd = target if isinstance(target, int) else target.fileno()
+        if os.name == "nt":
+            import msvcrt
+            if msvcrt.get_osfhandle(fd) < 0:                           # -2: a std handle a windowless parent never had
+                raise OSError(f"descriptor {fd} has no handle")
+        else:
+            os.fstat(fd)
+        return target
+    except (OSError, ValueError, AttributeError) as e:                 # io.UnsupportedOperation is both of the first two
+        print(f"[strata] the log of the {role} process is not open ({e}): what it prints is dropped", flush=True)
+        return subprocess.DEVNULL
+
+
 def popen(args, role: str = "engine", **kw) -> subprocess.Popen:
     """``subprocess.Popen(args, **kw)`` for a process that must not outlive us.
 
@@ -280,6 +301,9 @@ def popen(args, role: str = "engine", **kw) -> subprocess.Popen:
 
     It also leaves a record (strata_control/procs.py) so that, if everything here dies anyway, the next start can
     find this process by PID, start time and command line and end it."""
+    for name in ("stdout", "stderr"):
+        if name in kw:
+            kw[name] = _open_or_devnull(kw[name], role)
     how = mechanism()
     isolate = role in ISOLATED_ROLES
     if isolate and os.name == "nt":

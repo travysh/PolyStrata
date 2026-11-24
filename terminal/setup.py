@@ -37,7 +37,7 @@ answers, no questions), --setup (install another model / change settings instead
 --models-dir DIR, --gguf-dir DIR (use GGUF files you already have), --build (compile instead of the ready-made
 engine), --max-compatibility (with --build on Windows: an engine that also runs on other PCs), --check (only check
 this PC), --resident-budget-gib N (UD-Q4_K_XL's or UD-IQ4_XS's experts in RAM),
---kv-streaming on|off|auto.
+--kv-streaming on|off|auto, --inkling-small-card on|off.
 
 Setup recommends, it never forces: the recommended answers are the defaults (--yes, or Enter), and a bigger choice
 than it recommends - a longer context, more GPUs, a bigger RAM budget, a size it thinks will not fit - is kept, with
@@ -302,9 +302,12 @@ LLAMA_CPP_COMMIT = "3cf03257f219afbe7334045ff7c6a06ac68c627d"
 # by tools/make_release.py.  Set this to the GitHub release download folder when publishing, e.g.
 # "https://github.com/<you>/PolyStrata/releases/latest/download/" (or pass --prebuilt / set STRATA_PREBUILT_URL).
 # With the default, the release of this checkout's own version (PREBUILT_TAG_URL, CMakeLists.txt's version) is
-# tried first and the latest release is the fallback (#214): an older checkout keeps the engine it shipped with.
-# The Qwen engine is the Strata project's, unchanged, so its ready-made build comes from that project's releases.
-PREBUILT_URL = "https://github.com/Niko1221/Strata/releases/latest/download/"
+# tried first and PREBUILT_URL is the fallback (#214): an older checkout keeps the engine it shipped with.
+# The Qwen engine is the Strata project's, unchanged, so its ready-made build comes from that project's releases:
+# (PolyStrata) the release this tree was merged from (update_cmd.STRATA_RELEASE), not the latest one (#244), and the
+# signed feed that has the 0.2 engines is that release's too (update_cmd.DEFAULT_FEED).
+from strata_cli import update_cmd  # noqa: E402
+PREBUILT_URL = f"{update_cmd.STRATA_RELEASES}download/{update_cmd.STRATA_RELEASE}/"
 # The repository the release assets and their SHA-256 come from; `engine_digest` reads the API here even
 # when --prebuilt points the download somewhere else, because the hash is only worth having if it comes
 # from somewhere the download does not.
@@ -879,7 +882,7 @@ FAMILIES = {
     # for the family whose answers it moves no more than the Strata project's default moves its own (docs/BACKENDS.md).
     # "small_card_args": engine flags for a card that does not hold every expert of the size (poly_held_gb()), where a
     # token is bound by the bytes it reads from VRAM and by the experts the CPU computes; a card that holds them all
-    # runs as before.
+    # runs as before.  --inkling-small-card off leaves them out, and a later setup run keeps that (poly_small_card()).
     # "laptop_tps": tokens/s written after a prompt that fills each context on the 8 GB laptop, where the family's
     # differ from the others'.
     # "batch_gb": the VRAM the engine's prompt batch takes for a second 1,024 tokens, measured on the RTX 5090; a card
@@ -927,17 +930,23 @@ FAMILIES = {
     # Inkling 2 Mini (llama.cpp's inkling2_loop): 24 layers of weights run as 48, the middle twelve three times, so a
     # context token is the rows of the eight full-attention applications ("row_bytes"); the forty window ones keep
     # rings.  The files are the repository's Mainline_Support ones, the layout llama.cpp runs: the repository names them
-    # .gguf_file ("remote_suffix") and its top-level files are another layout (architecture inkling2), which the
-    # engine refuses.  The engine keeps one sequence's state for it, so it answers one
-    # request at a time ("one_request": setup writes "parallel": 1).  "vram_beside_gb" is the peak VRAM measured on an RTX 5090 with no expert on the card, a 10,081-token
+    # .gguf_file ("remote_suffix").  Its top-level files are Unsloth's layout (architecture inkling2), which the
+    # engine also reads: a --gguf-dir or --custom-gguf file of either is taken.  "parallel" (the engine's batch slots) is
+    # opt-in as for the other strata-poly families; on a Mac the engine keeps one sequence's state for it, so it answers
+    # one request at a time there ("one_request": "mac": setup_mac.py writes "parallel": 1).  "vram_beside_gb" is the peak VRAM measured on an RTX 5090 with no expert on the card, a 10,081-token
     # prompt read 1,024 tokens at a time at a 32K context (2,916 MiB), plus the rows of the context's other tokens.
     "inkling": {"title": "Inkling 2 Mini", "by": "Thinking Machines; quantized by Unsloth",
-                "about": "experimental, on the strata-poly engine: one NVIDIA card, Linux or Windows, or a Mac (beta), "
-                         "reads pictures; a 17.6 GB file, or 13.6 or 9.1 GB",
+                "about": "experimental, on the strata-poly engine: one NVIDIA card, Linux or Windows, or a Mac (beta); "
+                         "AMD cards are not ready (docs/models/inkling.md); reads pictures; a 17.6 GB file, or 13.6 or 9.1 GB",
                 "hf": hf("unsloth/Inkling-2-Mini-GGUF") + "Mainline_Support/", "file": "Inkling-2-Mini-{q}.gguf",
                 "remote_suffix": "_file", "shards": 1,
                 "tag": "inkling-", "name": "inkling-2-mini", "engine": "poly", "vision": True, "experimental": True,
-                "windows": True, "ran_on_gb": 8, "row_bytes": 32768, "one_request": True,
+                # --custom-gguf takes a file of another quantization (IQ4_NL, Q4_K_M, ...) as a size of its own
+                "custom_sizes": True,
+                "windows": True, "ran_on_gb": 8, "row_bytes": 32768, "one_request": "mac",
+                # the engine's layer split is not built for Inkling 2 yet: it exits with "Inkling 2 runs on one
+                # card (--layer-split is not supported for it yet)", so setup never offers a pair to this family
+                "one_card": True,
                 # the picture reader: Unsloth's mmproj (strata-vision's inkling2v tower), beside the GGUFs' folder.  On
                 # a Mac the tower has no Metal kernels: setup_mac.py runs it on the CPU ("mac_vision_cpu")
                 "mmproj_hf": hf("unsloth/Inkling-2-Mini-GGUF"), "mmproj": "mmproj-F16.gguf", "mac_vision_cpu": True,
@@ -947,7 +956,10 @@ FAMILIES = {
                 # UD-Q3_K_XL on the RTX 4070 Laptop (8 GB), the README's benchmark, medians of 3 rounds: 43.7 -> 55.8
                 # tokens/s written in the short chat, 439 -> 466 read and 33.6 -> 41.9 written after the long prompt;
                 # the same most likely token as without them at 96.7% of 1,280 steps, the default run again at 98.3%
-                "small_card_args": ["--attn-requant", "q5_0", "--loop-bf16", "--tail-skip", "4", "--expert-swaps", "0"],
+                # (measured with --expert-swaps 0 as well, since dropped: it keeps the experts held as they were loaded,
+                # so the CPU computes more of a token's experts; 16-23% slower writing after a 302-token prompt on the
+                # 8 and 16 GB cards measured)
+                "small_card_args": ["--attn-requant", "q5_0", "--loop-bf16", "--tail-skip", "4"],
                 "models": {"UD-Q4_K_XL": {"about": "4-bit experts (NVFP4, Unsloth Dynamic), 8-bit where they write",
                                           "download_gb": 17.6, "ram_gb": 21, "arena_gb": 15.797846016,
                                           "vram_beside_gb": 3.7},
@@ -1344,7 +1356,7 @@ OWN_PATH_FAMILIES = {
 }
 PREVIEW_FAMILIES = OWN_PATH_FAMILIES             # the earlier name (tools and tests that import it)
 
-# Tencent Hy4-Flash (220B-A12B), Strata's own `.strata` v1.0 builds: a family with its own engine program (strata-hy4, a component like a model shape's engine), its own files
+# Tencent Hy4-Flash (220B-A12B), the Strata project's own `.strata` v1.0 builds: a family with its own engine program (strata-hy4, a component like a model shape's engine), its own files
 # (one build + the Engram shard every build shares + an optional Vision shard) and its own installer, install_hy4_flash.  Not in OWN_PATH_FAMILIES: that table's installer is
 # the single-GGUF one (mmproj, MTP, GGUF tokenizer) and its membership is pinned by tests.  The files, sizes and rules are strata_control/hy4_family.py and hy4_fit.py.
 from strata_control import hy4_family, hy4_fit  # noqa: E402
@@ -1380,8 +1392,9 @@ VISION = {"gpu": {"max_tokens": 1024, "reserve_mib": 700},
 EXE = "strata.exe" if WIN else "strata"
 VEXE = "strata-vision.exe" if WIN else "strata-vision"
 # The engine of GLM 5.3 Flash and of the models that are read from one GGUF (docs/BACKENDS.md), in a folder of its
-# own like the CUDA 12 engine's, so the ready-made engine beside it stays as it was downloaded.  On Windows it comes
-# ready-made when the latest release was built from this checkout's engine source, and is compiled here otherwise.
+# own like the CUDA 12 engine's, so the ready-made engine beside it stays as it was downloaded.  On Windows and x86-64
+# Linux it comes ready-made when the latest release was built from this checkout's engine source, and is compiled here
+# otherwise.
 # It was called strata-glm, after its first model, and an install from then has that name and folder in its run
 # config (poly_config(), update_poly_engine()).
 POLY_EXE = "strata-poly.exe" if WIN else "strata-poly"
@@ -1390,7 +1403,9 @@ POLY_EXE = "strata-poly.exe" if WIN else "strata-poly"
 # another folder, a local one too.
 POLY_PREBUILT_URL = os.environ.get("STRATA_POLY_PREBUILT_URL",
                                    "https://github.com/simplexai-labs/PolyStrata/releases/latest/download/")
-POLY_ASSET = "strata-poly-windows-x64-{src}.zip"
+# Linux (#181): the tarball the release makes on Linux (strata-poly and strata-vision with CUDA 13.0 for the same cards;
+# glibc 2.34 and GCC 12's libstdc++ or newer), its <src> the source_hash() a Linux checkout computes
+POLY_ASSET = "strata-poly-windows-x64-{src}.zip" if WIN else "strata-poly-linux-x64-cuda13-{src}.tar.gz"
 # A model of strata-poly that reads pictures has its image encoder on the GPU from this much VRAM (GiB), and on the
 # CPU below it: the encoder holds 1.6 to 2.4 GB there, which a smaller card needs for the model
 POLY_VISION_GPU_GB = 15.5
@@ -1732,9 +1747,11 @@ _OWN_DIRS: list = []                                   # --gguf-dir: folders of 
 def own_files_in(folder) -> None:
     """PolyStrata writes nothing beside the person's own model files (lane NET item 5): their finish marks are kept in marks/ (_kept_mark)."""
     try:
-        _OWN_DIRS.append(Path(folder).expanduser().resolve())
+        p = Path(folder).expanduser().resolve()
+        _OWN_DIRS.append(p.parent if p.is_file() else p)
     except OSError:
-        _OWN_DIRS.append(Path(folder).expanduser())
+        p = Path(folder).expanduser()
+        _OWN_DIRS.append(p.parent if p.is_file() else p)
 
 
 def _is_own_file(path: Path) -> bool:
@@ -4371,7 +4388,7 @@ def sha256_matches(s: Path, size: int, sha: str) -> bool:
 # code by; the families not listed are qwen35moe
 POLY_GGUF_ARCHS = {"glm": ("glm5-next", "glm5next"), "deepseek": ("deepseek4",), "lfm25": ("lfm2moe",),
                    "gemma4": ("gemma4",), "flint": ("flint",), "kolibri": ("kolibri1",), "clover": ("clover_moe",),
-                   "inkling": ("inkling2_loop",)}
+                   "inkling": ("inkling2_loop", "inkling2")}
 
 
 def gguf_arch(s: Path) -> str:
@@ -7803,20 +7820,27 @@ def kv_streaming_need_gb(model, ctx, kv) -> float:
     for the engine (Linux mimic): streaming gave 756 -> 1,267 expert slots and a 32K prompt in 12-17 s instead of
     21-34 s, with the RAM the engine used unchanged (RAM budget 31 -> 29 GiB); on the owner's RTX 5070 (R5070's
     run) 924 -> 1,585 slots, a 32K prompt 130 -> 79 s, the RAM copy 30.8 -> 28.9 GiB, no paging.  Rule (1) alone
-    asked 64.8 GB of a PC that reads 63.1 and left the KV in VRAM."""
+    asked 64.8 GB of a PC that reads 63.1 and left the KV in VRAM.
+    #6354: Unsloth budget-mode quants subtract KV RAM from --resident-budget-gib, so streaming works cleanly from
+    16 GB RAM up (keeping 12 GB OS headroom + KV RAM)."""
     kv_gb = kv_streaming_ram_gb(ctx, kv)
     m = MODELS[model]
+    if m.get("budget"):
+        return max(16.0, LOW_RAM_HEADROOM_GB + kv_gb + 4.0)
     return min(m["ram_gb"] + kv_gb + 1, m["arena_gb"] + LOW_RAM_HEADROOM_GB + kv_gb)
 
 
-def kv_streaming_wanted(model, ctx, kv, ram, choice="auto") -> bool:
-    """Will setup stream this model's KV cache on this PC: from 64K up, when the RAM holds the cache beside the
-    model's experts (`kv_streaming_need_gb`); `--kv-streaming on|off` overrides the RAM test (the owner's rule), and
-    WSL never streams.  Step 7 writes `--kv-resident` on exactly this answer, and the launcher's preset diff asks it
-    too: a config's `--kv-resident` and a preset's "auto" are the same setting when this says yes."""
+def kv_streaming_wanted(model, ctx, kv, ram, choice="auto", vram_gb: float = 0.0) -> bool:
+    """Will setup stream this model's KV cache on this PC: from 64K up (and from 32K up on <= 16 GB discrete GPUs
+    for Unsloth budget-mode quants per #6354), when the RAM holds the cache beside the model's experts
+    (`kv_streaming_need_gb`); `--kv-streaming on|off` overrides the RAM test (the owner's rule), and WSL never streams.
+    Step 7 writes `--kv-resident` on exactly this answer, and the launcher's preset diff asks it too: a config's
+    `--kv-resident` and a preset's "auto" are the same setting when this says yes."""
     if is_wsl() or choice == "off":
         return False
-    return ctx >= 65536 and (ram >= kv_streaming_need_gb(model, ctx, kv) or choice == "on")
+    m = MODELS.get(model, {})
+    min_ctx = 32768 if (m.get("budget") and 0 < float(vram_gb or 0.0) <= 16.5) else 65536
+    return ctx >= min_ctx and (ram >= kv_streaming_need_gb(model, ctx, kv) or choice == "on")
 
 
 def low_ram_one_gpu_why(model, ram, choice, sel=None) -> list[str]:
@@ -8255,7 +8279,7 @@ def write_config(path: Path, cfg: dict):
 # then applies the person's options over the generated ones
 SETUP_KEYS = frozenset({"exe", "args", "cwd", "tokenizer", "model_name", "log", "lib_dirs", "port", "backend", "env",
                         "gpu", "gpus_asked", "gpus_by", "layer_split", "host", "api_key", "draft_vocab", "vision", "args_written",
-                        "display_name", "cuda", "ui_budget_work_gib", "shape_title"})
+                        "display_name", "cuda", "ui_budget_work_gib", "shape_title", "small_card"})
 SETUP_ENV = frozenset({"STRATA_HIPBLASLT_TUNING", "STRATA_ROCBLAS_TUNING", "STRATA_RESIDENT_PIN", "STRATA_NO_ARENA_THP", "STRATA_MMQ_KQ", "STRATA_HC_Q8",
                        "STRATA_ROUTE_TAIL_SKIP"}) | frozenset(GFX1103_SWITCHES) | frozenset(GFX1150_SWITCHES)   # the "env" entries setup writes (the gfx1103 switches are setup's too: a re-run refreshes them, they do not linger)
 # 0.1.44 added these three, written for Unsloth's files only (unsloth_default_env).  In any other model's config they are the
@@ -8427,7 +8451,10 @@ SHAPE_ENGINE: dict = {}       # the model-shape engine the chosen model runs on:
 
 
 def engine_exe(eng: Path) -> str:
-    """The `exe` of a run config: the engine component in the app, else the engine binary's path. A model of its own shape names that shape's engine."""
+    """The `exe` of a run config: the engine component in the app, else the engine binary's path. A model of its own shape names that shape's engine
+    (unless locally compiled via `--build`, in which case its local binary path is written)."""
+    if SHAPE_ENGINE.get("local_exe"):
+        return str(SHAPE_ENGINE["local_exe"])
     if SHAPE_ENGINE.get("shape"):
         from strata_control import shape_engine
         return shape_engine.reference(SHAPE_ENGINE["shape"])
@@ -8493,7 +8520,7 @@ def readable_config(path: Path) -> bool:
 
 
 def model_config_files(folder: Path) -> list:
-    """#346: the strata-*.json files of a folder that can be model configs. The server keeps a config's Chat settings
+    """#346: the strata-*.json files of a folder that can be model configs. The server keeps a config's settings
     next to it as strata-<model>.shared-settings.json: it matches the pattern but is no config (no exe, no args)."""
     return [p for p in folder.glob("strata-*.json") if not p.name.endswith(".shared-settings.json")]
 
@@ -9278,8 +9305,8 @@ def settings_summary(cfg: dict, port=None) -> str:
     srv = [f"{cfg.get('host', '127.0.0.1')}:{port or cfg.get('port', 8080)}"]
     if cfg.get("api_key"):
         srv.append("api key set")
-    if cfg.get("open_browser") is False:               # #609
-        srv.append("no browser")
+    if cfg.get("open_browser") is True:                # --browser (#609)
+        srv.append("opens the Monitor page")
     for k in ("gpu", "layer_split", "draft_vocab", "fit_max_tokens", "reasoning_budget_tokens", "anthropic_thinking"):
         if cfg.get(k) is not None:
             v = cfg[k]
@@ -9408,7 +9435,7 @@ def _start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open
             if not glm:
                 cfg = ensure_engine_for([g], cfg_path, cfg, yes)
             ok("GPU: " + gpu_name(g))
-    browser = open_browser and cfg.get("open_browser") is not False   # #609: "open_browser": false, --no-browser
+    browser = open_browser and cfg.get("open_browser") is True        # only after --browser (#609; no chat page to open)
     if browser:
         cmd.append("--open")
     gb = 0.0
@@ -9437,6 +9464,7 @@ def _start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open
     say("  restart). That is normal: please wait and don't close this window - " + (
         "the browser opens when it is ready." if browser else "the server says when it is ready."))
     say("  Later, closing this window stops the model.")
+    say("  Want an app to chat with it? We recommend Linger (optional): https://github.com/simplexai-labs/linger")
     say("  " + "-" * 100)
     for n, line in enumerate(textwrap.wrap(f"Settings ({cfg_path.name}): {settings_summary(cfg, port)}", 100,
                                            break_on_hyphens=False)):   # #564: what this start uses
@@ -9455,7 +9483,7 @@ OLD_DRAFT_VOCABS = {"369151522226a5edaa5f12cfd1e2ae7db8f4fbdbd222f3dcf327dced959
 
 
 DRAFT_VOCABS = {"cjk": "draft_vocab.bin", "en": "draft_vocab_en.bin", "cyrillic": "draft_vocab_cyrillic.bin",
-                "fr": "draft_vocab_fr.bin", "latin": "draft_vocab_latin.bin"}
+                "fr": "draft_vocab_fr.bin", "latin": "draft_vocab_latin.bin", "arabic": "draft_vocab_arabic.bin"}
 
 
 def saved_draft_vocab(cfg_path: Path) -> str | None:
@@ -9493,7 +9521,7 @@ def vision_tokens(asked: int | None, vision: str, earlier: Path | None) -> int:
     return asked
 
 
-DRAFT_VOCAB_MIB = {"cjk": 348, "cyrillic": 193, "fr": 151, "en": 133, "latin": 203}   # the draft head's VRAM per subset (IQ3_S: the largest)
+DRAFT_VOCAB_MIB = {"cjk": 348, "cyrillic": 193, "fr": 151, "en": 133, "latin": 203, "arabic": 161}   # the draft head's VRAM per subset (IQ3_S: the largest)
 SMALL_DRAFT_VRAM_GB = 14   # #474: below this the default subset's head can be what does not fit
 
 
@@ -9565,9 +9593,11 @@ def unsloth_vram_slack_mib(vram_gb: float, ctx: int, kv: str, reserve_mib: int, 
 
 def unsloth_small_card_plan(vram_gb: float, ctx: int, kv: str, reserve_mib: int | None, ctx_fixed=False, kv_fixed=False,
                             runtime_mib: int = 0):
-    """(ctx, kv, mtp, slack_mib) of the least harmful start that the estimate says fits, or None when none does.
+    """(ctx, kv, mtp, slack_mib) of the least harmful start that fits on small discrete cards (4-9 GB).
     Order of harm: the KV in 4 bits, then a smaller context (down to 4608), then no draft layer on the GPU (decode
-    up to 2x slower, but 0.8 GB for the cache); a value the user chose (--context, --kv) is not changed."""
+    up to 2x slower, but 0.8 GB for the cache); a value the user chose (--context, --kv) is not changed.
+    For 4 GB and 6 GB GPUs (vram_gb >= 3.5), falls back cleanly to 0-slot / dense-streaming mode (slack_mib = 0.0,
+    mtp = False, int8/q4_0 KV) so the engine streams routed experts from RAM+SSD instead of refusing or OOMing."""
     reserve = UD_FIT_ENGINE_RESERVE_MIB if reserve_mib is None else reserve_mib
     ctxs = [ctx] if ctx_fixed else [ctx] + [c for c in UD_FIT_CTX_STEPS if c < ctx]
     kvs = [kv] if kv_fixed or kv == "q4_0" else [kv, "q4_0"]
@@ -9577,20 +9607,27 @@ def unsloth_small_card_plan(vram_gb: float, ctx: int, kv: str, reserve_mib: int 
                 slack = unsloth_vram_slack_mib(vram_gb, c, k, reserve, mtp, runtime_mib)
                 if slack >= UD_FIT_MIN_SLACK_MIB:
                     return c, k, mtp, slack
+    if float(vram_gb or 0.0) >= 3.5:
+        c0 = ctx if ctx_fixed else min(ctx, 8192 if vram_gb >= 5.5 else 4608)
+        k0 = kv if kv_fixed else ("int8" if vram_gb >= 5.5 else "q4_0")
+        return c0, k0, False, 0.0
     return None
 
 
 def unsloth_small_card_lines(model: str, vram_gb: float, plan, start_ok: bool) -> list[str]:
-    """The words for a ~8 GB card: that UD-* is very slow here and what to pick instead (always), and when the start
-    would have stopped, that and what setup changed instead.  Recommend, never force."""
+    """The words for a <= 8 GB card: explains 0-slot / dense-streaming on 4-6 GB cards or small cache on 8 GB cards
+    and what smaller quants run faster. Recommend, never force."""
+    if float(vram_gb or 0.0) < 7.0:
+        return [f"{model} on a {vram_gb:.0f} GB card uses 0-slot / dense-streaming mode: dense weights and KV stay in "
+                "VRAM while routed experts stream from RAM + SSD (no OOM, never refused). UD-IQ3_XXS or UD-IQ1_M "
+                "need far less RAM/SSD bandwidth on this tier."]
     lines = [f"{model} on a {vram_gb:.0f} GB card is very slow: the dense side and the draft layer fill the card, the expert "
              "cache gets a few slots, and nearly every expert comes from RAM or the SSD (3-5 tok/s measured on an 8 GB "
              "Arc A750). IQ3_XXS or IQ3_S of the Qwen3.8-Flash-Next family fit such a card far better; run setup again "
              "and pick one of them."]
     if not start_ok and plan is None:
         lines.append("By setup's estimate even a 4608 context with a 4-bit KV cache and no draft layer leaves no room "
-                     "for the expert cache on this card: the start will probably stop with \"no VRAM is left for the "
-                     "expert cache\".")
+                     "for the expert cache on this card: the start will use 0-slot dense-streaming mode.")
     return lines
 
 
@@ -9862,6 +9899,7 @@ def refresh_draft_vocab(rt: Path, choice: str = "cjk") -> None:
             return
         ok("draft layer: the token subset " + {"cjk": "with Chinese, Japanese and Korean",
                                                "cyrillic": "with the Cyrillic script",
+                                               "arabic": "with the Arabic script",
                                                "fr": "for French",
                                                "latin": "with the Latin-script languages"}.get(choice,
                                                                                           "for English and code (less VRAM)"))
@@ -9971,7 +10009,7 @@ def use_cuda12(cards, cfg_path: Path, cfg: dict, yes: bool) -> dict:
 
 
 def write_run_script(model, cfg_path, port, open_browser=True):
-    """run-<model>.bat / .sh: the server with this config; `open_browser` False (#609: --no-browser) leaves --open out."""
+    """run-<model>.bat / .sh: the server with this config; `--open` (the Monitor page) only when `open_browser` is True (--browser)."""
     serve = [sys.executable, str(ROOT / "serve" / "server.py"), "--engine", "strata", "--config", str(cfg_path),
              "--port", str(port)] + (["--open"] if open_browser else [])
     if WIN:
@@ -10150,16 +10188,55 @@ def poly_saved_conv(paths) -> int | str | None:
     return None
 
 
+def poly_small_card(a, fam, paths) -> str | None:
+    """A family's "small_card_args": "on" (the default) or "off" (the high-accuracy mode: none of them), as chosen
+    for this model whatever the card: --inkling-small-card says it, else the earlier run config of this model (the
+    first of `paths` there is) keeps its "small_card": "off", so an install moved from a card that holds every expert
+    back to a small one stays off.  None for a family without them.  Whether they are written depends on the card too
+    (poly_setup)."""
+    if not fam.get("small_card_args"):
+        return None
+    if getattr(a, "inkling_small_card", None):
+        return a.inkling_small_card
+    for p in paths:
+        if p is None or not p.is_file():
+            continue
+        try:
+            saved = json.loads(p.read_text(encoding="utf-8-sig")).get("small_card")
+        except (OSError, ValueError, AttributeError):
+            continue
+        return "off" if saved == "off" else "on"
+    return "on"
+
+
 def poly_asset() -> str:
     """The ready-made strata-poly's asset for this checkout: the engine and the image encoder are both in it."""
     return POLY_ASSET.format(src=source_hash(ENGINE_SOURCES + VISION_SOURCES))
 
 
+def poly_will_not_start(folder: Path) -> str:
+    """#181: "" when the ready-made Linux strata-poly and strata-vision in `folder` start here with pip's CUDA 13
+    libraries, else what the dynamic loader said (glibc older than 2.34, a libstdc++ older than GCC 12's, a library
+    that is not there).  strata-poly --help prints its usage and exits 2, strata-vision --version exits 0; neither
+    touches the GPU."""
+    lib = os.pathsep.join([*cuda_lib_dirs(13), os.environ.get("LD_LIBRARY_PATH", "")]).rstrip(os.pathsep)
+    for exe, flag in ((POLY_EXE, "--help"), (VEXE, "--version")):
+        try:
+            r = subprocess.run([str(folder / exe), flag], capture_output=True, text=True, errors="replace",
+                               env={**os.environ, "LD_LIBRARY_PATH": lib}, timeout=60)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return f"{exe}: {e}"
+        if r.returncode not in (0, 2):
+            return " ".join(r.stderr.split())[-300:] or f"{exe} ended with status {r.returncode}"
+    return ""
+
+
 def get_poly_prebuilt(gpu) -> bool:
     """The ready-made strata-poly and image encoder of this checkout's source in engine-poly/, with NVIDIA's CUDA 13
-    libraries from pip.  False when the release has none for this source or this GPU, off Windows, with a driver
-    older than CUDA 13's or a CPU without AVX2.  An engine already there for this source and GPU is kept, ready-made
-    or compiled, unless it was compiled with CUDA 12."""
+    libraries from pip: on Windows the release's zip, on x86-64 Linux its tarball (#181).  False when the release has
+    none for this source or this GPU, on another system, with a driver older than CUDA 13's, a CPU without AVX2, or a
+    Linux the tarball's programs do not start on.  An engine already there for this source and GPU is kept,
+    ready-made or compiled, unless it was compiled with CUDA 12."""
     eng = ROOT / ENGINE_POLY_DIR
     stamp = eng / "BUILD.json"
     meta = json.loads(stamp.read_text()) if stamp.exists() else {}
@@ -10169,7 +10246,8 @@ def get_poly_prebuilt(gpu) -> bool:
     if meta.get("src") == src and (eng / POLY_EXE).exists() and cards <= {int(x) for x in meta.get("archs", [])} \
             and (meta.get("source") != "release" or meta.get("vision_src") == vsrc) and meta.get("toolkit", 13) == 13:
         return True
-    if not WIN or not POLY_PREBUILT_URL or driver_major(gpu) < MIN_DRIVER or cpu_floor(cpu_info()[1]):
+    linux_x64 = sys.platform.startswith("linux") and not is_arm64()
+    if not (WIN or linux_x64) or not POLY_PREBUILT_URL or driver_major(gpu) < MIN_DRIVER or cpu_floor(cpu_info()[1]):
         return False
     base = POLY_PREBUILT_URL if POLY_PREBUILT_URL.endswith(("/", "\\")) else POLY_PREBUILT_URL + "/"
     asset = poly_asset()
@@ -10195,8 +10273,13 @@ def get_poly_prebuilt(gpu) -> bool:
     tmp = eng / "_unpack"
     shutil.rmtree(tmp, ignore_errors=True)
     try:
-        with zipfile.ZipFile(z) as f:
-            f.extractall(tmp)
+        if WIN:
+            with zipfile.ZipFile(z) as f:
+                f.extractall(tmp)
+        else:                                          # the Linux tarball keeps the programs' execute bits
+            import tarfile
+            with tarfile.open(z) as f:
+                f.extractall(tmp, **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))
     finally:
         drop_archive(z)
     new = json.loads((tmp / "BUILD.json").read_text(encoding="utf-8"))
@@ -10207,6 +10290,11 @@ def get_poly_prebuilt(gpu) -> bool:
         shutil.rmtree(tmp, ignore_errors=True)
         return False
     pip_cuda_libs(13)                                  # before the engine there is replaced, should pip fail
+    why = "" if WIN else poly_will_not_start(tmp)
+    if why:
+        warn(f"the ready-made strata-poly does not start on this Linux ({why}): it is compiled here instead")
+        shutil.rmtree(tmp, ignore_errors=True)
+        return False
     for p in tmp.iterdir():
         p.replace(eng / p.name)
     shutil.rmtree(tmp, ignore_errors=True)
@@ -10434,7 +10522,7 @@ def update_poly_engine(cfg: dict, yes=False, cfg_path: Path | None = None) -> No
             # one compiled here (--build, a CPU without AVX2) stays so
             if meta.get("source") == "release" and not get_poly_prebuilt(gpu) and fits:
                 warn("the latest release has no ready-made strata-poly of this source: the one installed starts "
-                     "(START-HERE.bat --setup --build compiles this source)")
+                     f"({'START-HERE.bat' if WIN else './setup.sh'} --setup --build compiles this source)")
                 return
             build_engine_poly(gpu, yes, get_llama_cpp(), vision, int(meta.get("toolkit", 13)),
                               bool(meta.get("portable")))
@@ -10505,6 +10593,10 @@ def poly_setup(a, family, gpu, hip, cuda_tk, multi, ram, data, elsewhere, port, 
         confirm_risk(f"{title} has been run on Linux only: its engine compiles on Windows, the model was not tried "
                      "there", bool(a.family), a.yes, f"{title} has not been tried on Windows",
                      f"use Linux, or --family {family} --yes to try it here")
+    if multi and fam.get("one_card"):                  # the engine has no layer split for this family yet: it would
+        multi = []                                     # exit with "Inkling 2 runs on one card"; one card from here on,
+        # so the size, the images and the small-card flags below are this card's
+        warn(f"{title} runs on one card so far (--layer-split is not supported for it yet): using {gpu_name(gpu)}")
     sees = fam.get("vision") is True
     if sees and hip:   # the image encoder is a CUDA program: no HIP build of it yet (as for the main engine)
         say("  Images: the image encoder is a CUDA program: on the AMD card images are off (text answers).")
@@ -10514,6 +10606,7 @@ def poly_setup(a, family, gpu, hip, cuda_tk, multi, ram, data, elsewhere, port, 
         ("--vision-tokens", not sees and a.vision_tokens is not None),
         ("--kv", a.kv and a.kv != "fp16" and family not in POLY_KV.get(a.kv, ())),
         ("--kv-streaming", a.kv_streaming != "auto" and family not in POLY_KV_STREAMING),
+        ("--inkling-small-card", getattr(a, "inkling_small_card", None) and not fam.get("small_card_args")),
         ("--rope-scaling", a.rope_scaling),
         ("--rope-scale", a.rope_scale is not None), ("--low-ram", a.low_ram != "auto"),
         ("--resident-budget-gib", a.resident_budget_gib is not None),
@@ -10798,10 +10891,15 @@ def poly_setup(a, family, gpu, hip, cuda_tk, multi, ram, data, elsewhere, port, 
            "that much less)")
     if fam.get("tail_skip"):
         args += ["--tail-skip", str(fam["tail_skip"])]
-    if fam.get("small_card_args") and not multi and poly_held_gb(d, vram) < d["arena_gb"]:
+    small = poly_small_card(a, fam, [cfg_path, adopted if adopted is not None and adopted.name == cfg_path.name else None])
+    part = small is not None and not multi and poly_held_gb(d, vram) < d["arena_gb"]
+    if part and small == "on":
         args += fam["small_card_args"]
         ok(f"this card holds part of {model}'s experts: {' '.join(fam['small_card_args'])} (fewer bytes a token, "
-           "and the answers move a little)")
+           "and the answers move a little; --inkling-small-card off: the high-accuracy mode, without them)")
+    elif part:
+        ok(f"this card holds part of {model}'s experts: high-accuracy mode, without the small-card settings "
+           "(--inkling-small-card off; slower here; --inkling-small-card on puts them back)")
     if kv:
         args += ["--kv", kv]
         ok(f"attention caches stored as {kv} (--kv in the config, docs/Q8_KV.md; --kv fp16 at setup takes it out)")
@@ -10831,6 +10929,8 @@ def poly_setup(a, family, gpu, hip, cuda_tk, multi, ram, data, elsewhere, port, 
            "model_name": base.lower() if base else f"{fam['name']}-{model.lower()}",
            "display_name": base if base else f"{title} {model}",
            "log": str(ROOT / f"strata-{tag.lower()}.log"), "lib_dirs": lib_dirs, "port": port}
+    if small == "off":
+        cfg["small_card"] = "off"                      # kept by a later setup run, on any card (poly_small_card)
     if fam.get("tool_call_recovery"):
         cfg["tool_call_recovery"] = True
         ok("its tool calls are JSON inside the wrapper: they are read with the recovery (tool_call_recovery in the "
@@ -10866,8 +10966,9 @@ def poly_setup(a, family, gpu, hip, cuda_tk, multi, ram, data, elsewhere, port, 
         if vision == "cpu":
             cfg["vision"]["threads"] = max(1, (os.cpu_count() or 8) // 2)
     # requests at once: written only when given, else an earlier "parallel" is carried over (write_setup_config).
-    # A family the engine answers one request at a time ("one_request") is written 1, whatever was asked or kept.
-    if fam.get("one_request"):
+    # A family the engine answers one request at a time ("one_request": True) is written 1, whatever was asked or kept
+    # ("mac": on a Mac only, which setup_mac.py writes).
+    if fam.get("one_request") is True:
         cfg["parallel"] = 1
         if (a.parallel or 1) >= 2:
             warn(f"--parallel {a.parallel}: {title} answers one request at a time on this engine; \"parallel\" is "
@@ -10879,8 +10980,20 @@ def poly_setup(a, family, gpu, hip, cuda_tk, multi, ram, data, elsewhere, port, 
             (ok if a.parallel is not None else say)(line if a.parallel is not None else "  " + line)
     poly_kv_whole(cfg)
     warm_start_into(cfg, a)
-    write_setup_config(cfg_path, cfg, earlier)
-    script = write_run_script(tag, cfg_path, port, cfg.get("open_browser") is not False)
+
+    def tail_skip_note(done: dict) -> None:
+        # The config as written ("parallel" asked now or kept from the one before, the person's own options in its
+        # args): --tail-skip is decided over a step's rows, which are several chats' tokens (docs/BATCHING.md).  Not
+        # on a Mac for a family that answers one request at a time there ("one_request": "mac").
+        parallel = int(done.get("parallel") or 1)
+        if fam.get("one_request") is True or (fam.get("one_request") == "mac" and sys.platform == "darwin"):
+            return
+        if parallel >= 2 and "--tail-skip" in done.get("args", []):
+            warn(f"\"parallel\": {parallel} with --tail-skip: while chats write at once, which experts one chat's "
+                 "tokens skip depends on the other chats, so its answer can differ from the same request alone")
+
+    write_setup_config(cfg_path, cfg, earlier, after_carry=tail_skip_note)
+    script = write_run_script(tag, cfg_path, port, cfg.get("open_browser") is True)
     ok(f"start script: {script.name}")
 
     say()
@@ -10888,7 +11001,7 @@ def poly_setup(a, family, gpu, hip, cuda_tk, multi, ram, data, elsewhere, port, 
     say(f"  API (OpenAI):     http://127.0.0.1:{port}/v1   (any API key; model name: anything)")
     say(f"  API (Anthropic):  http://127.0.0.1:{port}/v1/messages")
     if vision != "none":
-        say("  Images:           send them in the chat page, in chat.py (/image <path>) or over the API")
+        say("  Images:           send them over the API (your app) or in chat.py (/image <path>)")
     if a.host and a.host not in ("127.0.0.1", "localhost"):
         say(f"  Other devices:    the server window prints this PC's address (http://<IP>:{port}/)"
             + ("" if a.api_key else " - no API key set: anyone on your network can use it"))
@@ -10943,6 +11056,34 @@ def hip_build_here(gpu) -> bool:
         gpu.get("arch") in meta.get("archs", [])
 
 
+def _select_sycl_cards(a, cards: list[dict]) -> list[dict]:
+    """Select one or more Intel Arc cards from `cards` honoring --gpu-roles / --gpus / --gpu (Helper..Main order)."""
+    by_idx = {int(c["index"]): c for c in cards}
+    roles_raw = getattr(a, "gpu_roles", None)
+    if isinstance(roles_raw, str) and roles_raw.strip():
+        from strata_control import gpu_roles as GR
+        roles = GR.roles_from_text(roles_raw, cards)
+        order = GR.order(roles, cards)
+        if order:
+            a._roles = roles
+            a._roles_cards = cards
+            return [by_idx[i] for i in order if i in by_idx]
+    gpus_raw = getattr(a, "gpus", None)
+    if isinstance(gpus_raw, str) and gpus_raw.strip():
+        if gpus_raw.strip().lower() == "all":
+            return list(cards)
+        sel = [int(x.strip()) for x in gpus_raw.split(",") if x.strip().isdigit()]
+        picked = [by_idx[i] for i in sel if i in by_idx]
+        if picked:
+            return picked
+    gpu_raw = getattr(a, "gpu", None)
+    if isinstance(gpu_raw, int) and not isinstance(gpu_raw, bool) and gpu_raw in by_idx:
+        return [by_idx[gpu_raw]]
+    if isinstance(gpu_raw, str) and gpu_raw.strip().isdigit() and int(gpu_raw.strip()) in by_idx:
+        return [by_idx[int(gpu_raw.strip())]]
+    return list(cards[:1])
+
+
 def intel_control_setup(a) -> int:
     """`--backend sycl` in the app's CONTROL mode (tools/strata_mcp.py passes it for an Intel Arc PC): what the Terminal does for an Arc
     (strata_cli/launch/runner.py adopt_prepared_files): the pack from the model's GGUF files (`--prepare-pack`'s step), then the run config
@@ -10956,6 +11097,15 @@ def intel_control_setup(a) -> int:
     if not intel_app.supported_here():
         fail("the Intel Arc engine runs on Linux only", "there is no Windows or Mac Intel engine yet")
     family = a.family or "qwen"
+    if family in HY4_FAMILIES:
+        cards = intel_app.arc_cards()
+        if not cards:
+            fail("no Intel Arc card PolyStrata can use was found in this computer")
+        sel_cards = _select_sycl_cards(a, cards)
+        main_gpu = {**sel_cards[-1], "count": len(cards)}
+        multi = sel_cards if len(sel_cards) > 1 else []
+        a.backend = "sycl"
+        return install_hy4_flash(a, family, main_gpu, False, [], None, multi, a.port or 8080, ram_gb(), None)
     if family not in FAMILIES or not intel_app.can_set_up(family, FAMILIES[family]):
         fail(f"cannot set up {family} for an Intel Arc card", "choose a Qwen3.8-Flash-Next, Swift, Coder, Gyro or Unsloth size")
     fam, model = FAMILIES[family], a.model
@@ -10974,7 +11124,8 @@ def intel_control_setup(a) -> int:
         fail(intel_app.NO_DOWNLOAD)
     ok(f"model files: {model_dir} ({len(shards)} file{'s' if len(shards) != 1 else ''})")
     cards = intel_app.arc_cards()
-    vram = max((float(c.get("vram_gb") or 0) for c in cards), default=0.0)
+    sel_cards = _select_sycl_cards(a, cards) if cards else []
+    vram = max((float(c.get("vram_gb") or 0) for c in (sel_cards or cards)), default=0.0)
     ok("graphics card: " + (", ".join(f"{c['name']} ({c['vram_gb']:g} GB)" for c in cards) or "an Intel Arc"))
     if a.check:
         return 0
@@ -10998,6 +11149,24 @@ def intel_control_setup(a) -> int:
                                backend="sycl", vram_gb=vram, notes=notes, pack_name=tag.lower())
     if cfg is None:
         fail("PolyStrata cannot start this model on the Intel Arc card yet: " + "; ".join(problems))
+    if isinstance(getattr(a, "_roles", None), dict) and cards:
+        from strata_control import gpu_roles as GR
+        cfg.update(GR.mirror(a._roles, getattr(a, "_roles_cards", None) or cards))
+        cfg["gpus_asked"] = True
+        if isinstance(cfg.get("gpu"), list) and len(cfg["gpu"]) > 1:
+            cfg["layer_split"] = "auto"
+    elif isinstance(getattr(a, "gpus", None), str) and len(sel_cards) > 1:
+        cfg["gpu"] = [int(c["index"]) for c in sel_cards]
+        cfg["gpus_asked"] = True
+        cfg["layer_split"] = "auto"
+    elif isinstance(getattr(a, "gpu", None), int) and not isinstance(getattr(a, "gpu", None), bool) and sel_cards:
+        cfg["gpu"] = int(sel_cards[0]["index"])
+        cfg["gpus_asked"] = True
+    if isinstance(cfg.get("gpu"), list) and len(cfg["gpu"]) == 2:
+        from strata_control import intel_spec
+        spec_note = intel_spec.apply_for_launch(cfg)
+        if spec_note:
+            notes.append(spec_note)
     if a.port:
         cfg["port"] = a.port
     if a.host:
@@ -11071,12 +11240,68 @@ def shape_engine_fetch(a):
     return found
 
 
-def shape_engine_step(a, gpu, vision):
+def build_shape_engine(shape: str, gpu: dict, hip: bool, cuda_tk=None, yes: bool = False) -> Path | None:
+    """Compile a shape engine (`hy4` -> `strata-hy4`) locally from `engine/` when `--build` is passed (#6588).
+    Returns the installed engine directory containing the built executable + `BUILD.json`, or None if unsupported."""
+    from strata_control import shape_engine
+    if shape != shape_engine.HY4_SHAPE:
+        return None
+    src = engine_src()
+    if not (src / "CMakeLists.txt").is_file():
+        fail(f"cannot compile {shape} locally: engine source not found at {src}")
+    exe_name = shape_engine.exe_name(shape)
+    out_dir = home() / f"engine-{shape}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    build_dir = src / f"build-{shape}"
+    cmake = shutil.which("cmake")
+    if not cmake:
+        fail("cmake is required to compile with --build", "install cmake and ninja, or run without --build to download a prebuilt engine")
+    ninja = shutil.which("ninja")
+    cfg_cmd = [cmake, "-S", str(src), "-B", str(build_dir), "-DCMAKE_BUILD_TYPE=Release"]
+    if ninja:
+        cfg_cmd += ["-G", "Ninja"]
+    cfg_cmd += ["-DSTRATA_BUILD_HY4=ON", "-DSTRATA_BUILD_TESTS=OFF"]
+    if hip:
+        cfg_cmd += ["-DSTRATA_ENABLE_HIP=ON", "-DSTRATA_ENABLE_CUDA=OFF"]
+    else:
+        cfg_cmd += ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_ENABLE_HIP=OFF"]
+    target = "strata-hy4"
+    say(f"  compiling {target} locally (--build) in {build_dir} ...")
+    run(cfg_cmd)
+    run([cmake, "--build", str(build_dir), "--target", target, "--config", "Release"])
+    built = None
+    for cand in (build_dir / exe_name, build_dir / "Release" / exe_name):
+        if cand.is_file():
+            built = cand
+            break
+    if built is None:
+        fail(f"local build of {target} finished but {exe_name} was not found in {build_dir}")
+    dst = out_dir / exe_name
+    shutil.copy2(built, dst)
+    if not WIN:
+        dst.chmod(dst.stat().st_mode | 0o755)
+    meta = {"version": "local", "backend": "hip" if hip else "cuda",
+            "source": "local", "shape": shape, "entrypoint": exe_name}
+    (out_dir / "BUILD.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    ok(f"built {target} locally: {dst}")
+    return out_dir
+
+
+def shape_engine_step(a, gpu, vision, *, hip: bool = False, cuda_tk=None):
     """Step 4 for a model that runs on the engine of its own shape (a Qwen4 model whose geometry is not Flash-Next's: strata_control/shape_engine.py). That engine is a
-    separate component next to the PolyStrata engine (shape_engine_fetch); the run config names it ("component:strata-q4-lite") and every start looks it up.
-    Returns what engine_step returns."""
+    separate component next to the PolyStrata engine (shape_engine_fetch); with `--build` outside CONTROL mode, compiles `strata-hy4` locally (#6588)."""
     shape = SHAPE_ENGINE["shape"]
     llama = llama_cpp_if_here()
+    if getattr(a, "build", False) and not CONTROL:
+        from strata_control import shape_engine
+        if shape == shape_engine.HY4_SHAPE:
+            eng = build_shape_engine(shape, gpu, hip, cuda_tk, getattr(a, "yes", False))
+            if eng is not None:
+                exe_path = eng / shape_engine.exe_name(shape)
+                SHAPE_ENGINE["local_exe"] = str(exe_path)
+                meta = json.loads((eng / "BUILD.json").read_text(encoding="utf-8"))
+                lib_dirs = cuda_lib_dirs(cuda_tk) if (not hip and not sys.platform == "darwin") else []
+                return llama, eng, meta, lib_dirs, gpu, "none"
     found = shape_engine_fetch(a)
     if found is None:
         return llama, home() / "engine", {"version": "99.0.0", "source": "local", "component": "missing"}, [], gpu, "none"
@@ -11093,7 +11318,7 @@ def engine_step(a, gpu, hip, amd, cuda_tk, vision):
     """Step 4: llama.cpp's sources and the engine (ready-made, or compiled here).  Returns (llama, engine folder, its
     BUILD.json, its library folders, the GPU (AMD on Windows: as the engine sees it), the image-encoder choice)."""
     if SHAPE_ENGINE.get("shape"):
-        return shape_engine_step(a, gpu, vision)
+        return shape_engine_step(a, gpu, vision, hip=hip, cuda_tk=cuda_tk)
     if CONTROL:
         return control_engine_step(gpu, vision)
     llama = llama_override()
@@ -11540,7 +11765,7 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
             ok("parallel requests: one at a time (--parallel 1)")
     warm_start_into(cfg, a)
     write_setup_config(cfg_path, cfg, adopted if adopted is not None and adopted.name == cfg_path.name else None, explicit_args(a))
-    script = write_run_script(tag, cfg_path, port, cfg.get("open_browser") is not False)
+    script = write_run_script(tag, cfg_path, port, cfg.get("open_browser") is True)
     ok(f"start script: {script.name}")
     say()
     say("All set.")
@@ -11548,7 +11773,7 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     say(f"  API (Anthropic):  http://127.0.0.1:{port}/v1/messages")
     say(f"  Next time:        just run {'START-HERE.bat' if WIN else './setup.sh'} (or {script.name}) - it starts right away")
     if vision != "none":
-        say("  Images:           send them in the chat page, in chat.py (/image <path>) or over the API")
+        say("  Images:           send them over the API (your app) or in chat.py (/image <path>)")
     if par is None and not par_said:                   # the opt-in, said once (nothing changes)
         for line in own_path_parallel_note(None, fam, model, vram_gb, ctx):
             say("  " + line)
@@ -11585,14 +11810,44 @@ def hy4_pc(gpu, ram) -> tuple:
     return float(g.get("vram_gb") or 0.0), float(ram), False
 
 
-def hy4_menu_lines(vram_gib, ram_gib, unified, ctx=None, vision=hy4_family.DEFAULT_VISION) -> list:
+def hy4_menu_lines(vram_gib, ram_gib, unified, ctx=None, vision=hy4_family.DEFAULT_VISION, extra_vram_gib=0.0) -> list:
     """One line per build for the size menu, best first, with the fit words (at this context, with the image reader's memory when images are on) and the recommended mark."""
-    rec = hy4_fit.recommend(vram_gib, ram_gib, unified, ctx, vision)["build"]
+    rec = hy4_fit.recommend(vram_gib, ram_gib, unified, ctx, vision, extra_vram_gib=extra_vram_gib)["build"]
     words = {"ram_vram_zero_ssd": "fits in memory", "near_resident_ssd": "fits, a few experts are read from the SSD", "cross_tier_ssd": "streams experts from the SSD: much slower"}
     out = []
-    for r in hy4_fit.rows(vram_gib, ram_gib, unified, ctx, vision):
+    for r in hy4_fit.rows(vram_gib, ram_gib, unified, ctx, vision, extra_vram_gib=extra_vram_gib):
         out.append((r["build"], f"{r['build']:7s} {hy4_family.BUILD_ABOUT[r['build']]}; download {r['download_gb']:.0f} GB   <- {words[r['mode']]}"
                     + ("   (recommended)" if r["build"] == rec else "")))
+    return out
+
+
+def _multi_gpu_cards(multi, gpu, hip, amd) -> list[dict]:
+    """Resolve `multi` (either a list of int indices from main(), or a list of GPU dicts) into discrete GPU dicts for CUDA, AMD HIP, or Intel SYCL."""
+    if not multi or not isinstance(multi, (list, tuple)):
+        return []
+    out: list[dict] = []
+    amd_by = {int(g["index"]): g for g in (amd or []) if isinstance(g, dict) and "index" in g}
+    nv_by: dict[int, dict] | None = None
+    for item in multi:
+        if isinstance(item, dict):
+            card = dict(item)
+        elif isinstance(item, int) and not isinstance(item, bool):
+            if hip and item in amd_by:
+                card = dict(amd_by[item])
+            elif gpu and int(gpu.get("index", -1)) == item:
+                card = dict(gpu)
+            else:
+                if nv_by is None:
+                    try:
+                        nv_by = {int(g["index"]): g for g in gpus()}
+                    except Exception:                  # noqa: BLE001
+                        nv_by = {}
+                card = dict(nv_by.get(item) or {"index": item, "name": f"GPU {item}", "vram_gb": float((gpu or {}).get("vram_gb") or 0.0)})
+        else:
+            continue
+        if card.get("uma") or card.get("unified") or card.get("unified_gb") or card.get("integrated"):
+            continue
+        out.append(card)
     return out
 
 
@@ -11612,7 +11867,7 @@ def hy4_verify(dst: Path, name: str, own: bool) -> None:
         return
     got = dst.stat().st_size if dst.exists() else -1
     if got != size:
-        fail(f"{name} is {got:,} bytes, not the {size:,} this Strata expects", "download it again (the file there may have changed)")
+        fail(f"{name} is {got:,} bytes, not the {size:,} this PolyStrata expects", "download it again (the file there may have changed)")
     if not done(dst):
         mark(dst)
     warn(f"{name}: checked by its size only (its SHA-256 is not published yet)")
@@ -11660,18 +11915,44 @@ def hy4_fetch(a, name: str, folder: Path, own: bool) -> Path:
     fail(f"no source lists {name}")
 
 
-def hy4_tokenizer_dir(model: Path, out: Path, engine: Path | None) -> Path | None:
-    """The tokenizer directory serve reads, from the model file: Python reads Section 0 itself when it has a zstd module, else the engine exports it (`strata-hy4
-    --export-tokenizer`).  None when neither can (no engine yet and no zstd): the person is told to run this again once the engine is installed."""
+def hy4_tokenizer_dir(model: Path, out: Path, engine: Path | None, a=None, folder: Path | None = None, own: bool = False, data: Path | None = None) -> Path | None:
+    """The tokenizer directory serve reads, from the model file or companion files:
+    1) already populated (`vocab.json` + `chat_template.jinja`);
+    2) Section 0 read directly in Python (3.14 `compression.zstd` or `zstandard`);
+    3) companion `tokenizer.json` + `chat_template.jinja` beside the model file or in `<data>/models/hy4-flash`;
+    4) exported by the engine (`strata-hy4 --export-tokenizer`);
+    5) public download fallback (`hy4_family.tokenizer_sources()`, including `tencent/Hy4-flash`) when `not own`."""
     sys.path.insert(0, str(ROOT / "tools"))
     import hy4_tokenizer
+    out = Path(out)
+    model = Path(model)
     if (out / "vocab.json").is_file() and (out / "chat_template.jinja").is_file():
         return out
     try:
         hy4_tokenizer.convert_manifest(hy4_tokenizer.read_manifest(model), out)
         return out
-    except RuntimeError:                               # no zstd in this Python
+    except (RuntimeError, ValueError, OSError, KeyError):    # no zstd in Python or non-strata file
         pass
+    # Companion tokenizer.json + chat_template.jinja beside the model or in the data folder
+    search_dirs: list[Path] = [model.parent]
+    if folder is not None and Path(folder) not in search_dirs:
+        search_dirs.append(Path(folder))
+    if data is not None:
+        dmod = Path(data) / "models" / hy4_family.FAMILY
+        if dmod not in search_dirs:
+            search_dirs.append(dmod)
+    if out not in search_dirs:
+        search_dirs.append(out)
+    for base in search_dirs:
+        for tok_name in (hy4_family.TOKENIZER_FILE, "tokenizer.hf.json"):
+            tok_json = base / tok_name
+            tmpl_file = base / hy4_family.CHAT_TEMPLATE_FILE
+            if tok_json.is_file() and tmpl_file.is_file():
+                try:
+                    hy4_tokenizer.convert_files(tok_json, tmpl_file, out)
+                    return out
+                except (ValueError, OSError, KeyError):
+                    pass
     if engine is not None and Path(engine).is_file():
         raw = out.with_name(out.name + "-export")
         raw.mkdir(parents=True, exist_ok=True)
@@ -11679,9 +11960,40 @@ def hy4_tokenizer_dir(model: Path, out: Path, engine: Path | None) -> Path | Non
         var = "PATH" if WIN else ("DYLD_LIBRARY_PATH" if sys.platform == "darwin" else "LD_LIBRARY_PATH")
         eng_dir = str(Path(engine).resolve().parent)
         env[var] = os.pathsep.join([eng_dir, env[var]]) if env.get(var) else eng_dir
-        run([str(engine), "--export-tokenizer", str(model), str(raw)], env=env)
-        hy4_tokenizer.convert_files(raw / "tokenizer.hf.json", raw / "chat_template.jinja", out)
-        return out
+        try:
+            run([str(engine), "--export-tokenizer", str(model), str(raw)], env=env)
+            if (raw / "tokenizer.hf.json").is_file() and (raw / "chat_template.jinja").is_file():
+                hy4_tokenizer.convert_files(raw / "tokenizer.hf.json", raw / "chat_template.jinja", out)
+                return out
+        except (SystemExit, OSError, ValueError):
+            pass
+    # Public HF / configured source fallback so `packs/hy4-flash-*/tokenizer/vocab.json` is ALWAYS populated even without zstd or unpacked engine
+    if not own and a is not None:
+        fetch_dir = Path(folder) if folder is not None else model.parent
+        fetch_dir.mkdir(parents=True, exist_ok=True)
+        tok_json = fetch_dir / hy4_family.TOKENIZER_FILE
+        tmpl_file = fetch_dir / hy4_family.CHAT_TEMPLATE_FILE
+        for src in hy4_family.tokenizer_sources():
+            if not tok_json.is_file():
+                for u in hy4_family.urls_for(hy4_family.TOKENIZER_FILE, src):
+                    try:
+                        download(u, tok_json, hy4_family.TOKENIZER_FILE)
+                        break
+                    except (SystemExit, OSError):
+                        pass
+            if not tmpl_file.is_file():
+                for u in hy4_family.urls_for(hy4_family.CHAT_TEMPLATE_FILE, src):
+                    try:
+                        download(u, tmpl_file, hy4_family.CHAT_TEMPLATE_FILE)
+                        break
+                    except (SystemExit, OSError):
+                        pass
+            if tok_json.is_file() and tmpl_file.is_file():
+                try:
+                    hy4_tokenizer.convert_files(tok_json, tmpl_file, out)
+                    return out
+                except (ValueError, OSError, KeyError):
+                    pass
     return None
 
 
@@ -11695,16 +12007,23 @@ def install_hy4_flash(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopt
     say(f"  {fam['title']} - {fam['by']}: {fam['about']}")
     ok(f"model: {fam['title']}")
     say(f"  Its license: {fam['license']}")
-    if multi:
-        warn(f"{fam['title']} runs on one GPU so far: using GPU {gpu.get('index', 0)} ({gpu_name(gpu)}) only")
     names = list(fam["models"])
     if a.model and a.model not in names:
         fail(f"{fam['title']} has no {a.model} model file", "choose one of: " + ", ".join(names))
     vram_gib, ram_gib, unified = hy4_pc(gpu, ram)
+    multi_cards = _multi_gpu_cards(multi, gpu, hip, amd)[:4] if not unified else []
+    extra_vram_gib = 0.0
+    if len(multi_cards) >= 2:
+        main_idx = int(gpu.get("index", multi_cards[-1]["index"]))
+        helpers = [c for c in multi_cards if int(c["index"]) != main_idx]
+        if len(helpers) == len(multi_cards):
+            helpers = multi_cards[:-1]
+        extra_vram_gib = sum(float(c.get("vram_gb") or 0.0) for c in helpers)
+        ok("GPUs: " + " + ".join(gpu_name(c) for c in multi_cards) + f" (expert-parallel across {len(multi_cards)} GPUs)")
     vision = a.vision not in ("no", "none")            # images are on by default (owner, 2026-11-19): the Vision shard is in the download set; --vision no leaves it out
     want_ctx = a.context or hy4_family.DEFAULT_CONTEXT
-    lines = hy4_menu_lines(vram_gib, ram_gib, unified, want_ctx, vision)
-    rec = hy4_fit.recommend(vram_gib, ram_gib, unified, want_ctx, vision)
+    lines = hy4_menu_lines(vram_gib, ram_gib, unified, want_ctx, vision, extra_vram_gib=extra_vram_gib)
+    rec = hy4_fit.recommend(vram_gib, ram_gib, unified, want_ctx, vision, extra_vram_gib=extra_vram_gib)
     say()
     order = [b for b, _ in lines]
     for i, (b, text) in enumerate(lines, 1):
@@ -11722,11 +12041,11 @@ def install_hy4_flash(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopt
         for i, c in enumerate(ctxs, 1):
             say(f"  {i}) {c // 1024}K tokens" + ("   (recommended)" if c == hy4_family.DEFAULT_CONTEXT else ""))
         ctx = ctxs[int(ask("Context?", [str(i) for i in range(1, len(ctxs) + 1)], str(ctxs.index(hy4_family.DEFAULT_CONTEXT) + 1), a.yes)) - 1]
-    placed =hy4_fit.place(model, vram_gib, ram_gib, unified, ctx, vision)
+    placed = hy4_fit.place(model, vram_gib, ram_gib, unified, ctx, vision, extra_vram_gib=extra_vram_gib)
     mode = hy4_fit.mode(placed["ssd_gb"])
     if mode == "cross_tier_ssd":
         warn(f"{model} does not fit this PC's memory: about {placed['ssd_gb']:.0f} GB of its experts are read from the SSD while it answers, so it is much slower "
-             f"({hy4_fit.recommend(vram_gib, ram_gib, unified, ctx, vision)['build']} fits better)")
+             f"({hy4_fit.recommend(vram_gib, ram_gib, unified, ctx, vision, extra_vram_gib=extra_vram_gib)['build']} fits better)")
     ok(f"context: {ctx} tokens")
     ok("images: " + ("on (the Vision file is downloaded; the engine reads pictures once it supports them)" if vision else "off"))
     if a.rope_scaling or a.rope_scale or a.kv or a.resident_budget_gib is not None or a.low_ram not in (None, "auto"):
@@ -11765,9 +12084,9 @@ def install_hy4_flash(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopt
     engram = paths[hy4_family.ENGRAM_FILE] if hy4_family.ENGRAM_FILE in paths else folder / hy4_family.ENGRAM_FILE
     ok(f"Engram file: {engram}")
 
-    step(6, "preparing the model for Strata")
+    step(6, "preparing the model for PolyStrata")
     data, _ = data_folder_for(a)
-    tokdir = hy4_tokenizer_dir(paths[files[0]], data / "packs" / tag.lower() / "tokenizer", engine_program)
+    tokdir = hy4_tokenizer_dir(paths[files[0]], data / "packs" / tag.lower() / "tokenizer", engine_program, a=a, folder=folder, own=own, data=data)
     if tokdir is None:
         warn("the tokenizer is read from the model file by the engine, which is not installed yet: run this again once it is (nothing is downloaded twice)")
         tokdir = data / "packs" / tag.lower() / "tokenizer"
@@ -11775,18 +12094,34 @@ def install_hy4_flash(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopt
         ok(f"tokenizer: {tokdir}")
 
     step(7, "writing the start script")
-    args = ["--native", str(paths[files[0]]), "--engram", str(engram), "--max-context", str(ctx)]
+    args = ["--native", str(paths[files[0]]), "--engram", str(engram), "--max-context", str(ctx), "--session-reuse", "1"]   # the engine reuses a conversation's longest common prefix
     if vision:                                         # the Vision shard: the engine reads pictures with it once it supports them (serve leaves the option out until the engine says images=1)
         args += ["--vision", str(paths[hy4_family.VISION_FILE])]
+    use_layer_split = len(multi_cards) >= 2 and hy4_fit.should_layer_split(multi_cards, windows=WIN)
+    if use_layer_split:
+        args += ["--layer-split", "auto"]
     if not unified:                                    # a card: the rank-cut plan (hy4_fit) as the engine's caps; one pool: the engine puts everything in it
         args += ["--vram-experts-gb", f"{placed['vram_gb']:.2f}", "--ram-experts-gb", f"{placed['ram_gb']:.2f}"]
     cfg = {"exe": engine_exe(eng), "args": args, "cwd": str(ROOT), "tokenizer": str(tokdir), "model_name": f"{fam['name']}-{model.lower()}", "arch": fam["arch"],
            "log": str(home() / f"strata-{tag.lower()}.log"), "lib_dirs": lib_dirs, "port": port, "drafting": hy4_family.DEFAULT_DRAFTER}
+    if use_layer_split:
+        cfg["layer_split"] = "auto"
     if hip:
         cfg["backend"] = "hip"
     elif sys.platform == "darwin":
         cfg["backend"] = "metal"
-    if gpu.get("count", 1) > 1 or a.gpu is not None:
+    elif getattr(a, "backend", None) == "sycl":
+        cfg["backend"] = "sycl"
+    if isinstance(getattr(a, "_roles", None), dict):
+        from strata_control import gpu_roles as GR
+        rcards = getattr(a, "_roles_cards", None) or (multi_cards if len(multi_cards) >= 2 else [gpu])
+        cfg.update(GR.mirror(GR.parse_saved(a._roles) or a._roles, rcards))
+        cfg["gpus_asked"] = True
+    elif len(multi_cards) >= 2:
+        cfg["gpu"] = [int(c["index"]) for c in multi_cards]
+        cfg["gpu_order"] = "as_given"
+        cfg["gpus_asked"] = True
+    elif gpu.get("count", 1) > 1 or a.gpu is not None:
         cfg["gpu"] = gpu["index"]
         cfg["gpus_asked"] = True
     if a.host:
@@ -11797,7 +12132,7 @@ def install_hy4_flash(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopt
         cfg["open_browser"] = a.browser
     cfg_path = home() / f"strata-{tag.lower()}.json"
     write_setup_config(cfg_path, cfg, adopted if adopted is not None and adopted.name == cfg_path.name else None, explicit_args(a))
-    script = write_run_script(tag, cfg_path, port, cfg.get("open_browser") is not False)
+    script = write_run_script(tag, cfg_path, port, cfg.get("open_browser") is True)
     ok(f"start script: {script.name}")
     say()
     say("All set.")
@@ -11855,9 +12190,9 @@ def preview_family(a) -> int:
     return 0
 
 
-def resolve_custom_gguf(path_str: str) -> tuple[str, str, list[Path]]:
+def resolve_custom_gguf(path_str: str, check: bool = False) -> tuple[str, str, list[Path]]:
     """--custom-gguf PATH: inspect the GGUF header, match it to a family/model,
-    and return (family, model, [shard paths])."""
+    and return (family, model, [shard paths]).  `check`: --check (nothing is installed)."""
     _tools = str(ROOT / "tools")
     if _tools not in sys.path:
         sys.path.insert(0, _tools)
@@ -11932,10 +12267,29 @@ def resolve_custom_gguf(path_str: str) -> tuple[str, str, list[Path]]:
             fail("cannot install this GGUF with --custom-gguf",
                  "use --inspect to read the full explanation, or give it to --gguf-dir")
         # derive the size from the filename's quant token (e.g. "Q4_K_M" in "...-Q4_K_M.gguf")
-        m_q = GGUF_QUANT.search(files[0].name)
-        quant = m_q.group(1) if m_q else Path(SHARD_NAME.sub("", files[0].name)).stem.rsplit("-", 1)[-1]
-        model = next((m for m in models_dict if quant.lower().replace("_", "") in m.replace("_", "").lower()
-                      or m.lower().endswith(quant.lower())), None)
+        own_sizes = FAMILIES.get(fam, {}).get("custom_sizes")
+        name = files[0].name
+        if own_sizes:                                  # a rewritten file's ".loop" before ".gguf": the quant is before it
+            name = re.sub(r"\.loop(?=(-\d{5}-of-\d{5})?\.gguf$)", "", name, flags=re.I)
+        m_q = GGUF_QUANT.search(name)
+        quant = m_q.group(1) if m_q else Path(SHARD_NAME.sub("", name)).stem.rsplit("-", 1)[-1]
+        if own_sizes:                                  # the whole name: Q2_K is not UD-Q2_K_XL
+            model = next((m for m in models_dict if m.lower() == quant.lower()), None)
+        else:
+            model = next((m for m in models_dict if quant.lower().replace("_", "") in m.replace("_", "").lower()
+                          or m.lower().endswith(quant.lower())), None)
+        if not model and own_sizes:
+            # a quantization setup does not offer (Inkling 2 Mini's IQ4_NL, Q4_K_M, ...): a size of its own, its
+            # estimates read from the file's header
+            model = quant if m_q else "custom"
+            offered = ", ".join(sorted(models_dict))
+            d, near = custom_size(models_dict, fp, sum(f.stat().st_size for f in files))
+            models_dict[model] = d
+            warn(f"{title} (architecture {fp['arch']!r}): "
+                 + (f"your file's quant '{quant}' is not one setup offers ({offered})" if m_q else
+                    f"the file name has no quant setup offers ({offered})")
+                 + f": {'would be installed' if check else 'installed'} as its own size, {model}; its experts' "
+                 f"size and the RAM estimate are read from its header, the VRAM before any expert is {near}'s")
         if not model:
             model = sorted(models_dict)[0]
             warn(f"PolyStrata: {sentence}\n  your file's quant '{quant}' is not one setup offers "
@@ -11946,6 +12300,21 @@ def resolve_custom_gguf(path_str: str) -> tuple[str, str, list[Path]]:
     say(f"PolyStrata: {sentence}")
     fail("cannot install this GGUF with --custom-gguf",
          "use --inspect to read the full explanation, or give it to --gguf-dir")
+
+
+def custom_size(sizes: dict, fp: dict, file_bytes: int) -> tuple[dict, str]:
+    """--custom-gguf's entry for a quantization a strata-poly family does not offer, and the offered size it borrows
+    from: its experts' bytes (the arena) and its file size from the header, and the VRAM beside the experts of the
+    offered size whose experts are closest in bytes (what is not an expert is stored about alike in every size)."""
+    arena = sum(fp["expert_bytes"].values()) / 1e9
+    if arena <= 0:
+        fail("cannot install this GGUF with --custom-gguf: its header lists no routed experts",
+             "the file may be damaged or of another model; use --inspect to read its tensors")
+    near = min(sizes, key=lambda m: abs(sizes[m]["arena_gb"] - arena))
+    d = {"about": "your own file, a quantization setup does not offer", "download_gb": file_bytes / 1e9,
+         "arena_gb": arena, "vram_beside_gb": poly_beside_gb(sizes[near])}
+    d["ram_gb"] = round(poly_ram_need(d, 8.0))           # as the offered sizes' (an 8 GB card's estimate)
+    return d, near
 
 
 def mac_vision(asked, model: str, ram: float) -> str:
@@ -12218,7 +12587,7 @@ def mac_control_setup(a) -> int:
     step(6, "preparing the model for PolyStrata")
     pack = find_in(roots, f"packs/{tag.lower()}") or data / "packs" / tag.lower()
     env = dict(os.environ, **gguf_py_env())
-    shards = [files[0], files[0]] if family == "gyro" else files      # Gyro: one file, the model and its n-gram table
+    shards = [files[0], files[0]] if family in ("gyro", "swift") else files      # Gyro (one file) and Swift (n-gram table in shard 1)
     pack_todo = not (pack / "native_experts.txt").exists() or not (pack / "tokenizer" / "vocab.json").exists()
     prep_lock = mac_prepare_lock(native) if repacked and (pack_todo or not (native.exists() and done(native))) else None
     try:
@@ -12297,7 +12666,7 @@ def mac_control_setup(a) -> int:
             cfg["vision"]["threads"] = vision_threads()
     cfg_path = home() / f"strata-{tag.lower()}.json"
     write_setup_config(cfg_path, cfg)
-    script = write_run_script(tag, cfg_path, port, cfg.get("open_browser") is not False)
+    script = write_run_script(tag, cfg_path, port, cfg.get("open_browser") is True)
     ok(f"start script: {script.name}")
     say()
     say("All set.")
@@ -12307,7 +12676,7 @@ def mac_control_setup(a) -> int:
 def mac_hy4_setup(a) -> int:
     """Tencent Hy4-Flash on a Mac (Apple Silicon, Metal): unified memory, strata-hy4 Metal component, no Flash-Next repack."""
     from strata_control import mac_fit as MF
-    say("Strata - Tencent Hy4-Flash 220B-A12B on a Mac (Apple Silicon, Metal)")
+    say("PolyStrata - Tencent Hy4-Flash 220B-A12B on a Mac (Apple Silicon, Metal)")
     step(1, "checking your Mac")
     info = MF.mac_info()
     ram = float(info["ram_gb"] or ram_gb())
@@ -12366,8 +12735,8 @@ def main() -> int:
                          "35B-A3B, ornith122 = Ornith 1.5 122B (docs/BACKENDS.md), inkling = Inkling 2 Mini (experimental, text "
                          "only; docs/models/inkling.md), qwen36-strata = Qwen3.6-35B-A3B on the Strata project's "
                          "own engine (UD-Q4_K_XL and up, 32 GB of RAM or more; pictures with --vision, several "
-                         "requests at once with --parallel; docs/QWEN36.md), hy4-flash = Tencent Hy4-Flash on the Strata "
-                         "project's own engine (SQ-64 / SQ-96 / SQ-128)")
+                         "requests at once with --parallel; docs/QWEN36.md), hy4-flash = Tencent Hy4-Flash on "
+                         "the Strata project's own engine (SQ-64 / SQ-96 / SQ-128)")
     ap.add_argument("--model", type=model_alias, choices=list(dict.fromkeys(
         [*MODELS, *(m for f in FAMILIES.values() for m in f.get("models", {})),
          *(m for f in PREVIEW_FAMILIES.values() for m in f["models"]),
@@ -12428,10 +12797,10 @@ def main() -> int:
     ap.add_argument("--api-key", help="require this key from clients (recommended with --host 0.0.0.0 or --host ::); "
                                       "several keys: key1,key2")
     ap.add_argument("--no-browser", dest="browser", action="store_false", default=None,
-                    help="do not open the chat page in the browser when the model is ready (for a harness or an app "
-                         "that uses the API; remembered for this model, also in run-<model>.bat/.sh)")
+                    help="open no browser when the model is ready (the default; undoes --browser)")
     ap.add_argument("--browser", dest="browser", action="store_true",
-                    help="open the chat page again when the model is ready (the default; undoes --no-browser)")
+                    help="open the Monitor page in the browser when the model is ready (remembered for this model, also "
+                         "in run-<model>.bat/.sh)")
     ap.add_argument("--data-dir", help="where the model files go (~70-120 GB): default PolyStrata-data next to this folder, "
                                        "remembered for every PolyStrata folder on this PC")
     ap.add_argument("--move-data", action="store_true",
@@ -12533,6 +12902,11 @@ def main() -> int:
     ap.add_argument("--kv-streaming", choices=["auto", "on", "off"], default="auto",
                     help="from a 64K context: keep the KV cache in RAM and only the attention's window in VRAM (more "
                          "experts fit on the GPU); auto: when the RAM has room for it")
+    ap.add_argument("--inkling-small-card", choices=["on", "off"],
+                    help="Inkling 2 Mini on a card that does not hold every expert of the size: on = the small-card "
+                         "settings (--attn-requant q5_0 --loop-bf16 --tail-skip 4: faster, the answers move a "
+                         "little; the default); off = the high-accuracy mode, without them. A later setup run keeps "
+                         "off (\"small_card\" in the run config) until --inkling-small-card on")
     ap.add_argument("--backend", choices=["cuda", "hip", "sycl"],
                     help="cuda = NVIDIA (default), hip = AMD RX 7900 / 7800 / 7700 XT, RX 9060 XT / 9070 / AI PRO R9700 on "
                          "Linux or Windows (chosen by itself when the PC has no NVIDIA card PolyStrata can use), "
@@ -12563,7 +12937,7 @@ def main() -> int:
     if a.inspect:                                      # headers only: nothing is installed
         sys.exit(subprocess.run([sys.executable, str(ROOT / "tools" / "strata_inspect.py"), *a.inspect[:2]]).returncode)
     if a.custom_gguf:                                   # your own GGUF: inspect it, match it, skip download
-        _fam, _model, a._custom_gguf_shards = resolve_custom_gguf(a.custom_gguf)
+        _fam, _model, a._custom_gguf_shards = resolve_custom_gguf(a.custom_gguf, a.check)
         p = Path(a.custom_gguf)
         if (a.family and a.family != _fam) or (a.model and a.model != _model):
             fail(f"--custom-gguf resolves to --family {_fam} --model {_model}, "
@@ -12775,8 +13149,6 @@ def main() -> int:
             say(f"  (the AMD card: {'START-HERE.bat' if WIN else './setup.sh'} --backend hip)")
     cuda_tk = 13                                       # NVIDIA: the toolkit of this model's engine (cuda_choice)
     if hip:                                            # AMD: compiled here; Windows: ready-made
-        if WIN and a.gpus:
-            fail("several AMD cards sharing one model (--gpus) is Linux-only for now", "use one card: --gpu N")
         say("  Your AMD GPUs:" if amd else "  No AMD GPU found (" + ("Windows lists no AMD display adapter)." if WIN
                                                                    else "the amdgpu driver's KFD topology is empty)."))
         for g in amd:
@@ -12799,9 +13171,9 @@ def main() -> int:
                         "your user in the render and video groups)")
         if not usable:
             fail("no AMD GPU PolyStrata can use", f"the AMD backend runs on {AMD_CARDS}")
-        if a.gpus:                                     # a layer split across these cards, the first one the main
+        if a.gpus:                                     # a layer split / expert-parallel across these cards (roles: Main is last)
             chosen = amd_parse_gpus(a.gpus, amd)
-            gpu = chosen[0]
+            gpu = chosen[-1] if getattr(a, "_roles", None) else chosen[0]
         elif a.gpu is not None:
             gpu = next((g for g in usable if g["index"] == a.gpu), None)
             if gpu is None:
@@ -12817,7 +13189,7 @@ def main() -> int:
                     + ", ".join(f"--gpu {g['index']} ({g['name']})" for g in others))
         # the engine is compiled for every chosen card's architecture
         gpu = {**gpu, "count": len(amd), "archs": sorted({g["arch"] for g in chosen})}
-        chosen = [gpu] + chosen[1:]
+        chosen = [gpu if g["index"] == gpu["index"] else g for g in chosen]
         sel = [g["index"] for g in chosen]
         multi = sel if len(sel) > 1 else []
         a.gpu = gpu["index"] if len(amd) > 1 else a.gpu
@@ -13163,8 +13535,14 @@ def main() -> int:
                   else "as requested")
         ok(f"rope scaling: {scaling}, factor {rope_scale:g} ({origin})")
     ok(f"context: {ctx} tokens")
-    # the KV cache (the model's memory of the conversation): 8-bit, or 4-bit after a Hadamard rotation (PR #21)
-    kv = "fp16" if ctx <= 8192 else (a.kv or "int8")
+    # the KV cache (the model's memory of the conversation): 8-bit, or 4-bit after a Hadamard rotation (PR #21).
+    # Track 6A + #6354: default to int8 KV on <= 12.5 GB GPUs (all models), on <= 16.5 GB GPUs (all Unsloth quants at
+    # any context: avoids 21-23% 16K/32K prompt slowdown and preserves 400+ VRAM expert slots), and on <= 24.5 GB GPUs
+    # at >= 64K context.
+    _vram_kv = float((gpu or {}).get("vram_gb") or 0.0)
+    _is_unsloth_kv = bool(MODELS.get(model, {}).get("budget"))
+    _low_vram_kv = (0 < _vram_kv <= 12.5) or (_is_unsloth_kv and ((0 < _vram_kv <= 16.5) or (0 < _vram_kv <= 24.5 and ctx >= 65536)))
+    kv = (a.kv or "int8") if (ctx > 8192 or _low_vram_kv) else (a.kv or "fp16")
     if ctx > 8192 and not a.kv and not a.yes:
         say()
         say("  KV cache precision (the model's memory of the conversation):")
@@ -13244,7 +13622,7 @@ def main() -> int:
                 warn("most of the experts are read from the SSD while it answers: expect it to be much slower than "
                      "with enough RAM (a faster SSD and a smaller size help)")
     # EXPERIMENTAL: the experimental-speed-projection control vector (data/experimental-speed-projection), off unless
-    # chosen here; with it loaded, the web app and the API switch it off per request
+    # chosen here; with it loaded, a request switches it off with "experimental_speed_projection": false
     esp = None
     esp_choice = (a.experimental_speed_projection or "").strip()
     if family in ("qwen", "coder"):                   # the Coder: the same model's residual stream
@@ -13252,8 +13630,8 @@ def main() -> int:
             say()
             say("  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).")
             say("  It changes how the model answers: its package describes it as a refusal-direction projection (the")
-            say("  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off")
-            say("  per chat. Details: data/experimental-speed-projection/README.md")
+            say("  model declines far fewer requests). Off unless you choose it; when on, a request can switch it off")
+            say("  (\"experimental_speed_projection\": false). Details: data/experimental-speed-projection/README.md")
             esp_choice = "on" if ask("Turn on the experimental speed projection?", ["y", "n"], "n", a.yes) == "y" else "off"
         if esp_choice.lower() not in ("off", "no", "n", "0"):
             esp = ESP_VECTOR if esp_choice.lower() in ("on", "yes", "y", "1") else Path(esp_choice).expanduser().resolve()
@@ -13499,7 +13877,7 @@ def main() -> int:
     warm_start_into(cfg, a)
     write_setup_config(cfg_path, cfg, adopted if adopted is not None and adopted.name == cfg_path.name else None, explicit_args(a),
                        after_carry=(lambda c: uma_cache_guard(c, model, gpu)) if gpu.get("uma") else None)
-    script = write_run_script(tag, cfg_path, port, cfg.get("open_browser") is not False)
+    script = write_run_script(tag, cfg_path, port, cfg.get("open_browser") is True)
     # offered only when someone answers: --yes installs and adopted earlier installs are not held up by it
     # P12: Skip is the default, as in the Terminal's first launch (T5): a person who presses Enter all the way does not wait 15-30 minutes
     if cal is None and not hip and not a.no_start and not a.yes and ask(TUNE_QUESTION.format(again=setup_command()), ["y", "n"], "n", a.yes, shown=TUNE_DEFAULT_SHOWN) == "y":
@@ -13517,7 +13895,7 @@ def main() -> int:
             + ("" if a.api_key else " - no API key set: anyone on your network can use it"))
     say(f"  Next time:        just run {'START-HERE.bat' if WIN else './setup.sh'} (or {script.name}) - it starts right away")
     if vision != "none":
-        say("  Images:           send them in the chat page, in chat.py (/image <path>) or over the API")
+        say("  Images:           send them over the API (your app) or in chat.py (/image <path>)")
     if cfg.get("images"):
         say(f"  Image generation: POST http://127.0.0.1:{port}/v1/images/generations (OpenAI's images API)")
     if a.parallel is None:                             # #465: the opt-in, said once (nothing changes)

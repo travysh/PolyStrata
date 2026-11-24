@@ -17,7 +17,7 @@ def roles(d):
 
 
 class Vectors(unittest.TestCase):
-    """tests/data/gpu_roles_vectors.json is also run by app/host/tests/gpu-roles.test.mjs against gpu-roles.ts."""
+    """tests/data/gpu_roles_vectors.json, the shared cases of the role rules."""
 
     def test_recommend(self):
         for c in V["recommend"]:

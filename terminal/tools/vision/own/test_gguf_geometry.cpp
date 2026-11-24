@@ -112,10 +112,10 @@ int main(int argc, char** argv) {
     }
     const std::string tmp = std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : ".") + "/strata_own_test_" + std::to_string((long) std::rand()) + ".gguf";
 
-    // --- 1. a file with every value kind and the four tensor types ---
+    // --- 1. a file with every value kind and every tensor type ---
     {
         W w;
-        w.raw("GGUF", 4); w.put<uint32_t>(3); w.put<uint64_t>(4);   // tensors
+        w.raw("GGUF", 4); w.put<uint32_t>(3); w.put<uint64_t>(8);   // tensors
         w.put<uint64_t>(9);                                          // keys
         auto kv_u32 = [&](const char* k, uint32_t v) { w.str(k); w.put<uint32_t>(4); w.put<uint32_t>(v); };
         kv_u32("a.u32", 7);
@@ -137,6 +137,10 @@ int main(int argc, char** argv) {
         dir("t.f16", {4}, GT_F16, 8);
         dir("t.bf16", {4}, GT_BF16, 8);
         dir("t.q8", {32, 2}, GT_Q8_0, 68);
+        dir("t.q4_0", {32}, GT_Q4_0, 18);
+        dir("t.q4_1", {32}, GT_Q4_1, 20);
+        dir("t.q5_0", {32}, GT_Q5_0, 22);
+        dir("t.q5_1", {32}, GT_Q5_1, 24);
         while (w.b.size() % 32) w.b.push_back(0);
         auto pad = [&]() { while (w.b.size() % 32) w.b.push_back(0); };
         const float f[4] = {1.0f, -2.0f, 0.25f, 3.5f};
@@ -150,6 +154,12 @@ int main(int argc, char** argv) {
             for (int j = 0; j < 32; ++j) w.put<int8_t>((int8_t) (j - 16));
         }
         pad();
+        // the 4- and 5-bit blocks: byte j holds weight j (low nibble, here j) and weight j + 16 (high nibble, here 15 - j)
+        auto nibbles = [&]() { for (int j = 0; j < 16; ++j) w.put<uint8_t>((uint8_t) (j | (15 - j) << 4)); };
+        w.put<uint16_t>(f32_to_f16(0.5f)); nibbles(); pad();                                         // Q4_0: d 0.5
+        w.put<uint16_t>(f32_to_f16(0.25f)); w.put<uint16_t>(f32_to_f16(-1.0f)); nibbles(); pad();   // Q4_1: d 0.25, m -1
+        w.put<uint16_t>(f32_to_f16(0.5f)); w.put<uint32_t>(0x00010001u); nibbles(); pad();          // Q5_0: fifth bits of weights 0 and 16
+        w.put<uint16_t>(f32_to_f16(0.25f)); w.put<uint16_t>(f32_to_f16(1.0f)); w.put<uint32_t>(0x80008000u); nibbles(); pad();   // Q5_1: of 15 and 31
         FILE* fp = std::fopen(tmp.c_str(), "wb");
         CHECK(fp != nullptr);
         if (fp) { std::fwrite(w.b.data(), 1, w.b.size(), fp); std::fclose(fp); }
@@ -172,7 +182,7 @@ int main(int argc, char** argv) {
         CHECK(g.get_int_array("a.arr_b", ai) && ai.size() == 4 && ai[1] == 1 && ai[3] == 0);
         CHECK(!g.get_int_array("a.arr_f", ai));
         CHECK(!g.get_int_array("a.arr_s", ai));
-        CHECK(g.tensors().size() == 4);
+        CHECK(g.tensors().size() == 8);
         const GgufTensorInfo* t = g.tensor("t.f16");
         CHECK(t && t->nbytes == 8 && t->ne.size() == 1 && t->ne[0] == 4);
         float v[64];
@@ -184,6 +194,18 @@ int main(int argc, char** argv) {
         t = g.tensor("t.q8");
         CHECK(t && t->nbytes == 68 && g.read_f32(*t, v, err));
         CHECK(std::fabs(v[0] - 0.5f * -16) < 1e-6 && std::fabs(v[31] - 0.5f * 15) < 1e-6 && std::fabs(v[32] - 1.0f * -16) < 1e-6);
+        t = g.tensor("t.q4_0");                         // (q - 8) * d
+        CHECK(t && t->nbytes == 18 && g.read_f32(*t, v, err));
+        CHECK(v[0] == -4.0f && v[15] == 3.5f && v[16] == 3.5f && v[31] == -4.0f);
+        t = g.tensor("t.q4_1");                         // q * d + m
+        CHECK(t && t->nbytes == 20 && g.read_f32(*t, v, err));
+        CHECK(v[0] == -1.0f && v[15] == 2.75f && v[16] == 2.75f && v[31] == -1.0f);
+        t = g.tensor("t.q5_0");                         // (q + 16 * fifth bit - 16) * d
+        CHECK(t && t->nbytes == 22 && g.read_f32(*t, v, err));
+        CHECK(v[0] == 0.0f && v[1] == -7.5f && v[16] == 7.5f && v[17] == -1.0f);
+        t = g.tensor("t.q5_1");                         // (q + 16 * fifth bit) * d + m
+        CHECK(t && t->nbytes == 24 && g.read_f32(*t, v, err));
+        CHECK(v[0] == 1.0f && v[15] == 8.75f && v[16] == 4.75f && v[31] == 5.0f);
         CHECK(g.tensor("nope") == nullptr);
         CHECK(std::fabs(gguf_f16_to_f32(0x0001) - 5.9604645e-08f) < 1e-12f);   // the smallest subnormal half
         CHECK(gguf_f16_to_f32(0x7C00) > 1e30f);                                // inf

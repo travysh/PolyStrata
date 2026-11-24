@@ -882,7 +882,8 @@
  "inkling/UD-Q4_K_XL": {
   "engine": "strata-poly",
   "archs": [
-   "inkling2_loop"
+   "inkling2_loop",
+   "inkling2"
   ],
   "files": [
    "Inkling-2-Mini-UD-Q4_K_XL.gguf"
@@ -898,7 +899,8 @@
  "inkling/UD-Q3_K_XL": {
   "engine": "strata-poly",
   "archs": [
-   "inkling2_loop"
+   "inkling2_loop",
+   "inkling2"
   ],
   "files": [
    "Inkling-2-Mini-UD-Q3_K_XL.gguf"
@@ -914,7 +916,8 @@
  "inkling/UD-Q2_K_XL": {
   "engine": "strata-poly",
   "archs": [
-   "inkling2_loop"
+   "inkling2_loop",
+   "inkling2"
   ],
   "files": [
    "Inkling-2-Mini-UD-Q2_K_XL.gguf"

@@ -8,8 +8,7 @@ results. The last positions of the prompt are then read fully, exactly as before
 full path against the state KVA built.
 
 **It is off by default.** Unset, the engine is 0.2.6's, prompt path and draft layer included. Set `STRATA_KVA=1` to
-turn it on (the PolyStrata app shows it as the "Faster long prompts" switch in Expert settings, off until the user turns
-it on; the Terminal passes `STRATA_KVA=1`). Switched on, it uses the configuration the 0.2.7 quality runs found
+turn it on (the Terminal passes `STRATA_KVA=1`). Switched on, it uses the configuration the 0.2.7 quality runs found
 cleanest: **split 36** (only layers 36–47 of 48 are approximated) and a **2048-token exact tail**. Both can be
 changed with `STRATA_KVA_SPLIT` and `STRATA_KVA_SUFFIX`.
 

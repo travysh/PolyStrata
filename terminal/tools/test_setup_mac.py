@@ -7,6 +7,7 @@ PC: sysctl / sw_vers / xcode-select are mocked. No GPU, no network.
 from __future__ import annotations
 
 import os
+import platform
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,10 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT.parent / "engine" / "metal"))
 import setup  # noqa: E402
 import setup_mac as M  # noqa: E402
+
+# platform.uname() runs `ver` through subprocess the first time on Windows, and it caches what it finds; read it now, before
+# a test replaces subprocess.run with fake_run (pytest happens to read it first, a plain run of this file does not)
+platform.uname()
 
 
 def no_feed(case):

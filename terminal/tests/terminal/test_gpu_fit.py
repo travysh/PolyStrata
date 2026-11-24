@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import unittest
 from pathlib import Path
 
@@ -112,12 +111,6 @@ class GpuFitRule(unittest.TestCase):
         self.assertIn("RTX 3070 Ti + RAM", r["options"][0]["summary"])
         r2 = G.options(44.0, 32.0, [card(0, "RTX 3060", 10)])
         self.assertIn("read from the SSD", r2["options"][0]["words"])
-
-    def test_the_constants_equal_the_apps(self):
-        text = (ROOT.parent / "app" / "host" / "src" / "lib" / "native-fit.ts").read_text(encoding="utf-8")
-        m = re.search(r"const DENSE_GB = (\d+), SYSTEM_ROOM_GB = (\d+), DENSE_EXTRA_GB = (\d+)", text)
-        self.assertIsNotNone(m)
-        self.assertEqual((G.DENSE_GB, G.SYSTEM_ROOM_GB, G.DENSE_EXTRA_GB), tuple(float(x) for x in m.groups()))
 
     def test_fit_matches_the_launch_catalog_port_of_native_fit(self):
         from strata_cli.launch.catalog import fit_on

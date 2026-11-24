@@ -1,4 +1,4 @@
-"""Tests for the model configs setup.py lists: the server keeps a config's Chat settings next to it as
+"""Tests for the model configs setup.py lists: the server keeps a config's settings next to it as
 `strata-<model>.shared-settings.json`, which matches the configs' own `strata-*.json` but is not one (no exe, no
 args), so the start menu and the "set up like the last one" lookup must leave it out.
 
@@ -46,7 +46,7 @@ class ModelConfigs(unittest.TestCase):
             self.assertEqual(setup.installed_configs(), [self.config])
 
     def test_the_last_config_of_another_install_is_never_its_shared_settings(self):
-        # the shared settings are written after the config (the first time Chat settings are saved), so they are
+        # the shared settings are written after the config (the first time settings are saved), so they are
         # the newest strata-*.json there
         later = self.config.stat().st_mtime + 60
         os.utime(self.shared, (later, later))

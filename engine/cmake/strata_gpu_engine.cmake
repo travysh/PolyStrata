@@ -18,7 +18,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # The selected runtime is PUBLIC because graph.cpp is a HOST translation unit that calls cudaGraphLaunch and
   # cudaEventQuery: the .cu sources get cudart through the CUDA language rules, a .cpp does not, and the
   # linker error ("unresolved external symbol cudaGraphInstantiate") names the function rather than the cause.
-  target_link_libraries(strata_core PUBLIC strata_plan strata_warnings ${_strata_gpu_runtime_target})
+  target_link_libraries(strata_core PUBLIC strata_plan strata_warnings ${_strata_gpu_runtime_target} ${CMAKE_DL_LIBS})
 
   add_executable(strata-device src/core/device_main.cpp)
   target_link_libraries(strata-device PRIVATE strata_core)
@@ -106,7 +106,10 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
                           src/ngram/ple_reader.cpp
                           src/platform/direct_file.cpp)
   if(STRATA_ENABLE_HIP)
-    target_sources(strata_kernels PRIVATE src/kernels/cuda/nvfp4_decode_sm120_absent.cpp)
+    target_sources(strata_kernels PRIVATE
+      src/kernels/cuda/nvfp4_decode_sm120_absent.cpp
+      src/kernels/hip/hip_unsloth_wmma.cu
+      src/kernels/hip/hip_unsloth_dp4a.cu)
   endif()
   if(STRATA_ISA_FLOOR STREQUAL "avx")
     if(MSVC)
@@ -962,8 +965,9 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_test(NAME gfx906_gdn_rec_head COMMAND gfx906_gdn_rec_head)
     set_tests_properties(gfx906_gdn_rec_head PROPERTIES TIMEOUT 120)
   endif()
-  if(STRATA_ENABLE_CUDA)
-    # the Volta prompt experts (gemm_iq_f16_grouped, STRATA_PF_WMMA) against a double reference; skipped below sm_70
+  if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
+    # the Volta prompt experts (gemm_iq_f16_grouped, STRATA_PF_WMMA; strata-poly's on RDNA3/RDNA4) against a double
+    # reference; skipped below sm_70 and on an AMD card without the matrix cores
     add_executable(pf_wmma_parity src/kernels/pf_wmma_parity.cpp)
     target_include_directories(pf_wmma_parity PRIVATE ${_strata_gpu_include_directories})
     target_link_libraries(pf_wmma_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})

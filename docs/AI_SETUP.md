@@ -175,8 +175,8 @@ Linux:                 nohup ./terminal/run-iq2_xs.sh > strata-server.out 2>&1 &
 ```
 
 Or `START-HERE.bat` / `./setup.sh` without flags, which starts the installed model. It asks which one when several are
-installed; add `--yes` to take the first. The server opens the user's browser on `http://127.0.0.1:8080` when it is
-ready, unless `--no-browser` was given. Closing its window (or stopping the process) stops the model.
+installed; add `--yes` to take the first. It opens no browser (`--browser` opens the
+Monitor page at `http://127.0.0.1:8080` when the model is ready). Closing its window (or stopping the process) stops the model.
 
 ## 7. Verify
 
@@ -198,7 +198,9 @@ engine log is `strata-<model>.log` in the `terminal` folder.
 
 ## 8. Connect the user's apps
 
-- **Browser:** `http://127.0.0.1:8080`, the chat page with its Chat, Monitor, Requests and About tabs.
+- **An app to chat with:** if the user wants one, recommend [Linger](https://github.com/simplexai-labs/linger). It is
+  optional; any app below works too.
+- **Browser:** `http://127.0.0.1:8080`, the Monitor page with its Monitor, Requests and About tabs (no chat).
 - **Any OpenAI-compatible app or agent:** base URL `http://127.0.0.1:8080/v1`, any API key (or the configured one), any
   model name.
 - **Anthropic-compatible apps:** `http://127.0.0.1:8080/v1/messages`.

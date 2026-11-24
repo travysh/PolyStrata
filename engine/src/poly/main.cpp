@@ -19,6 +19,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cctype>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
@@ -1457,8 +1458,11 @@ int once(Session& ss, const std::vector<int32_t>& ids, const Pictures& pictures,
 }
 
 // --check-batch K: K prompts, the --tokens one without its first 0, 1, ... K-1 tokens, each answered greedily on
-// its own and then all of them together in their own sequences (Engine::step()).  Returns 1 when a token differs.
-int check_batch(Engine& engine, const std::vector<int32_t>& ids, int k, long long max_new) {
+// its own and then all of them together in their own sequences (Engine::step()).  With --check-stagger the
+// sequences differ in all but the model: sequence j's prompt is the first n >> 3 (K - 1 - j) tokens of --tokens' n
+// (at least 16), it is read once the others have taken j * max_new / (2K) steps, and it writes max_new - j * max_new
+// / K tokens, so that the last steps are the first sequence's alone.  Returns 1 when a token differs.
+int check_batch(Engine& engine, const std::vector<int32_t>& ids, int k, long long max_new, bool stagger) {
     const auto read = [&](const std::vector<int32_t>& p) {
         engine.reset();
         for (size_t i = 0; i < p.size(); i += (size_t) engine.max_rows()) {
@@ -1467,27 +1471,45 @@ int check_batch(Engine& engine, const std::vector<int32_t>& ids, int k, long lon
         }
         return (int32_t) strata::poly::most_likely(engine.logits(), engine.n_vocab());
     };
-    std::vector<std::vector<int32_t>> want((size_t) k), got((size_t) k);
-    std::vector<int> seqs((size_t) k);
+    std::vector<std::vector<int32_t>> want((size_t) k), got((size_t) k), prompt((size_t) k);
+    std::vector<long long> wants((size_t) k, max_new), joins((size_t) k, 0);
+    for (int j = 0; j < k; ++j) {
+        if (!stagger) {
+            prompt[(size_t) j].assign(ids.begin() + j, ids.end());
+            continue;
+        }
+        const int shift = std::min(3 * (k - 1 - j), 63);   // (k of 23 or more would shift by 64 or more)
+        const size_t n = std::min(ids.size(), std::max<size_t>(16, ids.size() >> shift));
+        prompt[(size_t) j].assign(ids.begin(), ids.begin() + (std::ptrdiff_t) n);
+        wants[(size_t) j] = max_new - j * max_new / k;
+        joins[(size_t) j] = j * max_new / (2 * k);
+    }
     std::vector<int32_t> next((size_t) k);
     for (int j = 0; j < k; ++j) {
-        const std::vector<int32_t> p(ids.begin() + j, ids.end());
         engine.bind(0);
-        int32_t t = read(p);
-        for (long long n = 0; n < max_new; ++n) {
+        int32_t t = read(prompt[(size_t) j]);
+        for (long long n = 0; n < wants[(size_t) j]; ++n) {
             want[(size_t) j].push_back(t);
             engine.eval(&t, 1, true);
             t = (int32_t) strata::poly::most_likely(engine.logits(), engine.n_vocab());
         }
     }
-    const Clock::time_point t0 = Clock::now();
-    for (int j = 0; j < k; ++j) {
-        seqs[(size_t) j] = j + 1;
-        engine.bind(j + 1);
-        next[(size_t) j] = read(std::vector<int32_t>(ids.begin() + j, ids.end()));
-    }
-    engine.bind(0);
-    const double read_ms = ms_since(t0);
+    // a sequence's prompt is read on its own sequence when it joins: before the first step, or between two steps of
+    // the others
+    double read_ms = 0;
+    std::vector<bool> joined((size_t) k, false);
+    const auto join = [&](long long step) {
+        const Clock::time_point t0 = Clock::now();
+        for (int j = 0; j < k; ++j)
+            if (!joined[(size_t) j] && joins[(size_t) j] <= step) {
+                engine.bind(j + 1);
+                next[(size_t) j] = read(prompt[(size_t) j]);
+                joined[(size_t) j] = true;
+            }
+        engine.bind(0);
+        read_ms += ms_since(t0);
+    };
+    join(0);
     const Clock::time_point t1 = Clock::now();
     // --batch-mtp: each sequence guesses the token after its next one, a step checks the guesses, and a sequence
     // that has its max_new tokens leaves the steps
@@ -1495,12 +1517,14 @@ int check_batch(Engine& engine, const std::vector<int32_t>& ids, int k, long lon
     long long steps = 0, offered = 0, right = 0;
     std::vector<int> live, kept;
     std::vector<int32_t> feed, guess;
+    long long tokens = 0;
     while (true) {
+        if (stagger) join(steps);
         live.clear();
         feed.clear();
         guess.clear();
         for (int j = 0; j < k; ++j)
-            if ((long long) got[(size_t) j].size() < max_new) {
+            if (joined[(size_t) j] && (long long) got[(size_t) j].size() < wants[(size_t) j]) {
                 got[(size_t) j].push_back(next[(size_t) j]);
                 live.push_back(j + 1);
                 feed.push_back(next[(size_t) j]);
@@ -1510,7 +1534,8 @@ int check_batch(Engine& engine, const std::vector<int32_t>& ids, int k, long lon
             guess.resize(live.size());
             engine.draft_many(live.data(), feed.data(), (int) live.size(), guess.data());
             for (size_t i = 0, rows = live.size(); i < live.size(); ++i) {
-                if ((long long) got[(size_t) live[i] - 1].size() >= max_new) guess[i] = -1;   // no token wanted after
+                if ((long long) got[(size_t) live[i] - 1].size() >= wants[(size_t) live[i] - 1])
+                    guess[i] = -1;   // no token wanted after
                 if (guess[i] >= 0 && (int) ++rows > engine.step_rows_alone()) guess[i] = -1;   // as the batch loop
                 offered += guess[i] >= 0;
             }
@@ -1521,6 +1546,7 @@ int check_batch(Engine& engine, const std::vector<int32_t>& ids, int k, long lon
             engine.step(live.data(), feed.data(), (int) live.size());
         }
         ++steps;
+        tokens += (long long) live.size();
         kept.assign(live.size(), 1);
         for (size_t i = 0, row = 0; i < live.size(); ++i) {
             const size_t j = (size_t) live[i] - 1;
@@ -1537,7 +1563,7 @@ int check_batch(Engine& engine, const std::vector<int32_t>& ids, int k, long lon
         }
         if (guessing) engine.keep_step(kept.data());
     }
-    for (int j = 0; j < k; ++j) got[(size_t) j].resize((size_t) max_new);
+    for (int j = 0; j < k; ++j) got[(size_t) j].resize((size_t) wants[(size_t) j]);
     const double step_ms = ms_since(t1);
     if (guessing)
         std::fprintf(stderr, "check-batch: --batch-mtp: %lld steps, %lld of %lld guesses right\n", steps, right,
@@ -1547,12 +1573,16 @@ int check_batch(Engine& engine, const std::vector<int32_t>& ids, int k, long lon
         size_t same = 0;
         while (same < want[(size_t) j].size() && want[(size_t) j][same] == got[(size_t) j][same]) ++same;
         std::fprintf(stderr, "check-batch: sequence %d: the first %zu of %lld tokens as on its own\n", j + 1, same,
-                     max_new);
+                     wants[(size_t) j]);
         if (same < want[(size_t) j].size()) rc = 1;
     }
-    std::fprintf(stderr, "check-batch: %d prompts read in %.0f ms, %lld steps of %d tokens in %.0f ms (%.1f tok/s "
-                         "together)\n",
-                 k, read_ms, max_new, k, step_ms, step_ms > 0 ? 1000.0 * (double) (max_new * k) / step_ms : 0.0);
+    if (stagger)   // the steps' time with the prompts read between them
+        std::fprintf(stderr, "check-batch: %d prompts read in %.0f ms, %lld steps of %lld tokens in all in %.0f ms\n",
+                     k, read_ms, steps, tokens, step_ms);
+    else
+        std::fprintf(stderr, "check-batch: %d prompts read in %.0f ms, %lld steps of %d tokens in %.0f ms (%.1f tok/s "
+                             "together)\n",
+                     k, read_ms, max_new, k, step_ms, step_ms > 0 ? 1000.0 * (double) (max_new * k) / step_ms : 0.0);
     return rc;
 }
 
@@ -1605,7 +1635,8 @@ void usage() {
                  "                         RAM (default: 0 = all of them in VRAM; with --kv-whole, fully resident)\n"
                  "  --kv fmt               the K and V attention caches' format, opt-in: fp16 (default,\n"
                  "                         unchanged); q8_0 (ggml Q8_0 blocks: half the KV VRAM, slightly\n"
-                 "                         different answers; qwen35moe's, kolibri1's and Flint's); q4_0 (ggml Q4_0\n"
+                 "                         different answers; qwen35moe's, kolibri1's, Flint's and Inkling 2's,\n"
+                 "                         which takes it on CUDA and HIP, not Metal); q4_0 (ggml Q4_0\n"
                  "                         blocks: 4-bit KV cache, 47%% smaller Host/PCIe footprint with --kv-resident);\n"
                  "                         int8 / int8k (Gemma 4's:\n"
                  "                         the same Q8_0 rule with the codes and their deltas in two arrays, so a\n"
@@ -1661,6 +1692,8 @@ void usage() {
                  "                         then together, compared token by token (takes --kv-whole and\n"
                  "                         --cpu-share 0 and freezes the experts' split, so the expert cache stays as\n"
                  "                         it is)\n"
+                 "  --check-stagger        with --check-batch: prompts of different lengths (the first n >> 3 (K-1-j)\n"
+                 "                         tokens), read while the others write, and answers of different lengths\n"
                  "  --eos-ids ID,ID,...    tokens that end a reply (default: the GGUF's eos, eot and eom)\n"
                  "  --temperature F --top-k N --top-p F --min-p F --seed N   sampling for --tokens (default greedy)\n"
                  "  --images FILE          with --tokens: the prompt's pictures, as strata-vision writes them\n"
@@ -1677,14 +1710,23 @@ void usage() {
                  "                         the host routes (default 0 = none is)\n"
                  "  --attn-requant TYPE    Inkling 2: its attention's matrices quantized again to TYPE (q5_0, q4_0\n"
                  "                         or iq4_nl) at load: fewer bytes a token, and the answers move a little\n"
-                 "                         (default: the file's types; setup gives an 8 GB card q5_0)\n"
-                 "  --loop-bf16            Inkling 2: its loop controllers' matrices in BF16, not F32\n"
+                 "                         (default: the file's types; setup gives an 8 GB card q5_0); off or none\n"
+                 "                         says the default (the last --attn-requant counts)\n"
+                 "  --loop-bf16            Inkling 2: its loop controllers' matrices in BF16, not F32;\n"
+                 "                         --no-loop-bf16 says the default (F32; the last one counts)\n"
+                 "  --prompt-int8          Inkling 2 on an RTX 20 (Turing): its prompt products on the int8 tensor\n"
+                 "                         cores as on RTX 30 and newer, not as halves and cuBLAS (the default on\n"
+                 "                         Turing): faster prompts, and the answers move more, activations int8 a\n"
+                 "                         32 values; --no-prompt-int8 says the default; STRATA_PF_I8MMA=0 turns the\n"
+                 "                         int8 kernel off on every card; with it, a prompt batch's experts in VRAM\n"
+                 "                         go in one launch a class of rows, the same numbers in fewer launches\n"
+                 "                         (STRATA_POLY_EXPERT_TILES=0: a launch a run of slots again)\n"
                  "  --skip-weight F        in place of --tail-skip: an expert outside VRAM that every token of a\n"
                  "                         window weighs under F of its experts' weight is left out (default 0 = off)\n"
-                 "  --cache-bias F         qwen35moe: a token's router scores get F added for each expert in VRAM\n"
-                 "                         before it picks, as it comes a few at a time; the weights stay the\n"
-                 "                         router's own: fewer experts on the CPU, and the answers move (default 0\n"
-                 "                         = off)\n"
+                 "  --cache-bias F         qwen35moe and Inkling 2: a token's router scores (Inkling 2: its gate\n"
+                 "                         plus bias) get F added for each expert in VRAM before it picks, as it\n"
+                 "                         comes a few at a time; the weights stay the router's own: fewer\n"
+                 "                         experts on the CPU, and the answers move (default 0 = off)\n"
                  "environment: STRATA_ROUTE_TAIL_SKIP=N  in place of --tail-skip (0 turns it off)\n"
                  "environment: STRATA_FREEZE_EXPERTS=1  hold the split of the routed experts between the card\n"
                  "                         and the CPU still, so the same request gives the same greedy answer\n"
@@ -1745,6 +1787,7 @@ int main(int argc, char** argv) {
     bool want_serve = false;
     long long max_new = 32;
     int top_probs = 0, lookup = 3, image_pad = -1, check = 0;
+    bool stagger = false;   // --check-stagger
     std::string images, pinned;
     std::vector<int32_t> ids, eos, follow;
     for (int i = 1; i < argc; ++i) {
@@ -1804,8 +1847,16 @@ int main(int argc, char** argv) {
         else if (a == "--ram-experts-mib") o.ram_experts_mib = std::atoll(val());
         else if (a == "--tail-skip") o.tail_skip = std::atoi(val());
         else if (a == "--route-top") o.route_top = std::atoi(val());
-        else if (a == "--attn-requant") o.attn_requant = val();
+        else if (a == "--attn-requant") {
+            // off / none: the file's types, so a flag appended to a run config can undo setup's q5_0
+            std::string t = val(), low = t;
+            for (char& c : low) c = (char) std::tolower((unsigned char) c);
+            o.attn_requant = (low == "off" || low == "none") ? std::string() : t;
+        }
         else if (a == "--loop-bf16") o.loop_bf16 = true;
+        else if (a == "--no-loop-bf16") o.loop_bf16 = false;
+        else if (a == "--prompt-int8") o.prompt_int8 = 1;
+        else if (a == "--no-prompt-int8") o.prompt_int8 = 0;
         else if (a == "--skip-weight") o.skip_weight = (float) std::atof(val());
         else if (a == "--cache-bias") o.cache_bias = (float) std::atof(val());
         else if (a == "--layer-split") o.layer_split = val();
@@ -1814,6 +1865,7 @@ int main(int argc, char** argv) {
         else if (a == "--batch" || a == "--slots") o.batch = std::atoi(val());
         else if (a == "--batch-mtp") o.batch_mtp = true;
         else if (a == "--check-batch") check = std::atoi(val());
+        else if (a == "--check-stagger") stagger = true;
         else if (a == "--draft-vocab") o.draft_vocab = std::atoi(val());
         else if (a == "--prompt-batch") o.prompt_batch = std::atoi(val());
         else if (a == "--stage-mib") o.stage_mib = std::atoi(val());
@@ -1962,8 +2014,13 @@ int main(int argc, char** argv) {
             rc = serve(ss);
         } else if ((long long) ids.size() + max_new > engine.max_context()) {
             throw std::runtime_error("the prompt and --max-new together exceed --max-context");
+        } else if (check > 0 && check >= engine.sequences()) {
+            // the engine dropped --batch (a model that runs one sequence with these options says why)
+            std::fprintf(stderr, "strata-poly: --check-batch %d: the engine runs %d sequences beside the first\n", check,
+                         engine.sequences() - 1);
+            rc = 2;
         } else if (check > 0) {
-            rc = check_batch(engine, ids, check, max_new);
+            rc = check_batch(engine, ids, check, max_new, stagger);
         } else {
             Pictures pictures;
             if (!images.empty()) {

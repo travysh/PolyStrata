@@ -35,7 +35,7 @@ REGISTER = ROOT / "terminal" / "data" / "settings-register.json"
 SETTINGS_PAGE = "docs/SETTINGS.md"
 
 ENGINE_DIRS = ("engine/src", "engine/include", "engine/metal/src", "engine/sycl/src")
-LAUNCH_PATHS = ("strata_control", "strata_cli", "terminal/setup.py", "app/host/server", "serve")
+LAUNCH_PATHS = ("strata_control", "strata_cli", "terminal/setup.py", "serve")
 DOC_PATHS = ("docs", "README.md", "AGENTS.md")
 LAUNCH_EXT = (".py", ".mjs", ".js", ".cjs", ".ts")
 SKIP_PARTS = ("node_modules", "/tests/", "/test/", "__pycache__")

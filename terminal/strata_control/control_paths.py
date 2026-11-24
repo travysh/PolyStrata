@@ -4,7 +4,7 @@ Setup writes absolute paths into a run config (``cwd``, ``--expert-profile``) th
 the Linux AppImage mounts its bundled Control at ``/tmp/.mount_<random>/usr/lib/Strata/control``, a new name at every start, and an app
 reinstall or a Control update moves it too. A path that ends up inside a folder called ``control`` which no longer exists is pointed at the
 same file in this Control when the file is there; any other value is left as it is. The app host does the same for the saved files
-(app/host/server/native-control.mjs ``repairControlPaths``); this is for a start that reads a run config itself (the update's test start).
+(the Strata project's native-control.mjs ``repairControlPaths``); this is for a start that reads a run config itself (the update's test start).
 """
 from __future__ import annotations
 

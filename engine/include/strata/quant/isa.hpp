@@ -16,7 +16,8 @@
 namespace strata::quant {
 
 /// AvxVnni: AVX2 with the VEX-encoded AVX-VNNI dot products (Alder Lake and later hybrid Intel CPUs, Zen 5), below AVX-512.
-enum class Isa : int { Scalar = 0, Neon = 1, Avx1 = 2, Avx2 = 3, AvxVnni = 4, Avx512 = 5 };
+/// Avx512Vbmi: Avx512 with VBMI's byte permutes as well (Ice Lake and later, Zen 4 and later).
+enum class Isa : int { Scalar = 0, Neon = 1, Avx1 = 2, Avx2 = 3, AvxVnni = 4, Avx512 = 5, Avx512Vbmi = 6 };
 
 /// The arithmetic contract of a kernel.  Generic = ggml's `_generic` C code (what a build without SIMD runs), Avx = its `__AVX__`
 /// branches, Avx2 = its `__AVX2__` branches (also what a native AVX-512 build runs for floats), Neon = its Arm branches.
@@ -26,7 +27,7 @@ const char* isa_name(Isa i) noexcept;
 const char* arith_name(Arith a) noexcept;
 
 /// What this CPU (and OS) can run.  Probed once; STRATA_FORCE_ISA=avx2|avx|sse caps it the way the pool's own probes do (tests, older-CPU runs):
-/// avx2 is AVX2 without AVX-512 and without AVX-VNNI.
+/// avx2 is AVX2 without AVX-512 and without AVX-VNNI.  STRATA_FORCE_AVX2=1 (as for the pool's AVX-512 kernels) turns VBMI off only.
 struct Caps {
     bool sse42 = false;
     bool avx = false;       ///< AVX with OS support for the YMM state
@@ -34,6 +35,7 @@ struct Caps {
     bool bmi2 = false;
     bool avx512 = false;    ///< AVX-512 F, DQ, BW, VL with OS support
     bool avx512_vnni = false;
+    bool avx512_vbmi = false;   ///< VBMI, with avx512 and avx512_vnni
     bool avx_vnni = false;
     bool neon = false;      ///< arm64
     bool dotprod = false;

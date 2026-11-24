@@ -20,7 +20,7 @@ bool selfcheck(const DotKernel& k, std::string* why = nullptr);
 /// the oracle test's job).
 bool selfcheck(const ActKernel& k, std::string* why = nullptr);
 
-/// dot_kernel() with the check built in: the best kernel that passes (each (type, contract, isa) is checked once per process); nullptr if none.
+/// dot_kernel() with the check built in: the best kernel that passes (each (type, contract, isa, position in the kernel list) is checked once per process); nullptr if none.
 const DotKernel* checked_dot_kernel(Type w, Arith a) noexcept;
 const ActKernel* checked_act_kernel(Type act, Arith a) noexcept;
 

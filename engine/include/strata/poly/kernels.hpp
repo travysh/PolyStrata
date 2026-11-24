@@ -393,10 +393,13 @@ void head_norm_rope_yarn(const float* x, int x_stride, const float* w, float* y,
 /// `(float)codes[..] * __half2float(scales[..])` with one scale a 32-value block.
 /// rs: the codes from a row to the next where that is not n (several caches' rows side by side in one array, as
 /// Qwen3.6's layers are on CUDA), and the scales rs / 32; 0 is n.  A multiple of 32.
+/// ss: the scales from a row to the next where that is not rs / 32 (a row's codes and scales side by side in one
+/// array, as Inkling 2's are); 0 is rs / 32.  Only attend_batch()'s dequantized products take it.
 struct Kvq8 {
     const int8_t* codes = nullptr;
     const uint16_t* scales = nullptr;
     size_t rs = 0;
+    size_t ss = 0;
 };
 
 /// Causal attention for the tokens from position `pos`: token t attends the rows 0 to pos + t, or with `window`

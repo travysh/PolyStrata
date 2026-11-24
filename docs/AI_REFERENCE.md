@@ -1,6 +1,6 @@
 # PolyStrata reference for AI tools and automated readers
 
-Last reviewed: 20 November 2026 against this checkout (PolyStrata on the Strata project's 0.2.19, engine 0.1.65). This page holds the
+Last reviewed: 20 November 2026 against this checkout (PolyStrata on the Strata project's 0.2.20, engine 0.1.66). This page holds the
 technical context behind the short [README](../README.md). Use [AI_SETUP.md](AI_SETUP.md) to install PolyStrata for a
 user, [AGENTS.md](../AGENTS.md) for repository work, and [MEDIA_KIT.md](MEDIA_KIT.md) for articles or videos.
 
@@ -11,8 +11,8 @@ user, [AGENTS.md](../AGENTS.md) for repository work, and [MEDIA_KIT.md](MEDIA_KI
   See [how it works](HOW_IT_WORKS.md), [the backends](BACKENDS.md) and [engine details](DETAILS.md).
 - It is installed from a copy of this repository: `START-HERE.bat` on Windows, `./setup.sh` on Linux and on a Mac
   ([INSTALL.md](INSTALL.md), [MAC.md](MAC.md)). Setup downloads the model and a ready-made engine, or compiles the
-  engine on the PC. This repository publishes no app installer and no Terminal archive. The `app/` and
-  `terminal/strata.py` sources are the Strata project's desktop app and Terminal; their install routes
+  engine on the PC. This repository publishes no app installer and no Terminal archive. The
+  `terminal/strata.py` source is the Strata project's Terminal; its install routes
   (`strata launch`, the one-line installers) set up the Strata project's engine, not PolyStrata's models.
 - PolyStrata's code is MIT licensed. Model weights and third-party components have separate licenses.
   See [LICENSE](../LICENSE) and [component/model licensing](HOW_IT_WORKS.md#license).

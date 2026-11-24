@@ -19,13 +19,13 @@ sys.path.insert(0, str(ROOT.parent / "tools" / "packaging"))
 sys.path.insert(0, str(ROOT))
 
 import feed_tool  # noqa: E402
-from strata_cli import update_cmd  # noqa: E402
+from strata_cli import PRODUCT_VERSION, update_cmd  # noqa: E402
 from strata_control import feed as feedmod  # noqa: E402
 from strata_control import updater  # noqa: E402
 
 COMMON = "strata-feed.json"
 ARM = "strata-feed-linux-aarch64.json"
-RELEASE = "https://github.com/Niko1221/Strata/releases/latest/download"
+RELEASE = "https://github.com/Niko1221/Strata/releases/download/v" + PRODUCT_VERSION   # (PolyStrata) the merged release, #244
 
 
 def host(platform):

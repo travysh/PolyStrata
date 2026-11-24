@@ -137,8 +137,8 @@ Images use the existing server/web upload and OpenAI-compatible image-content pa
 CPU image encoding is the automatic choice for an 8 GB card; `--vision gpu` explicitly requests GPU encoding.
 Real image-answer correctness and memory use still need validation.
 
-Once running, use the local web app at `http://127.0.0.1:8080`, the OpenAI API under `/v1`, or Anthropic
-messages at `/v1/messages`. The API model ID is `groot-19b-a3b-261023-q4_k_m`.
+Once running, use the OpenAI API under `http://127.0.0.1:8080/v1` or Anthropic messages at `/v1/messages`;
+the Monitor page is at `http://127.0.0.1:8080`. The API model ID is `groot-19b-a3b-261023-q4_k_m`.
 Keep the server bound to `127.0.0.1`; use `--api-key` before exposing it to other machines.
 
 The model card describes thinking by default, API/template-controlled non-thinking mode, and Qwen-style tool calls.

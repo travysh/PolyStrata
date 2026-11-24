@@ -1,4 +1,4 @@
-"""One engine, one size: the Terminal and the app both say decimal megabytes, rounded half up (app/host/tests/size-label.test.mjs has the
+"""One engine, one size: the Terminal and the Strata project's app both say decimal megabytes, rounded half up (that app's size-label test has the
 same numbers). 606,513,890 bytes is 607 MB in both places, never 606 in one and 607 in another."""
 import unittest
 

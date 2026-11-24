@@ -16,8 +16,13 @@
 //   - a row's product does not depend on the launch it is in (split_exact()): each output value is its own sum
 //     over the row's tiles in their order.
 //
-// Where that kernel has no tile (a card before Volta, Turing's 64 KiB of shared memory a block, a HIP build, a
-// matrix whose rows are not whole tiles of 128), each matrix of a launch is dequantized to halves
+// In a HIP build that kernel runs on RDNA3/RDNA4's matrix cores (the same FP16 operands and FP32 sums, in the
+// hardware's own order within a 16 x 16 x 16 step), with the tiles that fit their 64 KiB of LDS a block: those of
+// 128 values a row, which there take IQ4_NL, NVFP4, Q2_0 and Q8_0 matrices of rows of any whole 128s (Inkling 2
+// Mini's experts: IQ4_NL or Q8_0, rows of 2,304 and 1,152).
+//
+// Where that kernel has no tile (a card before Volta, Turing's 64 KiB of shared memory a block, an AMD card
+// without the matrix cores or a tile past its LDS, a matrix whose rows are not whole tiles of 128), each matrix of a launch is dequantized to halves
 // (iq_dequant_f16) and multiplied with the same halves of the rows by cuBLAS (hipBLAS / rocBLAS through
 // hip_compat), FP32 sums: the rows of a matrix take its bounds as the host keeps them (mirror()).  A row's product
 // there depends on how many rows the library multiplies at once (split_exact() is false).  F32 matrices are not
@@ -26,17 +31,22 @@
 // On an RTX 50 card (STRATA_PREFILL_NVFP4 unset or w4a4x2): an NVFP4 matrix with rows of a multiple of 128 values goes to the
 // block-scaled FP4 tensor cores instead, the activations two FP4 terms under a float a row (nvfp4_x2.hpp, about 8
 // bits against a half's 11), its products straight to dst's rows and its rows read by index as the int8 ones are.
+// NVFP4 takes the int8 kernel only with STRATA_PREFILL_NVFP4=w4a8 (nvfp4_w4a8()), on any card that has it.
 #include "mmq.hpp"
 #if STRATA_POLY_X2
 #include "nvfp4_x2.hpp"
 #endif
 
 #include "strata/kernels/iq_kernels.hpp"
+#if defined(GGML_USE_HIP) || defined(STRATA_USE_HIP) || defined(__HIPCC__)
+#include "strata/kernels/gfx_arch.hpp"
+#endif
 
 #include <cublas_v2.h>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
+#include <cctype>
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
@@ -88,6 +98,7 @@ bool nv4_off() {
     return off;
 }
 
+#ifndef STRATA_MMQ_OWN_HIP
 bool whole_tiles(int t, int64_t cols) {
     if (t == 40 && cols % 256 != 0 && nv4_off()) return false;
     if (t == 42 || ((t == 20 || t == 40) && cols % 256 != 0)) return cols % 128 == 0;
@@ -99,6 +110,36 @@ size_t tile_bytes(int t, int64_t cols) {
     const int wk = (t == 42 || ((t == 20 || t == 40) && cols % 256 != 0)) ? 128 : 256;
     return (size_t) kTileRows * (wk + 8) * 2 + (size_t) 64 * (128 + 8) * 2;
 }
+#else
+// RDNA: Q2_0, IQ4_NL, NVFP4 and Q8_0 in the 128-value tiles whatever the row length (gemm_iq_f16_grouped's HIP lanes);
+// the other types' 256-value tiles need more LDS than a block has
+bool lane128(int t) { return t == 42 || t == 20 || t == 40 || t == 8; }
+bool whole_tiles(int t, int64_t cols) {
+    if (t == 40 && cols % 256 != 0 && nv4_off()) return false;
+    return lane128(t) ? cols % 128 == 0 : cols % 256 == 0;
+}
+size_t tile_bytes(int t, int64_t cols) {
+    (void) cols;
+    return (size_t) kTileRows * ((lane128(t) ? 128 : 256) + 8) * 2 + (size_t) 64 * (128 + 8) * 2;
+}
+#endif
+
+#ifdef STRATA_MMQ_OWN_HIP
+// STRATA_POLY_HIP_GROUPED: the tiles on AMD's matrix cores.  Unset: on for gfx11 (RDNA3), off for gfx12 (RDNA4);
+// 1 / true / yes / on: on for both; any other value (0, off, ...): off for both (the BLAS loop).  RX 7900 XTX, Inkling 2 Mini IQ4_NL, every expert in VRAM:
+// prompts 39-65% faster.  RX 9070 XT (2,240 of 3,072 experts in VRAM, a noisy node): no clear gain, so gfx12 stays
+// opt-in until a clean run; rocBLAS there hands these GEMMs to hipBLASLt.
+bool hip_grouped(bool gfx12) {
+    static const int v = [] {
+        const char* e = std::getenv("STRATA_POLY_HIP_GROUPED");
+        if (!e || !*e) return -1;
+        std::string v(e);
+        for (char& ch : v) ch = (char) std::tolower((unsigned char) ch);
+        return v == "1" || v == "true" || v == "yes" || v == "on" ? 1 : 0;
+    }();
+    return v < 0 ? !gfx12 : v == 1;
+}
+#endif
 
 struct Card {
     int major = 0;
@@ -116,6 +157,14 @@ Card card() {
 #ifndef STRATA_MMQ_OWN_HIP
         if (cudaDeviceGetAttribute(&v, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess) c.major = v;
         if (cudaDeviceGetAttribute(&v, cudaDevAttrMaxSharedMemoryPerBlockOptin, dev) == cudaSuccess) c.shared = (size_t) v;
+#else
+        // an AMD card with the matrix cores the kernel library's tiles are built for, where they are on
+        // (hip_grouped()): its LDS a block (major stays 0)
+        cudaDeviceProp p;
+        if (cudaGetDeviceProperties(&p, dev) == cudaSuccess &&
+            ((kernels::gfx_arch_is_gfx11_wmma(p.gcnArchName) && hip_grouped(false)) ||
+             (kernels::gfx_arch_is_gfx12_wmma(p.gcnArchName) && hip_grouped(true))))
+            c.shared = (size_t) p.sharedMemPerBlock;
 #endif
         (void) v;
         known[dev] = c;
@@ -124,7 +173,7 @@ Card card() {
     return known[dev];
 }
 
-// STRATA_POLY_PROMPT_BLAS=1: every product by the BLAS path, as on Turing and in a HIP build: how that path is
+// STRATA_POLY_PROMPT_BLAS=1: every product by the BLAS path, as on Turing and on an AMD card without the tiles: how that path is
 // checked on a card that has the tiles
 bool blas_only() {
     static const bool on = [] {
@@ -136,11 +185,11 @@ bool blas_only() {
 
 // gemm_iq_f16_grouped has a tile for the matrix on this card
 bool grouped(int t, int64_t rows, int64_t cols) {
-#ifdef STRATA_MMQ_OWN_HIP
-    (void) t, (void) rows, (void) cols;
-    return false;
-#else
     const Card c = card();
+#ifdef STRATA_MMQ_OWN_HIP
+    return !blas_only() && c.shared > 0 && dequantized(t) && rows % kTileRows == 0 && whole_tiles(t, cols) &&
+           tile_bytes(t, cols) <= c.shared;
+#else
     return !blas_only() && c.major >= 7 && dequantized(t) && rows % kTileRows == 0 && whole_tiles(t, cols) &&
            tile_bytes(t, cols) <= c.shared;
 #endif
@@ -153,8 +202,8 @@ bool by_blas(int t, int64_t rows, int64_t cols) {
 }
 
 // The two-term FP4 products for an NVFP4 matrix of rows this long, on a card that has them: the default, and what
-// STRATA_PREFILL_NVFP4=w4a4x2 names; any other value (fp16, w4a8, w4a4, off) keeps the halves.  Inkling 2 Mini
-// UD-Q4_K_XL on the RTX 5090, following the halves' greedy answers (8 prompts of 19 to 10,124 tokens, 256 tokens each):
+// STRATA_PREFILL_NVFP4=w4a4x2 names; w4a8 asks for the int8 kernel (int8_rows()) and any other value (fp16, w4a4,
+// off) keeps the halves.  Inkling 2 Mini UD-Q4_K_XL on the RTX 5090, following the halves' greedy answers (8 prompts of 19 to 10,124 tokens, 256 tokens each):
 // the same most likely token at 98.5% of the steps (95.3% to 100% a prompt), against 100% for the halves run again.
 bool x2_rows(int t, int64_t cols) {
 #if STRATA_POLY_X2
@@ -223,9 +272,21 @@ __global__ void finish_rows(const float* __restrict__ y, int64_t ldy, const int3
     for (int c = threadIdx.x; c < cols; c += blockDim.x) out[c] = src[c] * b;
 }
 
+// STRATA_PREFILL_NVFP4=w4a8: an NVFP4 matrix goes to the int8 kernel where the card has it, its weights exact as int8
+// codes times a float a 16 values and the activations int8 with a scale per 32 values, as every other type there (and
+// as llama.cpp's NVFP4 tiles take them off RTX 50).  Otherwise NVFP4 keeps the halves (and RTX 50 its FP4 products):
+// the int8 activations keep about 8 bits of a value where the halves keep 11.
+bool nvfp4_w4a8() {
+    static const bool asked = [] {
+        const char* v = std::getenv("STRATA_PREFILL_NVFP4");
+        return v && std::string(v) == "w4a8";
+    }();
+    return asked;
+}
+
 // the int8 kernel takes a matrix of this type with rows this long, whatever their number
 bool int8_rows(int t, int64_t cols) {
-    return !blas_only() && cols <= 0x7fffffff && kernels::gemm_iq_i8_takes(t, (int) cols);
+    return !blas_only() && cols <= 0x7fffffff && (t != 40 || nvfp4_w4a8()) && kernels::gemm_iq_i8_takes(t, (int) cols);
 }
 
 // the rows' halves, then a float a row (back)
@@ -276,6 +337,18 @@ Mmq::~Mmq() {
     if (c->own_dq) cudaFree(c->dq);
     if (c->blas && c->own_blas) cublasDestroy(c->blas);
     delete c;
+}
+
+void Mmq::mul_at(const void* w, const int64_t* at, int ggml_type, int64_t w_rows, int64_t w_cols, int n, const void* xq,
+                 const int32_t* bounds, const int32_t* ids, int64_t total_rows, int64_t max_rows, float* dst,
+                 int64_t ld_dst, void* stream, const int32_t* from) {
+    if (n <= 0 || total_rows <= 0) return;
+    if (!int8_rows(ggml_type, w_cols) ||
+        !kernels::gemm_iq_i8_grouped(ggml_type, w, 0, (int) w_rows, (int) w_cols, xq, total_rows, bounds, n, (int) max_rows,
+                                     ids, dst, ld_dst, stream, from, at))
+        throw std::runtime_error("strata-poly prompt product: the int8 kernel did not start for tensor type " +
+                                 std::to_string(ggml_type) + " with [" + std::to_string(w_rows) + ", " +
+                                 std::to_string(w_cols) + "] at offsets");
 }
 
 Mmq::Work Mmq::work(int ggml_type, int64_t w_rows, int64_t w_cols, int64_t rows, bool by_ids, int64_t ld_dst) {

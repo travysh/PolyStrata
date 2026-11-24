@@ -134,61 +134,6 @@ class ControlModeTests(unittest.TestCase):
             data, _ = S.data_folder_in_place()
         self.assertEqual(data, self.home.resolve().parent / "PolyStrata-data")
 
-    @unittest.skipIf(os.name == "nt", "a launcher is a shell script: Linux and macOS bundles")
-    def test_the_bundle_keeps_one_real_python_and_launchers_for_the_other_names(self):
-        sys.path.insert(0, str(ROOT.parent / "app" / "desktop" / "scripts"))
-        try:
-            spec = importlib.util.spec_from_file_location("stage_control_for_launchers", ROOT.parent / "app" / "desktop" / "scripts" / "stage-control.py")
-            stage = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(stage)
-        finally:
-            sys.path.pop(0)
-        folder = Path(self.tmp.name) / "bundle"
-        bindir = folder / "python" / "bin"
-        bindir.mkdir(parents=True)
-        real = bindir / "python3.12"
-        real.write_text("#!/bin/sh"+chr(10)+"echo real "+chr(34)+"$@"+chr(34)+chr(10))
-        real.chmod(0o755)
-        os.symlink("python3.12", bindir / "python3")
-        os.symlink("python3", bindir / "python")
-        self.assertEqual(stage.dedupe_python(folder), ["python", "python3"])
-        for name in ("python", "python3"):
-            f = bindir / name
-            self.assertFalse(f.is_symlink())
-            self.assertLess(f.stat().st_size, 400, "a launcher, not a second copy of the interpreter")
-            self.assertTrue(os.access(f, os.X_OK))
-        out = subprocess.run([str(bindir / "python"), "a b", "c"], capture_output=True, text=True).stdout
-        self.assertEqual(out.strip(), "real a b c")
-        self.assertEqual(stage.dedupe_python(folder), [], "run twice: nothing left to change")
-        # no external program: with an empty PATH (and, in the AppImage, libraries that make `dirname` fail) the launcher still starts the
-        # interpreter, from another folder and through a relative name. Ubuntu 26.04: "dirname: libsystemd.so.0: version LIBSYSTEMD_254 not found".
-        for cwd, name in ((str(folder), "python/bin/python3"), (str(bindir), "./python"), (str(bindir.parent), "bin/python")):
-            r = subprocess.run(["/bin/sh", name, "x"], capture_output=True, text=True, cwd=cwd, env={"PATH": ""})
-            self.assertEqual(r.stdout.strip(), "real x", (cwd, name, r.stderr))
-
-    def test_the_bundle_lists_everything_the_install_imports(self):
-        sys.path.insert(0, str(ROOT.parent / "app" / "desktop" / "scripts"))
-        try:
-            spec = importlib.util.spec_from_file_location("stage_control_for_test", ROOT.parent / "app" / "desktop" / "scripts" / "stage-control.py")
-            stage = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(stage)
-        finally:
-            sys.path.pop(0)
-        tools = stage.local_imports(ROOT, stage.INSTALLER_TOOLS)
-        for need in ("strata_mcp", "iq_pack", "strata_pack", "canonical_xcheck", "pack_layer", "gguf_reader", "gguf_writer", "_paths",
-                     "strata_gguf", "strata_quants", "strata_quant_tables"):
-            self.assertIn(need, tools)
-        out = Path(self.tmp.name) / "control"
-        out.mkdir()
-        record = stage.add_installer(out)
-        for name in ("setup.py", "ref/load.py", "tools/strata_mcp.py", "tools/iq_pack.py", "data/draft_vocab.bin"):
-            self.assertTrue((out / name).is_file(), name)
-        self.assertIn("tools/strata_pack.py", record["files"])
-        # every module setup.py's preparation steps run exists in the bundle
-        for tool in ("iq_pack", "strata_pack", "pack_index", "strata_tokenizer", "mtp_fetch", "mtp_pack", "mtp_rt"):
-            self.assertTrue((out / "tools" / f"{tool}.py").is_file(), tool)
-
-
 class InstallerServerTests(unittest.TestCase):
     """tools/strata_mcp.py with its source (setup.py, serve/) apart from the install folder, as the app runs it."""
 

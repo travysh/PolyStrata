@@ -7,14 +7,13 @@ Qwen3.8-Flash-Next、Hy4-Flash、GLM 5.3 Flash、DeepSeek V4 Flash、LFM2.5、Fl
 
 <p align="center"><a href="https://github.com/simplexai-labs/linger"><img height="28" alt="Used by Linger" src="docs/media/used-by-linger.svg"></a></p>
 
-<p align="center"><img src="docs/media/speed.svg" width="820" alt="写回答时每秒的 token 数：Qwen3.6-35B-A3B 在 8 GB 显存的笔记本上写 98，在 RTX 5090 上写 536"></p>
+<p align="center"><img src="docs/media/speed.svg" width="820" alt="写回答时每秒的 token 数：Qwen3.6-35B-A3B 在 8 GB 显存的笔记本上写 106，在 RTX 5090 上写 536"></p>
 
 <p align="center"><img src="docs/media/claude-code-demo.gif" width="820" alt="终端里的 Claude Code，旁边是 PolyStrata 的 API Monitor"><br>
 <sub>Claude Code 接 Qwen3.6-35B-A3B UD-Q3_K_M，在 8 GB 显卡的笔记本上，原速：给一个小程序加 <code>--json</code> 选项，写测试，跑测试。服务器启动时已经读过 Claude Code 的系统提示词（<code>"warm_start": true</code>）。</sub></p>
 
-<p align="center"><a href="https://github.com/Niko1221/Strata/releases/download/v0.1.10/Pagoda.mp4"><img src="docs/media/pagoda-preview.webp" width="720" alt="模型写出的体素宝塔花园，在浏览器中运行"></a><br>
-<sub>体素宝塔花园，一次提示生成，在 RTX 5070 上用 <a href="https://github.com/Niko1221/Strata">Strata</a> 运行（Qwen3.8-Flash-Next IQ3_S，128K 上下文）·
-<a href="https://github.com/Niko1221/Strata/releases/download/v0.1.10/Pagoda.mp4">完整视频（49 秒）</a></sub></p>
+<p align="center"><img src="docs/media/linger-inkling-3d.gif" width="820" alt="Linger 接 PolyStrata 写出一个 3D 村庄"><br>
+<sub><a href="https://github.com/simplexai-labs/linger">Linger</a> 接 PolyStrata：Inkling 2 Mini UD-Q3_K_XL 在 8 GB 显卡的笔记本上，每秒约 33 个 token，用 three.js 写出一个低多边形村庄的单文件网页，Linger 直接打开。</sub></p>
 
 PolyStrata 能在普通电脑上运行通常要用服务器才能跑的大型 AI 模型。它们能聊天、写代码，还能配合你的应用和编程智能体一起工作。
 所有数据都留在你的电脑上。
@@ -61,19 +60,19 @@ PolyStrata 基于 Niko1221 的 [Strata](https://github.com/Niko1221/Strata)。
 
 | 模型 | 8 GB 显卡的笔记本<br>写回答 / 读提示 | RTX 5090<br>写回答 / 读提示 | 全部规格 |
 | --- | ---: | ---: | --- |
-| LFM2.5-24B-A2B | 87 / 3,955 | 492 / 25,275 | [LFM2.5](docs/models/lfm25.zh-CN.md) |
-| Flint 40B-A2.5B | 66 / 2,648 | 261 / 15,033 | [Flint](docs/models/flint.zh-CN.md) |
-| Qwen3.6-35B-A3B | 98 / 2,445 | 536 / 15,319 | [Qwen3.6](docs/models/qwen36.zh-CN.md) |
-| Clover-35B-A3B-Preview | 77 / 2,266 | 308 / 13,918 | [Clover](docs/models/clover.zh-CN.md) |
-| Ornith 1.5 | 89 / 2,298 | 366 / 14,438 | [Ornith](docs/models/ornith.zh-CN.md) |
-| Gemma 4 26B-A4B | 96 / 2,174 | 370 / 11,478 | [Gemma 4](docs/models/gemma4.zh-CN.md) |
-| Tiel Coder 35B-A3B | 91 / 2,455 | 440 / 15,109 | [Tiel Coder](docs/models/tiel.zh-CN.md) |
-| MiniCPM-V 4.7 35B-A3B | 79 / 2,288 | 331 / 14,615 | [MiniCPM-V](docs/models/minicpmv.zh-CN.md) |
-| Kolibri 1 | 63 / 843 | 207 / 6,133 | [Kolibri 1](docs/models/kolibri.zh-CN.md) |
+| LFM2.5-24B-A2B | 86 / 4,035 | 492 / 25,275 | [LFM2.5](docs/models/lfm25.zh-CN.md) |
+| Flint 40B-A2.5B | 64 / 2,643 | 261 / 15,033 | [Flint](docs/models/flint.zh-CN.md) |
+| Qwen3.6-35B-A3B | 106 / 2,483 | 536 / 15,319 | [Qwen3.6](docs/models/qwen36.zh-CN.md) |
+| Clover-35B-A3B-Preview | 83 / 2,242 | 308 / 13,918 | [Clover](docs/models/clover.zh-CN.md) |
+| Ornith 1.5 | 87 / 2,362 | 366 / 14,438 | [Ornith](docs/models/ornith.zh-CN.md) |
+| Gemma 4 26B-A4B | 92 / 2,187 | 370 / 11,478 | [Gemma 4](docs/models/gemma4.zh-CN.md) |
+| Tiel Coder 35B-A3B | 89 / 2,517 | 440 / 15,109 | [Tiel Coder](docs/models/tiel.zh-CN.md) |
+| MiniCPM-V 4.7 35B-A3B | 79 / 2,263 | 331 / 14,615 | [MiniCPM-V](docs/models/minicpmv.zh-CN.md) |
+| Kolibri 1 | 66 / 851 | 207 / 6,133 | [Kolibri 1](docs/models/kolibri.zh-CN.md) |
 | GLM 5.3 Flash | 跑不了，要 32 GB 显卡 | 52 / 863 | [GLM](docs/models/glm.zh-CN.md) |
 | DeepSeek V4 Flash | 跑不了，要 32 GB 显卡 | 54 / 1,926 | [DeepSeek](docs/models/deepseek.zh-CN.md) |
-| Inkling 2 Mini | 56 / 887 | 196 / 6,706 | [Inkling 2 Mini](docs/models/inkling.md) |
-| Groot 19B-A3B 261023 | 91 / 2,789 | 458 / 15,634 | [Groot](docs/models/groot.md) |
+| Inkling 2 Mini | 53 / 892 | 196 / 6,706 | [Inkling 2 Mini](docs/models/inkling.md) |
+| Groot 19B-A3B 261023 | 97 / 2,785 | 458 / 15,634 | [Groot](docs/models/groot.md) |
 | Hy4-Flash | 跑不了，要 64 GB 内存 | 90-111 / 1,694 | [Hy4-Flash](https://github.com/Niko1221/Strata/releases/tag/v0.2.18) |
 
 笔记本：RTX 4070 Laptop（8 GB）、Core i7-14700HX、32 GB 内存。工作站：RTX 5090（32 GB）、Xeon Platinum 8470Q（25 vCPU）、90-120 GB 内存。Flint 在笔记本上是 UD-Q3_K_XL（32 GB 内存时安装程序选的规格），在工作站上是 UD-Q4_K_XL。Kolibri 1 两台上都是 Q2_K；安装程序在工作站上会选 Q4_K_M，这个规格没测。
@@ -184,7 +183,8 @@ PolyStrata 的 [MCP 服务器](docs/MCP_SERVER.md)来安装、启动和停止 Po
 - 是否要识别图片（GLM 5.3 Flash、DeepSeek V4 Flash、LFM2.5、Flint、Clover 和 Kolibri 1 不支持）。
 
 每次直接按回车就是推荐选项。之后它会下载模型（Qwen3.8-Flash-Next 约 70 GB，GLM 5.3 Flash 79 到 114 GB，DeepSeek V4 Flash 91 GB，Kolibri 1 29 到 48 GB，另外八个 11 到 42 GB）并启动。
-如果下载中断了，再运行一次即可：它会从中断的地方继续。浏览器会打开 PolyStrata 应用，地址是 `http://127.0.0.1:8080`。
+如果下载中断了，再运行一次即可：它会从中断的地方继续。模型准备好后，API 地址是 `http://127.0.0.1:8080/v1`。
+想用一个应用和它聊天的话，我们推荐 [Linger](https://github.com/simplexai-labs/linger)；支持 OpenAI 或 Anthropic API 的应用也都能用。
 
 十四个模型都在安装程序的模型列表里。想直接装其中一个，运行 `./setup.sh --family glm`（或 `deepseek`、`lfm25`、`flint`、`qwen36`、`clover`、`ornith`、`gemma4`、`tiel`、`minicpmv`、`kolibri`、`groot`、`inkling`）
 （[它会问什么、写什么](docs/GLM.md#install)）。
@@ -194,7 +194,9 @@ PolyStrata 的 [MCP 服务器](docs/MCP_SERVER.md)来安装、启动和停止 Po
 > 窗口里会显示 PolyStrata 正在做什么。
 
 **下次使用时**，再运行一次 `START-HERE.bat`（或 `./setup.sh`）。它会马上启动，已下载的东西不会重复下载。关闭它的窗口就能停止模型。
-`UPDATE.bat`（`./setup.sh --update`）只更新 PolyStrata，不启动。更新、多张显卡、文件存放位置以及所有选项：
+`UPDATE.bat`（`./setup.sh --update`）只更新 PolyStrata，不启动。
+从 0.1.45-poly.10 或更早版本更新的：setup 的文件已移到 `terminal/`（[要改什么](docs/INSTALL.md#coming-from-0145-poly10-or-older)）。
+更新、多张显卡、文件存放位置以及所有选项：
 [docs/INSTALL.md](docs/INSTALL.md)。
 
 **想知道在你电脑上快不快？** 运行 `tools/BENCH.bat`（`tools/bench.sh`）：大约 5 到 10 分钟，用你自己的设置测聊天、4K/16K 提示和一段代理式会话，并写出一份可以分享的报告（[怎么做](docs/COMMUNITY_BENCHMARKS.md#run-the-benchmark)）。
@@ -225,18 +227,17 @@ PolyStrata 的 [MCP 服务器](docs/MCP_SERVER.md)来安装、启动和停止 Po
 
 ## 使用方法
 
-十四个模型的用法一样：同一个应用，同一套 API。
+十四个模型的用法一样，都用同一套 API。
 
-<p align="center"><img src="docs/media/runpagoda.png" width="900" alt="应用的 Monitor 标签页，旁边是一个编程智能体"><br>
-<sub>应用的 <b>Monitor</b>（左），编程智能体正在写视频里的宝塔花园（右）。截图来自 <a href="https://github.com/Niko1221/Strata">Strata</a>。</sub></p>
+<p align="center"><a href="https://github.com/simplexai-labs/linger"><img src="docs/media/linger-desktop.jpg" width="900" alt="Mac 上的 Linger：聊天室里智能体汇报进度，旁边是它们正在操作的 Chrome 窗口"></a><br>
+<sub><a href="https://github.com/simplexai-labs/linger">Linger</a>：多个智能体共用一台电脑，用的是你已经登录好的浏览器。图片来自 Linger 项目。</sub></p>
 
-- **在浏览器里：** 打开 `http://127.0.0.1:8080`。里面有 **Chat**（聊天）、实时 **Monitor**（监控模型和你的
-  GPU/CPU/内存）、**Requests**（打开 [API 请求监视器](docs/DETAILS.md#api-request-monitor)后，在单独的标签页里打开它），以及 **About**（设置和地址）。
-  装了不止一个模型时，可以用页面顶部的列表切换；切换后会开一个新对话，点 **Undo** 能回到原来的对话。
+- **作为你的个人智能体：** 我们推荐 [Linger](https://github.com/simplexai-labs/linger)。Mac（Apple 芯片）、Windows 和 Linux 版都在[它的最新版本](https://github.com/simplexai-labs/linger/releases/latest)里下载。
 - **在终端里：** 在 PolyStrata 文件夹里运行 `python polystrata.py --model <name>`，就能和装好的模型聊天；
   `--list-models` 列出所有模型（[更多](docs/INSTALL.md#the-terminal)）。
-- **作为你的个人智能体：** 下载 [Linger](https://github.com/simplexai-labs/linger)：[Mac（Apple 芯片）](https://github.com/simplexai-labs/linger/releases/download/desktop-v0.1.2/Linger-0.1.2-macos-arm64.dmg) ·
-  [Windows](https://github.com/simplexai-labs/linger/releases/download/desktop-v0.1.2/Linger-0.1.2-windows-x64-setup.exe) · [Linux](https://github.com/simplexai-labs/linger/releases/download/desktop-v0.1.2/Linger-0.1.2-linux-x64.tar.gz)。
+- **在浏览器里：** `http://127.0.0.1:8080` 有实时 **Monitor**（监控模型和你的
+  GPU/CPU/内存）、**Requests**（打开 [API 请求监视器](docs/DETAILS.md#api-request-monitor)后，在单独的标签页里打开它），以及 **About**（设置和地址）。
+  装了不止一个模型时，可以用页面顶部的列表切换。
 - **你的应用和编程智能体：** 添加一个“OpenAI 兼容”的提供商，base URL 填 **`http://127.0.0.1:8080/v1`**。
   API key 和模型名随便填都行。
   - 使用 Anthropic API 的应用：`http://127.0.0.1:8080/v1/messages`（Claude Code：
@@ -244,7 +245,7 @@ PolyStrata 的 [MCP 服务器](docs/MCP_SERVER.md)来安装、启动和停止 Po
     （[原因](docs/FAQ.md#can-i-use-it-with-claude-code-codex-or-other-apps)））。
   - Codex CLI 和其他使用 OpenAI Responses API 的应用：`/v1/responses`
     （[设置方法](docs/DETAILS.md#the-responses-api-and-codex-cli)）。
-- **思考：** 在聊天菜单或应用的“reasoning effort”里选择 **off、low、medium 或 high**。off 最快，
+- **思考：** 在你的应用的“reasoning effort”设置里选择 **off、low、medium 或 high**。off 最快，
   high 最适合难题。
 - **从手机或另一台电脑访问：** `START-HERE.bat --setup --host 0.0.0.0 --api-key <secret>`。一定要设置 key。
 
@@ -252,12 +253,12 @@ PolyStrata 的 [MCP 服务器](docs/MCP_SERVER.md)来安装、启动和停止 Po
 
 | | Qwen3.8-Flash-Next | GLM 5.3 Flash | DeepSeek V4 Flash | LFM2.5-24B-A2B | Flint 40B-A2.5B | Kolibri 1 | Qwen3.6-35B-A3B、Clover-35B-A3B-Preview、Ornith 1.5、Gemma 4 26B-A4B、Tiel Coder 35B-A3B、MiniCPM-V 4.7 35B-A3B |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| **图片** | 在安装时对“Images?”选是。然后在聊天里点 **Picture**，或在你的应用里附上图片。显存不到 24 GB 时，图片编码器在处理器上运行，NVIDIA 和 AMD 都一样。 | 暂时不支持。 | 只能处理文字。 | 只能处理文字。 | 只能处理文字。 | 只能处理文字。 | 在安装时对“Images?”选是，之后和 Qwen3.8-Flash-Next 一样。显存不到 16 GB 的卡上，图片编码器在处理器上跑，一张图片要几秒。Clover 只能处理文字。 |
+| **图片** | 在安装时对“Images?”选是。然后在你的应用里附上图片。显存不到 24 GB 时，图片编码器在处理器上运行，NVIDIA 和 AMD 都一样。 | 暂时不支持。 | 只能处理文字。 | 只能处理文字。 | 只能处理文字。 | 只能处理文字。 | 在安装时对“Images?”选是，之后和 Qwen3.8-Flash-Next 一样。显存不到 16 GB 的卡上，图片编码器在处理器上跑，一张图片要几秒。Clover 只能处理文字。 |
 | **多个请求** | 默认一次只回答一个，其他请求排队等待。设置 `"parallel": 2` 可以同时回答多个（[BATCHING.md](docs/BATCHING.md)）；在 12 GB 显卡上，这会让每个回答变慢。 | 一次只回答一个，其他请求排队等待。 | 一次只回答一个，其他请求排队等待。 | 一次只回答一个，其他请求排队等待。 | 一次只回答一个，其他请求排队等待。 | 一次只回答一个，其他请求排队等待。 | 一次只回答一个，其他请求排队等待。 |
 | **多个对话** | 内存够的话，默认在内存里保留多个对话，所以后续消息和轮流发言的智能体几秒内就开始回答（[详情](docs/DETAILS.md#conversation-cache)）。 | 保留最近的一个对话。安装程序会问要不要在内存里保留多个，这样智能体和子代理轮流请求时不用重读提示（[原理](docs/GLM.md#several-conversations-at-once)）。 | 和 GLM 5.3 Flash 一样。 | 和 GLM 5.3 Flash 一样。 | 和 GLM 5.3 Flash 一样。 | 和 GLM 5.3 Flash 一样。 | 和 GLM 5.3 Flash 一样。 |
 | **长提示** | 对话的第一条消息要完整读入，大约每 30,000 个 token 需要 1 分钟。 | 第一条消息要完整读入，大约每 30,000 个 token 需要 40 秒。 | 第一条消息要完整读入，大约每 30,000 个 token 需要 29 秒。 | 第一条消息要完整读入：30,000 个 token 在工作站上要 1.3 到 1.5 秒，在 8 GB 笔记本上要 8 到 10 秒。 | 第一条消息要完整读入：30,000 个 token 在工作站上约 2.3 秒，在 8 GB 笔记本上要 15 到 22 秒。 | 第一条消息要完整读入：30,000 个 token 用 Q2_K 在工作站上约 6 秒，在 8 GB 笔记本上约 40 秒。 | 第一条消息要完整读入：30,000 个 token，工作站要 4 到 5 秒，8 GB 显卡的笔记本要 14 到 27 秒。 |
 
-更多：[聊天记录存在哪里](docs/INSTALL.md#where-things-are-stored)、[API](docs/DETAILS.md#using-it)。
+更多：[文件存在哪里](docs/INSTALL.md#where-things-are-stored)、[API](docs/DETAILS.md#using-it)。
 
 ### 可选：整个模型都能放进内存时，单卡再提速
 

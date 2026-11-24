@@ -1,4 +1,4 @@
-// Shared bits for the browser tests and the screenshot script of the served web page (serve/web): a headless Chromium,
+// Shared bits for the browser tests of the served web page (serve/web): a headless Chromium,
 // a page against the mock server, small helpers. puppeteer-core is not a dependency of the repo: install it anywhere and
 // point WEBTEST_MODULES at that folder (the one that holds node_modules); CHROME_BIN is the Chrome or Edge to drive.
 import { createRequire } from "node:module";
@@ -44,20 +44,6 @@ export async function openPage(browser, mock, { width = 1280, height = 800, seed
 export const pageErrors = (page) => page.errors.filter((e) => !/^console: Failed to load resource: .* 404 .*\/api\/expert-heat\)$/.test(e));
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-// the page's own `busy` is a top-level let of app.js: reachable by name from page.evaluate
-export const idle = (page, timeout = 15000) => page.waitForFunction(() => busy === null, { timeout });
-export async function say(page, text) {
-  await page.click("#input");
-  await page.type("#input", text);
-  await page.keyboard.press("Enter");
-}
-export const assistantText = (page, i = -1) => page.evaluate((n) => { const a = messages.filter((m) => m.role === "assistant"); return a.at(n).text; }, i);
-export const shot = async (page, dir, name, opts = {}) => {
-  fs.mkdirSync(dir, { recursive: true });
-  const file = path.join(dir, name + ".png");
-  await page.screenshot({ path: file, ...opts });
-  return file;
-};
 
 // tiny test runner: node file.mjs [name-substring]
 export function runner(title) {

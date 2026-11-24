@@ -157,7 +157,7 @@ bool check_act(const ActKernel& k, std::string* why) {
     return true;
 }
 
-// one verdict per (kind, type, arith, isa), computed on first use
+// one verdict per (kind, type, arith, isa; for dots also the position in the kernel list), computed on first use
 struct Verdicts {
     std::mutex mu;
     std::vector<std::pair<uint64_t, bool>> v;
@@ -178,9 +178,9 @@ const DotKernel* checked_dot_kernel(Type w, Arith a) noexcept {
     const int n = dot_kernels(w, a, v, 16);
     for (int i = 0; i < n; ++i) {
         const DotKernel* k = v[i];
-        if (!isa_ok(k->isa)) continue;
+        if (!isa_ok(k->isa) || !dot_kernel_on(*k)) continue;
         Verdicts& vd = verdicts();
-        const uint64_t kk = key(0, w, a, k->isa);
+        const uint64_t kk = key(0, w, a, k->isa) | ((uint64_t) i << 40);   // i: two kernels of one ISA (an own one and ggml's port)
         bool known = false, ok = false;
         {
             std::lock_guard<std::mutex> lk(vd.mu);

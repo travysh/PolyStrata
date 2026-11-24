@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Version 0.2.19, engine 0.1.65. PolyStrata runs large mixture-of-experts models on a normal PC: one NVIDIA or AMD
+Version 0.2.20, engine 0.1.66. PolyStrata runs large mixture-of-experts models on a normal PC: one NVIDIA or AMD
 graphics card plus system RAM, on Windows or Linux, and on Apple Silicon Macs. Read
 **[docs/AI_REFERENCE.md](docs/AI_REFERENCE.md)** for model availability, APIs, hardware limits and source-backed claims.
 Articles and videos should use **[docs/MEDIA_KIT.md](docs/MEDIA_KIT.md)**.
@@ -18,11 +18,11 @@ The repository has a folder for each part:
   MiniCPM-V and Kolibri 1: [docs/BACKENDS.md](docs/BACKENDS.md), [docs/GLM.md](docs/GLM.md), [docs/ORNITH.md](docs/ORNITH.md),
   [docs/DEEPSEEK.md](docs/DEEPSEEK.md).
 - **`terminal/`**: setup (`terminal/setup.py`, started by `START-HERE.bat` / `setup.sh` at the top), the Python server
-  with an OpenAI- and Anthropic-compatible API and a web app (`terminal/serve/`), `polystrata.py`, and the
+  with an OpenAI- and Anthropic-compatible API and a web page with the Monitor (`terminal/serve/`), `polystrata.py`, and the
   Strata project's Terminal (`strata.py`, `strata_cli/`, `strata_control/`).
-- **`app/`**: the Strata project's desktop app. This repository does not publish it.
 
-The Qwen engine, the server, the web app, the app and the Terminal come from [Strata](https://github.com/Niko1221/Strata).
+The Qwen engine, the server, the web page and the Terminal come from [Strata](https://github.com/Niko1221/Strata).
+PolyStrata has no chat app of its own: the app it recommends is [Linger](https://github.com/simplexai-labs/linger).
 
 ## Installing PolyStrata for a user
 
@@ -37,14 +37,17 @@ backend compatible.
 
 - How the engine works, every measured number, the API and all settings: [docs/DETAILS.md](docs/DETAILS.md) and
   the [paper](docs/paper/Strata-Paper.pdf).
-- The Terminal: [docs/TERMINAL.md](docs/TERMINAL.md) and [docs/TERMINAL_LAUNCH.md](docs/TERMINAL_LAUNCH.md). The app,
-  the packages and the update feed: [packaging/README.md](tools/packaging/README.md) and [packaging/UPDATES.md](tools/packaging/UPDATES.md).
+- The Terminal: [docs/TERMINAL.md](docs/TERMINAL.md) and [docs/TERMINAL_LAUNCH.md](docs/TERMINAL_LAUNCH.md). The
+  packages and the update feed: [packaging/README.md](tools/packaging/README.md) and [packaging/UPDATES.md](tools/packaging/UPDATES.md).
 - AMD (HIP) build and validation: [docs/AMD_HIP.md](docs/AMD_HIP.md); multi-GPU: [docs/MULTI_GPU.md](docs/MULTI_GPU.md);
   Mac (Metal): [docs/MAC.md](docs/MAC.md).
 - Text taken from the Strata project names that project. After merging from it,
   `python terminal/tools/polystrata_names.py` writes PolyStrata again; its first lines say what it leaves alone.
-- Tests: the Terminal and Control tests are in `terminal/tests/terminal` (`python -m pytest terminal/tests/terminal`). The app's UI
-  tests run with `npm test` in `app/host`. Setup's own tests run without a GPU or downloads:
+- Every merge from the Strata project drops its desktop app (`app/`) and the web page's Chat (`chats-ui.js`, `chatstore.js`,
+  `history.js`, `preview.js`, `math.js`, `math-adapter.js`, `ime.js`, `web/vendor/`) again. `tools/test_dropped_paths.py`
+  lists them and fails while one is back (`python tools/check --only py-tools`).
+- Tests: the Terminal and Control tests are in `terminal/tests/terminal` (`python -m pytest terminal/tests/terminal`).
+  Setup's own tests run without a GPU or downloads:
   `python terminal/tools/test_setup_<name>.py` (for example `terminal/tools/test_setup_amd.py`, `terminal/tools/test_setup_choices.py`).
 - Keep the docs' style: plain words, short sentences, written for non-technical users first. Give measured numbers
   with what they were measured on. Make no claim without a measurement.

@@ -39,7 +39,8 @@ PREVIEW_ARCHS = {"qwen35moe": "Qwen3.6-35B-A3B"}         # model families PolySt
 # (setup.py's POLY_GGUF_ARCHS lists the arch set; keep these values byte-identical to those titles so
 # resolve_custom_gguf can map a "family" verdict back to --family/--model)
 POLY_ARCHS = {"gemma4": "Gemma 4 26B-A4B", "glm5-next": "GLM 5.3 Flash", "glm5next": "GLM 5.3 Flash",
-              "deepseek4": "DeepSeek V4 Flash", "lfm2moe": "LFM2.5-24B-A2B", "flint": "Flint 40B-A2.5B"}
+              "deepseek4": "DeepSeek V4 Flash", "lfm2moe": "LFM2.5-24B-A2B", "flint": "Flint 40B-A2.5B",
+              "inkling2_loop": "Inkling 2 Mini", "inkling2": "Inkling 2 Mini"}
 
 # the files setup installs: (family, model, ModelScope repository, file name prefix) - for --fingerprints
 KNOWN = [
@@ -120,8 +121,10 @@ def verdict(fp: dict, table: dict) -> tuple[str, str]:
                           "installs it with --family qwen36-strata, and with --family qwen36 on the strata-poly "
                           "engine")
     if fp["arch"] in POLY_ARCHS:
+        how = ("install it with setup's --custom-gguf <file> (a size setup does not offer becomes a size of its own)"
+               if POLY_ARCHS[fp["arch"]] == "Inkling 2 Mini" else "give its folder with --gguf-dir")
         return "family", (f"{POLY_ARCHS[fp['arch']]} (architecture {fp['arch']!r}): PolyStrata runs it on the "
-                          "strata-poly engine; give its folder with --gguf-dir")
+                          f"strata-poly engine; {how}")
     if fp["arch"] != ARCH:
         return "no", f"not Qwen3.8-Flash-Next (architecture {fp['arch']!r}): PolyStrata runs only that model"
     exact = [k for k, v in known.items() if v["expert_bytes"] == fp["expert_bytes"] and v["bytes"] == fp["bytes"]

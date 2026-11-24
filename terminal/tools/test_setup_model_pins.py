@@ -261,7 +261,7 @@ class InstalledModelsNeedNoNetwork(unittest.TestCase):
         # the rule exact for everything else.
         # strata_control/pictures.py names the host for the picture-reader files that Load fetches when Read pictures is on and the files
         # are missing: its download calls acquisition.require first (refused under STRATA_NO_ACQUIRE, so a start or a server never reaches it).
-        # strata_control/transfer.py names the hosts only to decide whether a download it was given gets the HF_TOKEN header (Strata 0.2.19):
+        # strata_control/transfer.py names the hosts only to decide whether a download it was given gets the HF_TOKEN header (the Strata project's 0.2.19):
         # it opens no address of its own.
         harmless = ('MODEL_CARD_URL = "https://huggingface.co/Qwen/Qwen3.8-Flash-Next"',
                     'BASE_URL = f"https://huggingface.co/{REPO}/resolve/{REVISION}/"',
@@ -270,7 +270,9 @@ class InstalledModelsNeedNoNetwork(unittest.TestCase):
                     'base = (endpoint if endpoint is not None else (os.environ.get("HF_ENDPOINT") or "").strip().rstrip("/") or HF_DEFAULT)',
                     '"""True when `hostname` is Hugging Face (huggingface.co / hf.co) or the configured HF_ENDPOINT host."""',
                     'if h == "huggingface.co" or h.endswith(".huggingface.co") or h == "hf.co" or h.endswith(".hf.co"):',
-                    'ep = (env.get("HF_ENDPOINT") or "").strip()')
+                    'ep = (env.get("HF_ENDPOINT") or "").strip()',
+                    # the Hy4-Flash tokenizer's fallback source (the Strata project's 0.2.20): only setup.py's Hy4 tokenizer step downloads from it
+                    'TOKENIZER_HF_BASE = "https://huggingface.co/tencent/Hy4-flash/resolve/main"')
         found = []
         for folder in ("strata_cli", "serve", "strata_control"):
             for p in (ROOT / folder).rglob("*.py"):

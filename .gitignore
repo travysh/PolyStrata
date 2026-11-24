@@ -112,19 +112,6 @@ node_modules/
 *.dmg
 /terminal/release/artifacts/
 /release/artifacts/
-/app/host/dist/
-/app/desktop/src-tauri/target/
-/app/desktop/src-tauri/resources/node/*
-!/app/desktop/src-tauri/resources/node/.gitignore
-# the Control component (bundled CPython + wheels + strata_control) is built by app/desktop/scripts/stage-control.py
-/app/desktop/src-tauri/resources/control/*
-!/app/desktop/src-tauri/resources/control/.gitignore
-# the pruned DeepSeek Harness (MIT) is built by app/desktop/scripts/stage-harness.mjs
-/app/desktop/src-tauri/resources/harness/*
-!/app/desktop/src-tauri/resources/harness/.gitignore
-# screenshots and checkpoints from the Mac rebuild live outside git (StrataSplit\evidence-archive)
-/app/host/docs/evidence/
-/app/host/docs/checkpoints/
 
 # DGX Spark build outputs and local venv (docs/DGX_SPARK_LINUX.md)
 /terminal/out-spark/

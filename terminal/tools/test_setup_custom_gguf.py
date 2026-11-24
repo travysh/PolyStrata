@@ -281,5 +281,115 @@ class CustomGgufTests(unittest.TestCase):
                     self.fail("expected SystemExit when resolved model not in family's size list")
 
 
+class InklingCustomGgufTests(unittest.TestCase):
+    """Inkling 2 Mini files of a quantization setup does not offer, and Unsloth's top-level layout.  The real
+    strata_inspect decides (its verdict and tables); only the header reading is replaced."""
+
+    # the header of Inkling-2-Mini-IQ4_NL.gguf (17,627,940,768 bytes): its routed experts' bytes per type
+    IQ4_NL = {"IQ4_NL": 11466178560, "Q8_0": 4331667456}
+
+    def _resolve(self, name: str, arch: str, expert_bytes: dict, check: bool = False):
+        tools = str(Path(_ROOT) / "tools")
+        if tools not in sys.path:
+            sys.path.insert(0, tools)
+        import strata_inspect as real
+        stub = types.ModuleType("strata_inspect")
+        for k in ("verdict", "load_fingerprints", "PREVIEW_ARCHS", "POLY_ARCHS"):
+            setattr(stub, k, getattr(real, k))
+        stub.read_headers = lambda sources: (arch, [])
+        stub.fingerprint = lambda a, t: {"arch": a, "tensors": 704, "bytes": sum(expert_bytes.values()),
+                                         "expert_bytes": expert_bytes}
+        with tempfile.TemporaryDirectory() as tmp, ExitStack() as stack:
+            p = Path(tmp) / name
+            _write_gguf(p)
+            stack.enter_context(mock.patch.dict(sys.modules, {"strata_inspect": stub}))
+            stack.enter_context(mock.patch.dict(setup.FAMILIES["inkling"]["models"]))   # put back after the test
+            family, model, shards = setup.resolve_custom_gguf(str(p), check)
+            return family, model, dict(setup.FAMILIES["inkling"]["models"]), p.stat().st_size
+
+    def test_iq4_nl_is_a_size_of_its_own(self):
+        """An inkling2_loop file of IQ4_NL: installed as Inkling 2 Mini IQ4_NL, not refused nor taken for another size."""
+        family, model, sizes, size = self._resolve("Inkling-2-Mini-IQ4_NL.gguf", "inkling2_loop", self.IQ4_NL)
+        self.assertEqual((family, model), ("inkling", "IQ4_NL"))
+        d = sizes["IQ4_NL"]
+        self.assertAlmostEqual(d["arena_gb"], 15.797846016)          # its experts, as read from the header
+        self.assertEqual(d["download_gb"], size / 1e9)
+        self.assertEqual(d["vram_beside_gb"], 3.7)                    # UD-Q4_K_XL's, the size with the same arena
+        self.assertEqual(d["ram_gb"], round(setup.poly_ram_need(d, 8.0)))
+        self.assertNotIn("IQ4_NL", setup.FAMILIES["inkling"]["models"])   # the table itself is not changed for good
+
+    def test_offered_size_keeps_its_name(self):
+        """A file named as an offered size is that size, with no entry added."""
+        family, model, sizes, _ = self._resolve("Inkling-2-Mini-UD-Q4_K_XL.gguf", "inkling2_loop", self.IQ4_NL)
+        self.assertEqual((family, model), ("inkling", "UD-Q4_K_XL"))
+        self.assertEqual(sorted(sizes), ["UD-Q2_K_XL", "UD-Q3_K_XL", "UD-Q4_K_XL"])
+
+    def test_a_name_inside_an_offered_one_is_its_own_size(self):
+        """Q2_K is not UD-Q2_K_XL (its letters are inside that name): a size of its own, from its header."""
+        family, model, sizes, _ = self._resolve("Inkling-2-Mini-Q2_K.gguf", "inkling2_loop", {"Q2_K": 7000000000})
+        self.assertEqual((family, model), ("inkling", "Q2_K"))
+        self.assertAlmostEqual(sizes["Q2_K"]["arena_gb"], 7.0)
+
+    def test_loop_rewrite_keeps_its_quant(self):
+        """A file rewritten to inkling2_loop and named ...UD-Q2_K_XL.loop.gguf is UD-Q2_K_XL."""
+        family, model, sizes, _ = self._resolve("Inkling-2-Mini-UD-Q2_K_XL.loop.gguf", "inkling2_loop",
+                                                {"IQ2_S": 2394095616})
+        self.assertEqual((family, model), ("inkling", "UD-Q2_K_XL"))
+        family, model, sizes, _ = self._resolve("Inkling-2-Mini-UD-IQ3_XXS.loop.gguf", "inkling2_loop", self.IQ4_NL)
+        self.assertEqual(model, "UD-IQ3_XXS")
+
+    def test_inspect_points_to_custom_gguf(self):
+        """--inspect's advice for an Inkling file is --custom-gguf (--gguf-dir takes only the offered sizes' names)."""
+        tools = str(Path(_ROOT) / "tools")
+        if tools not in sys.path:
+            sys.path.insert(0, tools)
+        import strata_inspect
+        kind, sentence = strata_inspect.verdict({"arch": "inkling2_loop"}, {})
+        self.assertEqual(kind, "family")
+        self.assertIn("--custom-gguf", sentence)
+
+    def test_the_warning_says_what_it_read(self):
+        """The warning names the quant only when the name has one, says "would be installed" under --check, and says
+        which estimate is borrowed from an offered size."""
+        said = []
+        with mock.patch.object(setup, "warn", said.append):
+            _, model, _, _ = self._resolve("Inkling-2-Mini.gguf", "inkling2_loop", self.IQ4_NL)
+            self._resolve("Inkling-2-Mini-IQ4_NL.gguf", "inkling2_loop", self.IQ4_NL, check=True)
+        self.assertEqual(model, "custom")
+        self.assertIn("the file name has no quant", said[0])
+        self.assertNotIn("'Mini'", said[0])
+        self.assertIn("installed as its own size, custom", said[0])
+        self.assertIn("the VRAM before any expert is UD-Q4_K_XL's", said[0])
+        self.assertIn("quant 'IQ4_NL'", said[1])
+        self.assertIn("would be installed as its own size, IQ4_NL", said[1])
+
+    def test_no_experts_is_refused(self):
+        """A header with no routed experts: a clear refusal, not a division by zero later."""
+        def fail(msg, hint=""):
+            raise SystemExit(msg)
+
+        with mock.patch.object(setup, "fail", fail), self.assertRaises(SystemExit) as cm:
+            self._resolve("Inkling-2-Mini-IQ4_NL.gguf", "inkling2_loop", {})
+        self.assertIn("no routed experts", str(cm.exception))
+
+    def test_top_level_layout_is_taken(self):
+        """Unsloth's top-level files (architecture inkling2), which the engine reads too: an offered size by its
+        name, another quantization as a size of its own."""
+        family, model, sizes, _ = self._resolve("Inkling-2-Mini-UD-Q2_K_XL.gguf", "inkling2", {"IQ2_S": 2394095616})
+        self.assertEqual((family, model), ("inkling", "UD-Q2_K_XL"))
+        family, model, sizes, _ = self._resolve("Inkling-2-Mini-IQ4_NL.gguf", "inkling2", self.IQ4_NL)
+        self.assertEqual((family, model), ("inkling", "IQ4_NL"))
+        self.assertAlmostEqual(sizes["IQ4_NL"]["arena_gb"], 15.797846016)
+
+    def test_every_accepted_architecture_maps_to_inkling(self):
+        """Each architecture setup takes for Inkling (POLY_GGUF_ARCHS) is Inkling 2 Mini to --inspect."""
+        tools = str(Path(_ROOT) / "tools")
+        if tools not in sys.path:
+            sys.path.insert(0, tools)
+        import strata_inspect
+        for arch in setup.POLY_GGUF_ARCHS["inkling"]:
+            self.assertEqual(strata_inspect.POLY_ARCHS.get(arch), setup.FAMILIES["inkling"]["title"], arch)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

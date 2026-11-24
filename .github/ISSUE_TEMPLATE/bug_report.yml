@@ -19,7 +19,7 @@ body:
       description: Start the issue title with the same area in square brackets, for example "[Engine] decode stops after 2 minutes". Pick Other if none fits.
       options:
         - "[Engine]  (speed, kernels, models, the server and API)"
-        - "[GUI]  (the desktop app)"
+        - "[GUI]  (the web page: Monitor, Requests, About)"
         - "[TUI]  (the Terminal: strata launch, connect, monitor)"
         - "[Benchmark]  (measurements and reports)"
         - "[Docs]  (documentation)"
@@ -29,9 +29,8 @@ body:
   - type: dropdown
     id: how
     attributes:
-      label: Desktop app, Terminal or source?
+      label: Terminal or source?
       options:
-        - Desktop app (Windows, Linux or Mac)
         - Terminal (the `strata` command)
         - Source (START-HERE.bat, setup.sh or a build)
         - Docker
@@ -66,7 +65,7 @@ body:
     attributes:
       label: PolyStrata version
       description: "In the app: Settings > About. In the Terminal: `strata --version`. From source: the About tab of the web page, or `engine` in `GET /v1/status`, or the git commit."
-      placeholder: "PolyStrata 0.2.19 · engine 0.1.65"
+      placeholder: "PolyStrata 0.2.20 · engine 0.1.66"
     validations:
       required: true
   - type: input

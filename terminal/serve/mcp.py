@@ -1,4 +1,4 @@
-"""serve/mcp.py - tools from MCP (Model Context Protocol) servers for the web app's chats.
+"""serve/mcp.py - tools from MCP (Model Context Protocol) servers, for requests that ask for them ("strata_mcp": true).
 
 The user lists servers in the run config (`"mcp_servers"`, or Claude Desktop's `"mcpServers"` block pasted as is) or
 in a separate file (`--mcp-config`).  Each one is either a program PolyStrata starts (`command`, `args`, `env`, `cwd`:

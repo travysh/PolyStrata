@@ -1,7 +1,7 @@
 """Per-user state locations, one rule for the terminal and the host.
 
 POSIX keeps $XDG_STATE_HOME (default ~/.local/state) under ``polystrata/``. Windows has no such place: state goes to
-``%LOCALAPPDATA%\\PolyStrata``. The Node host (app/host/server/platform-paths.mjs) still names the Strata project's folders.
+``%LOCALAPPDATA%\\PolyStrata``. The Strata project's own app names that project's folders.
 """
 
 from __future__ import annotations

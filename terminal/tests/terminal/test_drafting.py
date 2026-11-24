@@ -539,19 +539,11 @@ class UnslothAndTheOtherFlashNextFiles(unittest.TestCase):
                         if mode == "dflash2":
                             self.assertEqual(decision.note, drafting.NOT_SUPPORTED)
 
-    def test_by_family_the_terminal_and_the_app_agree(self):
+    def test_by_family(self):
         for backend, _ in self.HARDWARE:
             self.assertEqual(drafting.choice_of("auto", family="unsloth", backend=backend), "dflash2", backend)
             for family in ("swift", "coder", "nvfp4"):
                 self.assertEqual(drafting.choice_of("auto", family=family, backend=backend), "mtp", (backend, family))
-        # the app's own copies of the rule (the host and the page) name the same families and the same names
-        host = (ROOT.parent / "app" / "host" / "server" / "native-settings.mjs").read_text(encoding="utf-8")
-        page = (ROOT.parent / "app" / "host" / "src" / "lib" / "drafting.ts").read_text(encoding="utf-8")
-        generated = (ROOT.parent / "app" / "host" / "server" / "policy-generated.mjs").read_text(encoding="utf-8")        # the host's copy is generated from drafting.py (strata_control/app_policy.py)
-        self.assertIn("DRAFTING_FAMILIES=GENERATED_DRAFTING_FAMILIES", host)
-        self.assertIn('DRAFTING_FAMILIES = ["qwen", "gyro", "unsloth"]', generated)
-        self.assertIn("DRAFTING_FAMILIES = ['qwen', 'gyro', 'unsloth']", page)
-        self.assertIn(r"-unsloth-[a-z0-9._-]+", generated)
 
 
 class TheInstalledEngineDecidesTheFlags(unittest.TestCase):
@@ -764,20 +756,8 @@ class WhatTheEngineSaid(unittest.TestCase):
                          "Drafting: MTP (the DFlash2 drafter isn't downloaded yet)")
 
 
-class WordsMatchTheApp(unittest.TestCase):
-    def test_every_line_the_engine_start_can_say_is_in_the_apps_catalog_in_all_nine_languages(self):
-        folder = ROOT.parent / "app" / "host" / "src" / "locales"
-        catalogs = {l: {**json.loads((folder / f"{l}.json").read_text(encoding="utf-8")), **json.loads((folder / f"df2-{l}.json").read_text(encoding="utf-8"))}
-                    for l in ("en", "de", "es", "fr", "ja", "ko", "pt", "ru", "zh")}
-        ids = {v: k for k, v in catalogs["en"].items()}
-        self.assertEqual(len(drafting.REASONS), 10)
-        lines = [drafting.mtp_line(r) for r in (drafting.DIDNT_FIT, drafting.NOT_HERE, drafting.NOT_SUPPORTED, drafting.NOT_DOWNLOADED, drafting.NOT_THIS_CARD, drafting.DIDNT_START)]
-        lines += [drafting.line("dflash2", drafting.NO_MTP), drafting.line("off", drafting.NONE_HERE), drafting.line("off", drafting.SHORT_OF_VRAM), drafting.line("mtp", drafting.NONE_IN_SLOTS)]
-        for line in lines:
-            self.assertIn(line, ids, line)
-            for lang, catalog in catalogs.items():
-                self.assertTrue(catalog[ids[line]].strip(), f"{line} in {lang}")
-        # and what the engine's log makes of them
+class EngineLogWords(unittest.TestCase):
+    def test_what_the_engine_log_makes_of_a_fallback(self):
         self.assertEqual(drafting.fallback_note("--draft dflash2: out of memory"), drafting.mtp_line(drafting.DIDNT_FIT))
         self.assertEqual(drafting.fallback_note("--draft dflash2 is off: it is for one card and the CLI run"), drafting.mtp_line(drafting.NOT_HERE))
 

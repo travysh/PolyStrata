@@ -85,13 +85,6 @@ class Plan(unittest.TestCase):
         self.assertEqual(p["entry"]["hf"], {"repo": "x/y", "revision": "abc"})
         self.assertIs(p["entry"]["pictures"], False)               # no picture reader next to this set
 
-    def test_case_a_with_app_plans_the_app_steps_when_asked(self):
-        code, out, err = run(self.base(self.a, "--json", "--with-app"))
-        self.assertEqual(code, 0, err)
-        p = json.loads(out)
-        self.assertTrue({"latest.json", "Strata-0.2.12-windows-x64-setup.exe"} <= {c["name"] for c in p["changed"]})
-        self.assertTrue(any("App text" in s["what"] for s in p["steps"]))
-
     def test_the_plan_names_the_boxes_of_the_rehearsal(self):
         code, out, err = run(self.base(self.a, "--case", "B", "--engine-version", "0.1.58", "--shape", "q4_lite"))
         self.assertEqual(code, 0, err)

@@ -9,7 +9,7 @@ engines have to be rebuilt for its shape; case C is refused) and prints the plan
 (phaseA-tests/rel0211: final_rc1.py, publish211.sh, PUBLISH-PLAN.md):
 
     case A  the feed (a `models` entry, the feed re-signed at the next sequence). No app rebuild: the app lists feed models
-            from the feed (the Settings update check is enough). `--with-app` adds the app steps when a release has app text anyway.
+            from the feed (the Settings update check is enough).
             Engines and Controls stay as they are: same files, same names.
     case B  the engine of the model's shape, as its own component (`--shape`, package_engine.py --shape, feed member shape_engines: strata_control/shape_engine.py),
             plus the feed. The Strata engine, the Controls and the app are not rebuilt: a Control of 0.2.13 or later already installs and runs
@@ -106,7 +106,6 @@ def plan(report: dict, set_index: int, a, prev: dict) -> dict:
     if case not in ("A", "B"):
         raise SystemExit("case %s: %s. A model release is planned for case A or B only (run tools/qwen4_intake.py)."
                          % (case, v.get("reading", "no verdict in the report")))
-    with_app = bool(a.with_app)                         # a feed model needs no app rebuild (the app lists it from the feed), case B included: the shape engine is fetched by the Control
     steps: list[dict] = []
     changed: list[dict] = []        # files that are new or different in the upload folder
     kept: list[dict] = []
@@ -169,27 +168,11 @@ def plan(report: dict, set_index: int, a, prev: dict) -> dict:
          ["python packaging/make_model_release.py --intake <report> --id %s ... --write <OUTDIR>   # writes models/%s.entry.json (the feed's schema; build-feed refuses every [FILL: ...] left in it) and models/%s.model.json (the older draft)" % (a.id, a.id, a.id)],
          ["models/%s.entry.json" % a.id], note="the entry follows strata_control/feed.py (packaging/UPDATES.md): fill the [FILL: ...] values (about, licence_url, ram_gb) by hand or with --about/--licence-url/--ram-gb, then `feed_tool.py build-feed --models <OUTDIR>/models`")
     n += 1
-    if with_app:
-        for e in prev["app"]:
-            nm = re.sub(r"Strata-\d[\d.]*-", "Strata-%s-" % a.app_version, e["name"])
-            changed.append({"name": nm, "size": e["size"], "est": True, "why": "app rebuilt with the Models page text"})
-        step("%d" % n, "App text for the model (Models page) and the app bundles", "owner PC (Windows installer), a Linux box (AppImage), m1002 (Mac, unsigned; the owner signs)", 40,
-             ["# edit app/host/src (the model's name and one line), then the 0.2.11 app recipe: scripts/relwin/win_installer_rc1.ps1, the AppImage and Mac scripts",
-              "python packaging/feed_tool.py set-app-platform --app-json latest.json --target <target> --archive <installer> --sig <installer.sig> --version %s" % a.app_version],
-             [c["name"] for c in changed if APP_RE.match(c["name"])])
-        n += 1
-        changed.append({"name": "latest.json", "size": None, "est": True, "why": "updater json at %s" % a.app_version})
-    else:
-        kept += [{"name": e["name"], "size": e["size"], "why": "no app change"} for e in prev["app"]]
-    if with_app:
-        mac_extra = ""
-        step("%d" % n, "Mac: the owner signs and notarises the unsigned Mac files on his Mac", "the owner's Mac, about 45 min of his time", 45,
-             ["bash sign-and-notarize.sh Strata-%s-macos-arm64.dmg%s --updater-archive --out signed" % (a.app_version, mac_extra)],
-             ["the signed folder (dmg, Strata.app.tar.gz and its .sig)"], owner=True)
-        n += 1
+
+    kept += [{"name": e["name"], "size": e["size"], "why": "no app change"} for e in prev["app"]]
     feed_cmd = ("python packaging/feed_tool.py build-feed --out <RELEASE> --key <FEED-KEY> --sequence %d --engine <engine-entries> --carry-dsv41 <the last strata-feed.json> --carry-dsv41-base https://github.com/Niko1221/Strata/releases/download/<DSV41-TAG>/ "
-                "--drafters <drafter-entries> --models <models-folder> --control <control-entries>%s%s   # OWNER'S KEY; `--models` is Q4-PREP-B's change"
-                % (a.sequence, " --shapes <shape-entries>" if case == "B" else "", " --app-json latest.json" if with_app else ""))
+                "--drafters <drafter-entries> --models <models-folder> --control <control-entries>%s   # OWNER'S KEY; `--models` is Q4-PREP-B's change"
+                % (a.sequence, " --shapes <shape-entries>" if case == "B" else ""))
     step("%d" % n, "Sign the feeds at sequence %d (the shared one and linux-aarch64)" % a.sequence, "owner PC, with the owner's key at that moment", 3,
          [feed_cmd, "python packaging/feed_tool.py verify-feed <RELEASE> --pub <FEED-KEY.pub.json>"],
          list(FEED_NAMES), owner=True)
@@ -387,8 +370,7 @@ def main(argv=None) -> int:
     ap.add_argument("--quant", help="the quant's name in the entry (default: --hf-dir, or the folder of the files)")
     ap.add_argument("--quant-about", help="one plain line about the quant")
     ap.add_argument("--ram-gb", type=float, help="the RAM the quant needs, measured (the intake's estimate is not used)")
-    ap.add_argument("--no-app", action="store_true", help="case B: no app change in this release (case A has none unless --with-app)")
-    ap.add_argument("--with-app", action="store_true", help="plan the app steps (Models page text, installers) too; a case-A feed model needs none")
+    ap.add_argument("--no-app", action="store_true", help="case B: no app change in this release (case A has none)")
     ap.add_argument("--templates", type=Path, default=TEMPLATES,
                     help="the folder with the templates: RELEASE-NOTES.md, MODEL-CARD.md and, if there, CHECKLIST.md (default: packaging/templates/model-release)")
     ap.add_argument("--checklist", type=Path, help="the release checklist template by path (an internal work list, not in the repo); filled as CHECKLIST.md beside the "

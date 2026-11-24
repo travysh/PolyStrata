@@ -179,7 +179,9 @@ ENGINE_REQUEST = re.compile(
     # "+ 12288 of 98179 read": a request cancelled while its prompt was read (#471)
     r"prompt (?P<prompt>\d+) tokens = (?P<reused>\d+) reused \+ \d+(?: of \d+)? read in (?P<read>[\d.]+) ms "
     r"\((?P<pp>[\d.]+) tok/s\), "
-    r"(?P<gen>\d+) generated in (?P<gen_ms>[\d.]+) ms \((?P<tg>[\d.]+) tok/s\)")
+    r"(?P<gen>\d+) generated in (?P<gen_ms>[\d.]+) ms \((?P<tg>[\d.]+) tok/s\)"
+    # echo_requests reads these two (#90); strata-poly writes them only when the request had drafts
+    r"(?:, drafts accepted (?P<drafts_accepted>\d+) of (?P<drafts_offered>\d+))?")
 
 
 _echoing: set[str] = set()      # the logs echo_requests already follows (restart() runs StrataEngine.__init__ again)
@@ -587,6 +589,8 @@ def vision_log_size(log=None) -> int:
     """How long the encoder's stderr file is now (0 when there is none): a start reads only what it wrote after this."""
     try:
         name = getattr(log, "name", None)
+        if not isinstance(name, (str, bytes, os.PathLike)):  # #6467: never pass an int fd from os.fdopen()
+            return 0
         return os.path.getsize(name) if name else 0
     except (OSError, TypeError):
         return 0
@@ -597,7 +601,7 @@ def vision_log_tail(log=None, limit: int = 16384, since: int = 0) -> str:
     is none or it cannot be read), but nothing from before `since` (the file's size when this start began: a log that several starts share)."""
     try:
         name = getattr(log, "name", None)
-        if name:
+        if isinstance(name, (str, bytes, os.PathLike)) and name:  # #6467: open(int) would wrap and close the log fd
             with open(name, "rb") as f:
                 f.seek(0, 2)
                 f.seek(max(since, f.tell() - limit))

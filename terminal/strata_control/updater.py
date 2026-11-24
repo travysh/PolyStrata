@@ -1,4 +1,4 @@
-"""The component updater: the one explicit step that downloads and installs engines (and Control, and the app installer).
+"""The component updater: the one explicit step that downloads and installs engines (and Control).
 
 Everything that fetches software lives behind this module. Starting or serving never imports it (`acquisition.require`
 refuses here when ``STRATA_NO_ACQUIRE`` is set), so a PC that only runs models never reaches the network.
@@ -54,7 +54,7 @@ SKEW_FREE_BYTES = 1.15
 
 def megabytes(n) -> int:
     """Decimal megabytes (1 MB = 1,000,000 bytes), rounded half up, at least 1: the one figure for an engine's size in the Terminal, the app
-    (app/host/src/lib/format.ts megabytes) and the release page. Both sides are tested on the same numbers."""
+    (the Strata project's format.ts megabytes) and the release page."""
     return max(1, int((n or 0) / 1_000_000 + 0.5))
 
 
@@ -416,7 +416,6 @@ class Context:
     wait: float = 0.0                             # seconds to wait for a serving engine to stop
     force: bool = False
     channel: str = "stable"
-    app_version: str | None = None
     now: dt.datetime | None = None
     run_config: str | None = None                 # a run config for the test start (default: an installed model's)
     test_timeout: float = 600.0
@@ -765,27 +764,26 @@ def _serving_or_empty(ctx: Context) -> list[dict]:
 
 
 def check(ctx: Context) -> dict:
-    """Read the signed feed and say what an update would do for the engine, Control and the app. Downloads nothing but the feed."""
+    """Read the signed feed and say what an update would do for the engine and Control. Downloads nothing but the feed."""
     with update_lock(ctx.components):
         state = State(ctx.components)
         feed = open_feed(ctx, state)
         report = {"feed": {"source": ctx.source, "sequence": feed.sequence, "channel": feed.channel, "key_id": feed.key_id,
                            "generated_at": feed.generated_at, "trusted_by": "test key file" if signing.extra_keys_in_effect(ctx.environ) else "built-in keys"},
                   "engine": decide_engine(feed, ctx, state), "control": decide_control(feed, ctx, state),
-                  "app": decide_app(feed, ctx), "serving": _serving_or_empty(ctx), "hardware": ctx.hardware}
+                  "serving": _serving_or_empty(ctx), "hardware": ctx.hardware}
         state.data["last_check"] = _last_check(ctx, report)
         state.save()
         return report
 
 
 def _last_check(ctx: Context, report: dict, control_version: str | None = None) -> dict:
-    """What the feed offers that is newer than what is installed, kept for the notice a start or the app shows without touching the network
+    """What the feed offers that is newer than what is installed, kept for the notice a start shows without touching the network
     (engine_component.cached_offers).  ``control_version``: the Control an update has just installed (the notice belongs to it, not to the one running)."""
     return {
         "at": (ctx.now or dt.datetime.now(dt.timezone.utc)).isoformat(),
         "engine": report["engine"]["offered"]["version"] if report["engine"]["status"] in ("available", "install") and report["engine"]["offered"] else None,
-        "app": report["app"]["offered"] if report["app"]["status"] == "available" else None,
-        # the versions this result is for, so a later Control, engine or app change drops the cached notice
+        # the versions this result is for, so a later Control or engine change drops the cached notice
         "control": control_version or ec.runtime_version(), "engine_installed": ec.newest_installed_version(ctx.components)}
 
 
@@ -848,17 +846,61 @@ def stage_engine(ctx: Context, feed: feedmod.Feed, pkg: feedmod.EnginePackage, a
         raise
 
 
-def discover_run_config(environ=None) -> Path | None:
+_SHAPE_ONLY_FLAGS = frozenset({"--engram", "--dfly-override", "--vram-experts-gb", "--ram-experts-gb", "--ssd-experts"})
+
+
+def _config_component_id(source) -> str:
+    """Which engine component (`strata-engine`, `strata-hy4`, ...) a saved run config targets (#6589, #6623)."""
+    cfg = source
+    if not isinstance(cfg, dict):
+        try:
+            cfg = json.loads(Path(source).read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError, TypeError):
+            return ec.COMPONENT_ID
+    if not isinstance(cfg, dict):
+        return ec.COMPONENT_ID
+    exe = str(cfg.get("exe") or "").strip()
+    if ec.is_reference(exe):
+        comp = exe[len(ec.REFERENCE_PREFIX):].strip()
+        if comp:
+            return comp
+    exe_base = exe.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if exe_base.startswith("strata-hy4"):
+        return "strata-hy4"
+    arch = str(cfg.get("arch") or "").strip().lower()
+    if arch in ("hy4flash", "hy4"):
+        return "strata-hy4"
+    args = cfg.get("args")
+    if isinstance(args, list):
+        arg_list = [str(a) for a in args]
+        if set(arg_list) & _SHAPE_ONLY_FLAGS:
+            return "strata-hy4"
+        for i, a in enumerate(arg_list):
+            if a == "--native" and i + 1 < len(arg_list) and arg_list[i + 1].lower().endswith(".strata"):
+                return "strata-hy4"
+    return ec.COMPONENT_ID
+
+
+def _is_shape_engine_config(source) -> bool:
+    """True when a saved run config targets a shape engine (Hy4-Flash, or another `component:strata-<shape>`):
+    updating the general `strata-engine` must never pass Hy4 (`--engram`) flags to `strata` (#6589, #6623)."""
+    return _config_component_id(source) != ec.COMPONENT_ID
+
+
+def discover_run_config(environ=None, *, component_id: str = ec.COMPONENT_ID) -> Path | None:
     """A saved model's run config for the test start: the one a saved profile uses if its files are all present, otherwise any
-    installed model whose files are present. DeepSeek models are left out (strata_control/retired.py: this Strata does not run them).
-    None when no model can be used (the first run)."""
+    installed model whose files are present and match `component_id`. DeepSeek models and configs belonging to another engine
+    component (e.g. Hy4-Flash `--engram` when testing `strata-engine`) are left out (#6589, #6623).
+    None when no matching model can be used (falls back to binary smoke)."""
     from strata_control import models, profiles, retired
     try:
         listed = models.list_installed()
     except Exception:                                   # noqa: BLE001 - discovery is best effort
         return None
+    want = component_id or ec.COMPONENT_ID
     ready = [m for m in listed.get("models", []) if m.get("component_status") == "present" and m.get("source_config")
-             and not retired.config_file_reason(m["source_config"])]
+             and not retired.config_file_reason(m["source_config"])
+             and _config_component_id(m["source_config"]) == want]
     if not ready:
         return None
     try:
@@ -1289,10 +1331,14 @@ def low_memory(cfg: dict) -> tuple[float, float] | None:
 
 
 def default_test_start(stage_root: Path, component: ec.EngineComponent, ctx: Context) -> dict:
-    """Start the staged engine through the real start path (owner runtime, `component:strata-engine`, a saved model), wait for
+    """Start the staged engine through the real start path (owner runtime, `component:<id>`, a saved model), wait for
     the one-token generation probe, and stop it. Everything runs in an isolated runtime, profile and component folder, so a
-    user's own instances, profiles and engines are not involved. With no model installed the engine is only run with --version."""
-    source = Path(ctx.run_config) if ctx.run_config else discover_run_config(ctx.environ)
+    user's own instances, profiles and engines are not involved. With no matching model installed the engine is only run with --version."""
+    target_comp = component.id or ec.COMPONENT_ID
+    source = Path(ctx.run_config) if ctx.run_config else discover_run_config(ctx.environ, component_id=target_comp)
+    if source is not None and _config_component_id(source) != target_comp:
+        # #6589 / #6623: never test an engine against another engine component's run config (e.g. Hy4 `--engram` on `strata`)
+        source = discover_run_config(ctx.environ, component_id=target_comp)
     if source is None:
         if not ctx.allow_no_model_smoke:
             raise TestStartFailed(component.version, "no installed model to test with")
@@ -1309,7 +1355,11 @@ def default_test_start(stage_root: Path, component: ec.EngineComponent, ctx: Con
         # found no current Control and the test start failed with a ProfileError about the old file
         from strata_control import cfg_paths
         cfg, _moved, _lost = cfg_paths.resolve_config(cfg)
-        cfg["exe"] = ec.REFERENCE_PREFIX + ec.COMPONENT_ID
+        if _config_component_id(cfg) != target_comp:
+            if not ctx.allow_no_model_smoke:
+                raise TestStartFailed(component.version, "no installed model matching this engine component")
+            return binary_smoke(component, ctx=ctx)
+        cfg["exe"] = ec.REFERENCE_PREFIX + target_comp
         cfg["backend"] = component.backend
         cfg.pop("lib_dirs", None)
         if isinstance(cfg.get("args"), list):
@@ -1897,75 +1947,10 @@ def update_control(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
                        "from": decision["installed"], "to": pkg.version, "ok": True})
         archive.unlink(missing_ok=True)
         result.update({"changed": True, "status": "updated", "installed_after": pkg.version,
-                       "note": "the Terminal hands over to it from the next command; the app uses it from its next start"})
+                       "note": "the Terminal hands over to it from the next command"})
         return result
     finally:
         shutil.rmtree(longpath.long_path(stage), ignore_errors=True)
-
-
-# ---------------------------------------------------------------------------------------------- app
-
-def app_public_key(environ=None) -> str | None:
-    environ = os.environ if environ is None else environ
-    explicit = environ.get("STRATA_APP_UPDATE_PUBKEY")
-    if explicit:
-        return explicit
-    try:
-        data = json.loads(signing.BUILTIN_KEYS.read_text(encoding="utf-8-sig"))
-        value = data.get("app_minisign_public")
-        return value if isinstance(value, str) and value else None
-    except (OSError, ValueError):
-        return None
-
-
-def decide_app(feed: feedmod.Feed, ctx: Context) -> dict:
-    report = {"installed": ctx.app_version, "offered": None, "status": "not-in-feed", "notes": "", "download_bytes": 0}
-    if feed.app is None:
-        return report
-    entry = feed.app.for_platform(ctx.hardware["platform"])
-    if entry is None:
-        report["status"] = "none-for-this-pc"
-        return report
-    report.update({"offered": feed.app.version, "notes": feed.app.notes, "download_bytes": entry["size"]})
-    if not ctx.app_version:
-        report["status"] = "unknown-installed"
-    else:
-        report["status"] = "available" if feedmod.app_version_key(feed.app.version) > feedmod.app_version_key(ctx.app_version) else "current"
-    return report
-
-
-def update_app(ctx: Context, feed: feedmod.Feed) -> dict:
-    """The Terminal's share of an app update: download the installer, check its SHA-256 (signed feed) and its minisign signature
-    (the key the app trusts), and leave it in ``.updates/app``. The Desktop app installs itself through Tauri's updater; a
-    terminal only fetches and verifies, because installing an app is the platform installer's job."""
-    decision = decide_app(feed, ctx)
-    result = {"component": "app", "status": decision["status"], "changed": False, "installed_before": decision["installed"]}
-    if decision["status"] not in ("available", "unknown-installed"):
-        return result
-    entry = feed.app.for_platform(ctx.hardware["platform"])
-    key = app_public_key(ctx.environ)
-    if not key:
-        raise UpdateError("this build has no app update key (update_keys.json app_minisign_public); the app installer cannot be verified, so it was not downloaded", 5)
-    root = ctx.components
-    _free_space_check(root, entry["size"], ctx, entry["sha256"], "app")
-    archive = _download(ctx, "app", entry["url"], entry["size"], entry["sha256"], f"Strata app {feed.app.version}", feed)
-
-    def chunks():
-        with archive.open("rb") as stream:
-            yield from iter(lambda: stream.read(1 << 20), b"")
-    try:
-        signing.minisign_verify(key, entry["signature"], chunks())
-    except signing.SignatureError as exc:
-        archive.unlink(missing_ok=True)
-        raise UpdateError(f"the app installer failed its signature check: {exc}; it was deleted", 5) from None
-    target_dir = updates_dir(root) / "app"
-    target_dir.mkdir(parents=True, exist_ok=True)
-    name = Path(transfer.resolve_ref(transfer.base_of(feed.source), entry["url"]).replace("\\", "/")).name or f"strata-app-{feed.app.version}"
-    target = target_dir / name
-    _atomic_mod.replace(archive, target)
-    result.update({"changed": True, "status": "downloaded", "installed_after": None, "version": feed.app.version, "path": str(target),
-                   "note": "Verified. Run the installer to finish; models and settings are kept."})
-    return result
 
 
 # ---------------------------------------------------------------------------------------------- the one command
@@ -2025,8 +2010,8 @@ def _shape_steps(ctx: Context, feed: feedmod.Feed, engine: bool) -> list:
             for shape in shape_engine.installed_shapes(ctx.components)]
 
 
-def run_update(ctx: Context, *, engine: bool = True, control: bool = True, app: bool = False) -> dict:
-    """`strata update`: the feed once, then the engine, Control and (if asked) the app installer, each reported separately.
+def run_update(ctx: Context, *, engine: bool = True, control: bool = True) -> dict:
+    """`strata update`: the feed once, then the engine and Control, each reported separately.
     A component that fails does not undo one that succeeded; the exit code is the worst one."""
     require_acquisition("the update")
     results, failure = [], None
@@ -2037,8 +2022,7 @@ def run_update(ctx: Context, *, engine: bool = True, control: bool = True, app: 
         _model_check(ctx, feed, state, engine=engine, control=control)
         steps = ([("engine", lambda: update_engine(ctx, feed, state))] if engine else []) + \
                 _shape_steps(ctx, feed, engine) + \
-                ([("control", lambda: update_control(ctx, feed, state))] if control else []) + \
-                ([("app", lambda: update_app(ctx, feed))] if app else [])
+                ([("control", lambda: update_control(ctx, feed, state))] if control else [])
         for name, step in steps:
             try:
                 results.append(step())
@@ -2048,10 +2032,10 @@ def run_update(ctx: Context, *, engine: bool = True, control: bool = True, app: 
                 failure = failure or exc
         if any(r.get("component") == "engine" and r.get("status") == "updated" for r in results):
             state.data.get("last_check", {}).pop("engine", None)
-        try:                                              # the feed was read for this update: what it offers that is still newer is kept for the app's one card
+        try:                                              # the feed was read for this update: what it offers that is still newer is kept for the start's notice
             now_control = next((r.get("installed_after") for r in results if r.get("component") == "control" and r.get("status") == "updated"), None)
-            state.data["last_check"] = _last_check(ctx, {"engine": decide_engine(feed, ctx, state), "app": decide_app(feed, ctx)}, now_control)
-        except Exception:                                 # noqa: BLE001 - only a hint for the app
+            state.data["last_check"] = _last_check(ctx, {"engine": decide_engine(feed, ctx, state)}, now_control)
+        except Exception:                                 # noqa: BLE001 - only a hint
             pass
         state.save()
     return {"feed": {"source": ctx.source, "sequence": feed.sequence, "channel": feed.channel, "key_id": feed.key_id},

@@ -2,6 +2,7 @@ name: Minimal serving runtime
 
 on:
   push:
+    branches: [main]
     paths:
       - .github/workflows/terminal-minimal-server.yml
       - terminal/requirements.txt
@@ -27,6 +28,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: terminal-minimal-server-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   fake-engine:

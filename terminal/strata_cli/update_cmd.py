@@ -2,7 +2,6 @@
 
     strata update                 the engine for this PC and Control, from the signed feed; switches only after a test start
     strata update --check         read the feed and say what would change; downloads nothing else
-    strata update --app           also download and verify the desktop app's installer
     strata components update      the same as `strata update` (engine + Control)
     strata components rollback    return to the previous engine version the last update kept
     strata components engines     list the engines installed on this computer (sizes, which one is in use)
@@ -30,12 +29,17 @@ import sys
 import threading
 from pathlib import Path
 
-#: Where the feed is read when nothing else is set: the files of the latest GitHub release of Niko1221/Strata (the same folder the
-#: one-line installers use). Only a feed signed with a key in update_keys.json (or STRATA_UPDATE_TRUSTED_KEYS) is accepted.
-DEFAULT_FEED = "https://github.com/Niko1221/Strata/releases/latest/download/strata-feed.json"
-ENV_FEED = "STRATA_UPDATE_FEED"
+from strata_cli import PRODUCT_VERSION
 
-ENV_APP_VERSION = "STRATA_APP_VERSION"
+#: (PolyStrata) The Strata project's release this tree was merged from: PRODUCT_VERSION is that release's, and a merge of a newer one
+#: brings its own.  Its files are where setup (setup.PREBUILT_URL) and `strata update` get that project's engine, Control and feed, so
+#: a newer release of that project does not change what an update installs here (#244: "latest" gave the 0.2.19 tree the 0.2.20 engine).
+STRATA_RELEASE = "v" + PRODUCT_VERSION
+STRATA_RELEASES = "https://github.com/Niko1221/Strata/releases/"
+#: Where the feed is read when nothing else is set: the files of STRATA_RELEASE. Only a feed signed with a key in update_keys.json
+#: (or STRATA_UPDATE_TRUSTED_KEYS) is accepted.
+DEFAULT_FEED = f"{STRATA_RELEASES}download/{STRATA_RELEASE}/strata-feed.json"
+ENV_FEED = "STRATA_UPDATE_FEED"
 
 
 def default_feed() -> str:
@@ -60,8 +64,6 @@ def add_parsers(sp, components_sp) -> list:
     update = sp.add_parser("update", help="download and install the engine for this PC (and Control) from the signed feed; switches only after a test start")
     _common(update)
     update.add_argument("--check", action="store_true", help="only read the feed and say what would change")
-    update.add_argument("--app", action="store_true", help="also download and verify the desktop app's installer")
-    update.add_argument("--app-version", default=None, help=f"the installed app's version (default: ${ENV_APP_VERSION})")
     update.add_argument("--no-engine", action="store_true")
     update.add_argument("--no-control", action="store_true")
     update.add_argument("--yes", action="store_true", help="ask nothing (a script); a loaded model is not stopped by this alone, see --stop-model")
@@ -70,8 +72,6 @@ def add_parsers(sp, components_sp) -> list:
     comp_update = components_sp.add_parser("update", help="the same as `strata update` (engine and Control)")
     _common(comp_update)
     comp_update.add_argument("--check", action="store_true")
-    comp_update.add_argument("--app", action="store_true")
-    comp_update.add_argument("--app-version", default=None)
     comp_update.add_argument("--no-engine", action="store_true")
     comp_update.add_argument("--no-control", action="store_true")
     comp_update.add_argument("--yes", action="store_true", help="ask nothing (a script); a loaded model is not stopped by this alone, see --stop-model")
@@ -146,7 +146,8 @@ def _feed_source(a, root: Path) -> str:
     if os.environ.get(ENV_FEED):
         return os.environ[ENV_FEED]
     remembered = (updater.State(root).data.get("feed") or {}).get("source")
-    if remembered == DEFAULT_FEED:                    # the common feed remembered from before: a Linux ARM64 machine reads its own file
+    if isinstance(remembered, str) and remembered.startswith(STRATA_RELEASES):
+        # a default remembered from before (the latest release, an older STRATA_RELEASE, the common file on Linux ARM64): today's
         return default_feed()
     return remembered if _may_be_remembered(remembered) else default_feed()
 
@@ -195,7 +196,7 @@ def _line(name: str, result: dict) -> str:
         return f"{shape_engine.WORDS['update_label']}  {result.get('note') or status}"
     if result.get("component") == "control":
         if status == "updated":
-            return f"{name:<8}{result.get('installed_before') or '?'} -> {result.get('installed_after')}   updated. The next `strata` command already runs it; the app switches on its next start"
+            return f"{name:<8}{result.get('installed_before') or '?'} -> {result.get('installed_after')}   updated. The next `strata` command already runs it"
         if status == "current":
             return f"{name:<8}{result.get('installed_before')}   up to date"
         if status == "not-in-feed":
@@ -203,15 +204,13 @@ def _line(name: str, result: dict) -> str:
         if status == "failed":
             return f"{name:<8}{result.get('installed_before') or '?'}   NOT changed: {result.get('error')}"
         return f"{name:<8}{status}"
-    if status == "downloaded":
-        return f"{name:<8}{result.get('version')}   downloaded and verified: {result.get('path')}\n{'':<8}{result.get('note')}"
     if status == "failed":
         return f"{name:<8}NOT downloaded: {result.get('error')}"
     return f"{name:<8}{status}"
 
 
 def _print_check(report: dict) -> None:
-    feed, eng, ctl, app = report["feed"], report["engine"], report["control"], report["app"]
+    feed, eng, ctl = report["feed"], report["engine"], report["control"]
     print(f"Update feed  sequence {feed['sequence']}, {feed['channel']} channel, signed by {feed['key_id']} ({feed['trusted_by']})")
     installed = (eng["installed"] or {}).get("version")
     offered = (eng["offered"] or {}).get("version")
@@ -236,11 +235,6 @@ def _print_check(report: dict) -> None:
         print("  Control  not part of this feed")
     else:
         print(f"  Control  {ctl['installed'] or _source_version() or '?'}: {ctl['status']}" + (f" ({ctl['offered']})" if ctl["offered"] else ""))
-    if app["status"] != "not-in-feed":
-        if app["status"] == "unknown-installed":
-            print(f"  App      latest is {app['offered']}; this terminal cannot tell which version of the app is installed (the app checks itself)")
-        else:
-            print(f"  App      {app['installed'] or 'unknown'} -> {app['offered']}: {app['status']}")
     if report.get("serving"):
         from strata_control import engine_update
         names = ", ".join(m.label for m in engine_update.running_models(report["serving"]))
@@ -317,8 +311,7 @@ def run(a) -> int:
         lines: list = []
         cancel = threading.Event()
         ctx = updater.Context(components=root, source="", trusted={}, hardware=hardware, emit=_emit_factory(a, lines), cancel=cancel,
-                              force=getattr(a, "force", False), run_config=a.model_config, wait=a.wait or 0.0,
-                              app_version=getattr(a, "app_version", None) or os.environ.get(ENV_APP_VERSION))
+                              force=getattr(a, "force", False), run_config=a.model_config, wait=a.wait or 0.0)
         if getattr(a, "components_command", None) == "rollback":
             ctx.serving = updater.serving_now
             _maybe_wait(a, ctx, machine)
@@ -365,7 +358,7 @@ def run(a) -> int:
             print(f"Strata update ({ctx.source})")
         from strata_control import engine_update
         out = engine_update.update_with_models(ctx, _gate_for(a, ctx, machine), show=None if machine else _show_results,
-                                               engine=not a.no_engine, control=not a.no_control, app=a.app)
+                                               engine=not a.no_engine, control=not a.no_control)
         if machine:
             print(json.dumps({"schema_version": 1, "ok": out["exit_code"] == 0, **out}, ensure_ascii=False))
         elif out["exit_code"] == engine_update.EXIT_NOT_RESTARTED:

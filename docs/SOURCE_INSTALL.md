@@ -147,7 +147,7 @@ In a Git checkout the updater can pull source changes, update dependencies and r
 starting the model. A source ZIP cannot pull Git history: extract a newer source archive instead.
 Preserve your configs and data location when moving between checkouts.
 
-Since 0.2.16 the checkout has a folder for each part (`app/`, `engine/`, `terminal/`, `docs/`, `tools/`). A run config that names a file
+Since 0.2.16 the checkout has a folder for each part (`engine/`, `terminal/`, `docs/`, `tools/`). A run config that names a file
 by its old place in the checkout keeps working until the engine restarts and then fails to open it: the expert profile moved from
 `data/expert-profile.bin` to `terminal/data/expert-profile.bin`, and the server from `serve/server.py` to `terminal/serve/server.py`.
 After an update from 0.2.15 or older, point such paths (and the `ExecStart` of a service unit) at the new places.

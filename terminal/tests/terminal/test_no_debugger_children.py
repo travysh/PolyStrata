@@ -146,7 +146,7 @@ class EntryPointsSetItForEveryChild(unittest.TestCase):
 # listed here (and, when it starts a Strata program - the engine, the picture reader, sd-cli, setup, a worker - it builds its environment with
 # quiet_crash_env or inherits the one an entry point set).
 STRATA_PROGRAMS = {
-    "serve/server.py": 5,              # the engine, the picture reader (env from child_env / vision_env), the strata-device probe, before_load commands
+    "serve/server.py": 6,              # the engine, the picture reader (env from child_env / vision_env), the strata-device probe, before_load commands, --export-tokenizer (quiet_crash_env)
     "serve/server_parts/engines.py": 2,   # (moved out of serve/server.py unchanged, file split)
     "serve/images.py": 1,              # sd-cli (image_env)
     "serve/lifeline.py": 4,            # the wrapper every child goes through (ps, a watcher); no program of ours of its own
@@ -165,8 +165,9 @@ STRATA_PROGRAMS = {
     "strata_cli/launch/runner.py": 2,     # setup.py and the other children (_env)
     "strata_cli/launch/params.py": 2,     # engine --help (inherits)
     "strata_cli/cli.py": 2,               # setup.py, the revise command
-    "setup.py": 20,                       # builds, engine probes, the helpers it runs (main sets it); the update's git calls (P6: symbolic-ref) and the
-                                          # re-run of the pulled setup.py (it inherits main's environment, Q6)
+    "setup.py": 21,                       # builds, engine probes, the helpers it runs (main sets it); the update's git calls (P6: symbolic-ref) and the
+                                          # re-run of the pulled setup.py (it inherits main's environment, Q6); the ready-made Linux
+                                          # strata-poly's loader check (poly_will_not_start, #181: os.environ plus LD_LIBRARY_PATH)
 }
 OTHER_PROGRAMS = {
     "serve/oomd_pacer.py": 1,            # systemctl (read-only: is systemd-oomd active, its limit)

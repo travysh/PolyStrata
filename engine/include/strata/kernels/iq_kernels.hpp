@@ -204,16 +204,26 @@ bool gemm_iq_f16_grouped(int ty, const void* W, size_t expert_bytes, int n_out, 
                          const int32_t* bounds, int n_experts, int max_rows, float* Y, int ldy, void* stream);
 /// The same products on the int8 tensor cores, for matrices of any number of rows (src/kernels/cuda/i8_mma.cuh):
 /// the weights decoded to int8 a tile at a time, the activations int8 with a scale per 32 values, FP32 sums.
-/// CUDA, Ampere and newer.  gemm_iq_i8_takes: the current card runs it for K columns of type ty (K a multiple of 256,
-/// or of 32 for a type of 32-value blocks; STRATA_PF_I8MMA=0 turns it off).  gemm_iq_i8_quantize: row i of xq = row ids[i] of x (row i without ids), ld
+/// CUDA, Ampere and newer (Turing with gemm_iq_i8_turing()).  gemm_iq_i8_takes: the current card runs it for K columns of type ty (K a multiple of 256,
+/// or of 32 for a type of 32-value blocks, MXFP4's too, of 64 for NVFP4; STRATA_PF_I8MMA=0 turns it off).  gemm_iq_i8_quantize: row i of xq = row ids[i] of x (row i without ids), ld
 /// floats a row; xq holds rows * K * 5 / 4 bytes, 16-byte aligned.  gemm_iq_i8_grouped: matrix e (n_out rows,
 /// mat_bytes apart) times rows bounds[e]..bounds[e+1] of an xq of total_rows rows; row i's products go to row ids[i]
-/// of Y (row i without ids).  With `from`, row i is row from[i] of xq.  false: not launched.
+/// of Y (row i without ids).  With `from`, row i is row from[i] of xq.  With `at` (n_mats values on the device,
+/// multiples of 16), matrix e is at W + at[e] in place of W + e * mat_bytes.  false: not launched.
 bool gemm_iq_i8_takes(int ty, int K);
+/// The int8 kernel on Turing (sm_75) too, from now on in this process, by m8n8k16 MMAs: the same sums as on Ampere.
+/// Off by default, where Turing's products are the halves' (mmq_own.cu); a model's engine turns it on (Inkling 2
+/// with --prompt-int8).
+void gemm_iq_i8_turing(bool on);
+/// The int8 kernel also takes type ty, from now on in this process (on false: no longer), for a type it takes only when
+/// asked: IQ1_S (19) and MXFP4 (39).  A model's engine asks for them at load (Inkling 2: IQ1_S with
+/// STRATA_PREFILL_IQ1S=int8, MXFP4 unless STRATA_PREFILL_MXFP4=fp16), so that other products stay on the FP16 kernel
+/// as before.  Any other type: nothing changes.
+void gemm_iq_i8_allow(int ty, bool on);
 void gemm_iq_i8_quantize(const float* x, const int32_t* ids, int64_t ld, int64_t rows, int K, void* xq, void* stream);
 bool gemm_iq_i8_grouped(int ty, const void* W, size_t mat_bytes, int n_out, int K, const void* xq, int64_t total_rows,
                         const int32_t* bounds, int n_mats, int max_rows, const int32_t* ids, float* Y, int64_t ldy, void* stream,
-                        const int32_t* from = nullptr);
+                        const int32_t* from = nullptr, const int64_t* at = nullptr);
 void iq_set_old_kernels(bool old);
 bool iq_old_kernels();
 

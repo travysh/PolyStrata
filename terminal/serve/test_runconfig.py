@@ -60,17 +60,28 @@ class Apply(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "truncate_middle"):
             runconfig.apply(CFG, {"truncate_middle": "yes"})
 
+    def test_top_k_0_is_off(self):
+        # a model card's top_k 0 (Inkling 2 Mini's recommended sampling) is kept: the engine then keeps 64
+        new, _ = runconfig.apply(CFG, {"sampling.top_k": 0})
+        self.assertEqual(new["sampling"]["top_k"], 0)
+        # and the server starts with it: the config's sampling block takes the same 0 a request does
+        from serve.server_parts.http_api import sampling_defaults_from_config
+        got = sampling_defaults_from_config({"sampling": {"temperature": 1.0, "top_p": 1.0, "top_k": 0, "min_p": 0.0}})
+        self.assertEqual(got["top_k"], 0)
+        with self.assertRaises(SystemExit):
+            sampling_defaults_from_config({"sampling": {"top_k": -1}})
+
     def test_refused(self):
         for changes in ({"api_key": "x"}, {"host": "0.0.0.0"}, {"mcp_servers": {}}, {"before_load": "calc.exe"},
                         {"args": []}, {"exe": "evil.exe"}, {"trusted_origins": ["*"]}, {"allowed_hosts": ["*"]},
-                        {"sampling.temperature": -1}, {"sampling.top_p": 0}, {"sampling.top_k": 65},
+                        {"sampling.temperature": -1}, {"sampling.top_p": 0}, {"sampling.top_k": -1},
                         {"sampling.min_p": 2}, {"reasoning_budget_tokens": 1.5}, {"fit_max_tokens": "yes"},
                         {"effort_position": "middle"}, {"vram_reserve_mib": -5}, {"idle_unload_s": True},
                         {"aliases": [1]}, {}, None, ["x"]):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 runconfig.apply(CFG, changes)
         with self.assertRaises(ValueError):                              # one bad value: nothing is applied
-            runconfig.apply(CFG, {"fit_max_tokens": True, "sampling.top_k": 0})
+            runconfig.apply(CFG, {"fit_max_tokens": True, "sampling.top_k": -1})
         with self.assertRaises(ValueError):
             runconfig.apply({**CFG, "vision": {"gpu": True}}, {"lazy_load": True})
 
@@ -143,7 +154,7 @@ class Http(unittest.TestCase):
         status, _ = self.call("POST", b'{"set": {"fit_max_tokens": true}}', {"Content-Type": "text/plain"})
         self.assertEqual(status, 415)
         for body in ({"set": {"api_key": ""}}, {"set": {"mcp_servers": {"x": {"command": "calc"}}}},
-                     {"set": {"sampling.top_k": 0}}, {"nothing": 1}, b"not json"):
+                     {"set": {"sampling.top_k": -1}}, {"nothing": 1}, b"not json"):
             status, b = self.call("POST", body, {"Origin": f"http://{self.host}"})
             self.assertEqual(status, 400, (body, b))
         self.assertEqual(self.path.read_bytes(), before)                 # nothing was written

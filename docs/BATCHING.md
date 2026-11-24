@@ -20,8 +20,10 @@ same server): its numbers, what a slot costs and where setup recommends it are i
 ## The strata-poly models
 
 `"parallel": N` in the model's config (`strata-<model>.json`), or `--parallel N` when you run setup, works for
-GLM 5.3 Flash, DeepSeek V4 Flash, LFM2.5, Flint, Qwen3.6, Ornith 1.5, Gemma 4, Tiel Coder and MiniCPM-V too, up to
-8. The server drives it the way it drives the Strata project's engine (below), with the same lines:
+GLM 5.3 Flash, DeepSeek V4 Flash, LFM2.5, Flint, Qwen3.6, Ornith 1.5, Gemma 4, Tiel Coder, MiniCPM-V and Inkling 2
+Mini (not on a Mac yet) too, up to 8. For Inkling 2 Mini, `--tail-skip` (in setup's small-card flags) is decided over all the chats
+writing at once, so with it a chat's answer can differ from the same request alone; each slot also keeps its window
+rings from the start (about 320 MiB at fp16), which the expert cache gives up. The server drives it the way it drives the Strata project's engine (below), with the same lines:
 
 - A request alone writes on its own and guesses ahead as always, so one user sees no change.
 - When a second one comes, the first goes on in a batch slot from where it was, nothing read again, and the two

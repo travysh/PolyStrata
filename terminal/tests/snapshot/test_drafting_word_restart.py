@@ -53,8 +53,6 @@ class AutoStaysAuto(unittest.TestCase):
         for backend, archs in (("cuda", ["sm_120"]), ("hip", ["gfx1201"]), ("metal", []), ("sycl", ["arc_a"])):
             self.assertEqual(drafting.choice_of(None, family="qwen", backend=backend, archs=archs),
                              drafting.choice_of("auto", family="qwen", backend=backend, archs=archs), backend)
-        host = (ROOT.parent / "app" / "host" / "server" / "native-control.mjs").read_text(encoding="utf-8")
-        self.assertIn("drafting:cfg.drafting??'auto'", host, "the app reads a missing word as Auto")
 
     def test_a_first_launch_without_a_word_writes_nothing(self):
         recs = launches(get_machine("nv_resident"), get_set("iq3_s"), [(None, False), (None, False)])
@@ -63,7 +61,7 @@ class AutoStaysAuto(unittest.TestCase):
         self.assertEqual(argv(recs[1]), argv(recs[0]))
 
     def test_the_models_screen_choice_still_decides_a_start_without_a_word(self):
-        # the app saves its Drafting choice in the model's installed config; a later `strata launch` with no word runs that choice, as before
+        # a Drafting choice saved in the model's installed config: a later `strata launch` with no word runs that choice, as before
         def models_screen_says_mtp(world):
             cfg = json.loads(world.config_path.read_text(encoding="utf-8"))
             cfg["drafting"] = "mtp"

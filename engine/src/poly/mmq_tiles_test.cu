@@ -102,8 +102,11 @@ int run_case(const Quant& q, const std::vector<int>& rows, const std::vector<int
         cudaMemset(dref, 0, (size_t) total * kRows * 4);
         cudaMemset(dcls, 0, (size_t) total * kRows * 4);
         const int maxrows = *std::max_element(rows.begin(), rows.end());
+        // the bounds mirrored on the host, as the engine has them (Mmq::mirror()): the BLAS path reads them there
+        mmq.mirror(d_rb, ref_bounds.data(), ref_bounds.size() * sizeof(int32_t));
         mmq.quantize(dx, d_gref, xq, q.type, kCols, kCols, total, nullptr);
         mmq.mul(dw, q.type, kRows, kCols, per, n, xq, d_rb, d_iota, total, maxrows, dref, kRows, nullptr);
+        mmq.mirror(d_cb, bounds.data(), bounds.size() * sizeof(int32_t));
         mmq.quantize(dx, d_gcls, xq, q.type, kCols, kCols, total, nullptr);
         for (int k = 0; k < nclass; ++k)
             if (most[(size_t) k] > 0)

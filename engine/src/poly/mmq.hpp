@@ -53,6 +53,13 @@ public:
              const int32_t* bounds, const int32_t* ids, int64_t total_rows, int64_t max_rows, float* dst,
              int64_t ld_dst, void* stream, const int32_t* from = nullptr);
 
+    /// mul() over n matrices that need not lie `stride` apart: matrix e at w + at[e] bytes (n values on the device,
+    /// multiples of 16), for a matrix of ggml_type with w_cols columns where int8() is true.  Each row's product is
+    /// mul()'s to the bit: it does not depend on which matrices share the launch.  Throws std::runtime_error.
+    void mul_at(const void* w, const int64_t* at, int ggml_type, int64_t w_rows, int64_t w_cols, int n, const void* xq,
+                const int32_t* bounds, const int32_t* ids, int64_t total_rows, int64_t max_rows, float* dst,
+                int64_t ld_dst, void* stream, const int32_t* from = nullptr);
+
     /// What a mul() with a matrix of ggml_type, [w_rows, w_cols], of up to `rows` rows takes on the card beside its
     /// arguments: floats for its products when they go to dst by ids or to rows not 16-byte aligned (ld_dst), and
     /// halves for the matrix on the BLAS path, which also takes the BLAS library.

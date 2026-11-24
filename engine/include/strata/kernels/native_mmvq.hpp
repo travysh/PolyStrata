@@ -119,6 +119,12 @@ bool native_q8_0_packed_eligible(int n_in, int n_out);
 void native_q8_0_pack_host(const void* gguf_blocks, void* out, int n_in, int n_out);
 void native_q8_0_packed_register(const void* gguf_weights, const void* packed, int n_in, int n_out);
 void native_q8_0_packed_unregister(const void* gguf_weights);
+/// STRATA_Q8_INPLACE=1 (opt-in): packs eligible dense Q8_0 matrices in-place (+0 MiB extra VRAM) as split qs/d
+/// planes read by both decode MMVQ (q8sm60::kernel with opt-in SMEM on Volta+) and prefill dequant_f16/f16_ld.
+bool native_q8_0_inplace_enabled();
+bool native_q8_0_inplace_eligible(int n_in, int n_out);
+bool native_q8_0_packed_lookup(const void* gguf_weights, const int8_t** qs, const void** d_half,
+                               int* n_in, int* n_out);
 /// STRATA_Q8_SM60=1 (opt-in, Pascal GP100): every Q8_0 dense matrix is packed as above whatever its shape, and the
 /// Q8_0 decode GEMVs run a kernel written for compute capability 6.0 (q8_sm60.cuh; not bitwise the exact kernels).
 /// native_q8_0_sm60_pack packs a device matrix here (the head) and owns the copy until native_q8_0_sm60_release;
@@ -158,6 +164,10 @@ struct MmvqSlots {
     const void* w[kMmvqSlotsMax];
     const void* x[kMmvqSlotsMax];
     float* y[kMmvqSlotsMax];
+    /// the launch may take kernels that keep more lanes busy, with the same bits: today IQ3_S and IQ3_XXS, and IQ2_XXS,
+    /// IQ2_XS, IQ2_S, IQ1_S and IQ1_M (their codebook staged once for 32 rows), on CUDA (iq_kernels.cu).  Set by
+    /// Inkling 2 only (Engine::lane_slots_).
+    bool lanes = false;
 };
 bool native_mmvq_slots(int ggml_type, const MmvqSlots& slots, int count, int n_in, int n_out, void* stream);
 // Whether the slots launches take a warp per row group where a row's blocks fit one warp (an expert's IQ4_XS down
@@ -178,6 +188,7 @@ struct MmvqIds {
     int x_every;
     float* y;
     std::size_t y_stride;
+    bool lanes = false;   ///< as MmvqSlots::lanes
 };
 bool native_mmvq_ids_supported(int ggml_type);
 bool native_mmvq_ids(int ggml_type, const MmvqIds& ids, int count, int n_in, int n_out, void* stream);
@@ -209,6 +220,13 @@ struct NativeMmvqMany {
 /// type, the small-K layout, a packed tensor, the wave layout).
 bool native_mmvq_many_fits(int ggml_type, const NativeMmvqMany& m, int n_in);
 void native_mmvq_many(int ggml_type, const NativeMmvqMany& m, int n_in, void* stream);
+/// native_mmvq() of 1 to 8 matrices of one width, one column each, each of its own type (types[j]) and on a q8_1
+/// input of its own, in ONE launch: each row's block is the one-row-a-block kernel native_mmvq() runs for its matrix
+/// alone, the same bits.  Q8_0, Q4_K, Q5_K and Q6_K, CUDA only.  False, with nothing launched, where one of the
+/// single calls would run another kernel (another type, a row too short for that layout, a packed tensor, the wave
+/// layout); the caller then launches them one by one.
+bool native_mmvq_mixed_fits(const int* types, const NativeMmvqMany& m, int n_in);
+bool native_mmvq_mixed(const int* types, const NativeMmvqMany& m, int n_in, void* stream);
 /// native_quantize_q8_1() of 1 to 3 vectors of n_in values in one launch: the same bytes.
 void native_quantize_q8_1_many(const float* const* x, void* const* x_q8_1, int count, int n_in, void* stream);
 

@@ -2,7 +2,7 @@
 
 This page is for anyone whose install or startup fails, or whose answers go wrong. Find your symptom below. Each entry gives one fix.
 PolyStrata installs with `START-HERE.bat` (Windows) or `./setup.sh` (Linux, Mac): [INSTALL.md](INSTALL.md). The first section
-is about the Strata project's desktop app and Terminal (the `strata` command), which this repository does not publish.
+is about the Strata project's Terminal (the `strata` command), which this repository does not publish.
 Detailed engine errors are in the [engine reference](DETAILS.md#troubleshooting).
 
 **Quick check.** Run this and keep its output, and the end of `strata-<model>.log` in the `terminal` folder, for a bug report:
@@ -11,12 +11,11 @@ Detailed engine errors are in the [engine reference](DETAILS.md#troubleshooting)
 START-HERE.bat --check       # Linux and Mac: ./setup.sh --check
 ```
 
-## The desktop app and the Terminal
+## The Terminal
 
 **I cannot find `START-HERE.bat` or `SETUP.bat`.**
 `START-HERE.bat` (Windows) and `setup.sh` (Linux, Mac) are at the top of the PolyStrata folder you downloaded or cloned.
-`SETUP.bat` is gone since the 0.2.16 layout: `START-HERE.bat --setup` does what it did. The Strata project's app has
-neither: it is started from its own icon.
+`SETUP.bat` is gone since the 0.2.16 layout: `START-HERE.bat --setup` does what it did.
 
 **`strata` is not found.**
 On Windows, open a new PowerShell window after installing. On Linux or Mac, use the full path the installer printed,
@@ -26,56 +25,31 @@ normally `~/.local/bin/strata`, and add `~/.local/bin` to PATH if needed. Check 
 The engine is the part that talks to your graphics card. PolyStrata only warns and still downloads the model, and the model
 files stay on your computer, but the model may not run until the right engine is installed. The usual reasons are that
 no engine is installed yet and the update source has none for your card, that the engine found is for another make of
-card, or that the graphics driver is too old. In the app, open Settings, then Engine. In the Terminal, the message names
+card, or that the graphics driver is too old. The message names
 the next step: run `strata update` and start again. Run `strata doctor --live` and `strata update --check` to see the
 selected GPU and driver, and check the [backend guide](INSTALL.md#what-you-need). Supported paths include Apple Silicon and
 Intel Arc on Linux, so do not assume every machine without an NVIDIA or AMD discrete card is unsupported. If the computer
 has no graphics card PolyStrata can use (only an Intel UHD or Iris chip, a virtual machine, or Windows on ARM), PolyStrata says so
 and there is nothing to install. Verify `strata launch --status` and `/health` before calling the installation successful.
 
-**"This model needs a newer engine." (the app), or a button called Update engine.**
+**"This model needs a newer engine."**
 Some models need an engine newer than the one installed: Gyro needs 0.1.45.1 or newer, NVFP4 needs 0.1.44, and NVFP4
 (NVIDIA, trained for FP4) needs 0.1.45. Minimum versions vary by model and backend, so check the model guide and the
-installed engine, not only the app version. In the app, open Settings, then Engine, and press Update engine. It asks
-first, keeps your model files and settings, and wants running models unloaded. In the Terminal: `strata update --check`
+installed engine. In the Terminal: `strata update --check`
 says what would change, `strata update` installs it (it switches to the new engine only after a test start). If the engine
 you installed is the newest and the message stays, the update source has no newer engine for your card yet; report the
 missing combination.
 
 **An update says it succeeded but `strata --version` is still old.**
 The Terminal switches to the updated Control on the next command, so run `strata --version` again. If it is still old,
-run the one-line installer once more; it keeps models and settings. The app, Control and engine have separate version
+run the one-line installer once more; it keeps models and settings. Control and the engine have separate version
 numbers. A PolyStrata copy is updated as in [updating](INSTALL.md#updating).
 
 **A new engine misbehaves after an update.**
-Stop the model, then use the app's rollback control or `strata components rollback`. An update keeps the engine it
+Stop the model, then run `strata components rollback`. An update keeps the engine it
 replaced (one generation, about 210 MiB). Source-checkout engines use a separate rollback workflow, in `engine\.previous`:
 `python terminal/setup.py --rollback-engine` puts the old one back and keeps the newer one there, so run it again to go forward
 (#670). It is described in [source setup](SOURCE_INSTALL.md).
-
-**On a Mac: "PolyStrata is damaged and can't be opened", "cannot be opened", or "unidentified developer".**
-Check first that the download is for Apple Silicon and that macOS is 15 or newer ([Mac installation](MAC.md#install)).
-Nothing is wrong with the file if the message is only about the developer: macOS marks everything a browser downloads, and
-only lets a marked program run if Apple has checked it. PolyStrata's release builds are checked by Apple ("notarised"): drag
-PolyStrata onto Applications and open it; the first time, macOS asks "Are you sure you want to open it?" and you press Open. A
-test build that is not notarised says "damaged". Do not move it to the Trash. Open the Terminal app and remove the mark,
-with the line that matches what you have (drag the file from Finder into the Terminal window to type its path):
-
-    xattr -dr com.apple.quarantine ~/Downloads/<the .dmg file>        # the .dmg, before opening it
-    xattr -dr com.apple.quarantine /Applications/PolyStrata.app           # the app, after dragging it over
-    xattr -dr com.apple.quarantine <the folder you unzipped>          # an unzipped Terminal folder
-
-Then open it again. If macOS says only "the developer cannot be verified", you can instead try to open it once, then open
-System Settings > Privacy & Security and press "Open Anyway" next to the message about PolyStrata. Only remove the mark from a
-file you downloaded from the official release; a warning alone does not show that a file is safe or intact. Installs made
-with `curl ... | sh` carry no mark and need none of this. To see which kind you have: `spctl -a -vv /Applications/PolyStrata.app`
-answers "accepted" and "Notarized Developer ID" for a notarised build. How the builds are signed is in
-[Mac packaging](../tools/packaging/mac/README.md).
-
-**The Linux AppImage does not open.**
-Make the downloaded file executable. It may need FUSE 2 (`libfuse2` on Ubuntu 22.04, `libfuse2t64` on newer Ubuntu;
-package names vary by distribution). Without FUSE, run the file with `--appimage-extract-and-run`. For a crash log,
-run it with `--save-logs`; see [Logs and bug reports](#logs-and-bug-reports).
 
 **Checking what is installed: `strata doctor`.**
 It is a read-only check of the installed engine parts (it changes nothing): which engine and helper files a saved model
@@ -91,7 +65,7 @@ don't close the window.** The next starts are much faster. Still frozen after 10
 programs (browsers use a lot of RAM) and try again. If it keeps happening, pick a smaller size (Q2_0 or IQ2_XS).
 
 **A download stopped.**
-Retry it in the app, or rerun the same `strata launch` command. Completed model-download steps are reused. Check
+Rerun the same `strata launch` command. Completed model-download steps are reused. Check
 free space and the error message. For an interrupted Terminal installer, rerun the install command. Only a source
 checkout uses `START-HERE.bat` / `./setup.sh` to resume source setup; it continues where it stopped.
 
@@ -125,7 +99,7 @@ on top (a fragmented machine spent minutes compacting memory, #771); `STRATA_NO_
 **The NVIDIA driver is too old.**
 Use the driver required by the engine package. CUDA 13 needs driver 580 or newer; older cards use the
 [CUDA 12 route](OLDER_GPUS.md). Update it (NVIDIA App or [nvidia.com/drivers](https://www.nvidia.com/drivers)), restart the
-PC if needed, then open the app or rerun `strata launch`.
+PC if needed, then rerun `strata launch`.
 
 **Port 8080 is already in use, or I changed a running model's settings.**
 PolyStrata may already be running: check `strata launch --status`. To replace your existing launch, rerun the intended command
@@ -138,7 +112,7 @@ does not restart a running model.
 **The engine stops on a small GPU or low-memory computer. Can I turn the draft layer off?**
 Yes. The draft layer (MTP) is what makes answers faster, and it takes about 1 GB of graphics memory (plus some RAM and a
 memory copy that grows with the context). Without it the expert cache gets that memory back and answers are slower. Turn
-it off for one model: in the app, the model's Drafting setting in Expert settings; in the Terminal:
+it off for one model in the Terminal:
 
 ```sh
 strata launch --family qwen --model q2_0 --context 32k --mtp off
@@ -149,31 +123,20 @@ The choice is kept per model and applied on every start. Use `--restart` if repl
 pack or context. Keep some VRAM free for the display; setting the reserve to zero is not a general speed fix.
 
 **I changed `strata-<model>.json` by hand and the change came back.**
-Engine options you add to `args` by hand (control vectors, `--spec`, `--vram-reserve-mib 0`, anything the app does not offer)
+Engine options you add to `args` by hand (control vectors, `--spec`, `--vram-reserve-mib 0`, anything setup does not offer)
 are kept. The file has two helper keys for this. `user_args` lists your options; every start and every setup run puts them
-over the ones the app generates, and for the same option your value wins. `args_written` is a copy of `args` as the app last
-wrote it, so an option you added or changed in `args` is noticed and moved into `user_args` the next time the app or setup
-touches the file. To undo one, delete it from both `args` and `user_args`. A value you save in the app's Expert settings
-("GPU memory for other apps") is put in `user_args` for you. Prefer the app's Expert settings or the Terminal `--set` for
+over the ones setup generates, and for the same option your value wins. `args_written` is a copy of `args` as setup last
+wrote it, so an option you added or changed in `args` is noticed and moved into `user_args` the next time setup or the Terminal
+touches the file. To undo one, delete it from both `args` and `user_args`. Prefer the Terminal `--set` for
 supported overrides.
 
-Two things the app still chooses itself: the context size, KV type, picture reading and draft layer. Set them in the Models
-screen or with the matching `strata launch` flags, or `"mtp": false` (draft layer). The app keeps the earlier file as
+Setup and the Terminal still choose the context size, KV type, picture reading and draft layer themselves. Set them with
+the matching `strata launch` flags or setup's questions, or `"mtp": false` (draft layer). Setup keeps the earlier file as
 `strata-<model>.json.bak`. Inspect the effective config rather than assuming a saved preference was applied.
-
-**The app keeps more graphics memory free than I want (decode is slower than in 0.1.45).**
-Without a value of yours the app keeps graphics memory free for the desktop: 1536 MiB on a card of 16 GB or less that drives
-a display (1024 MiB on a larger card), more with a picture reader on the GPU (2048 MiB), and with the "Leave room for my work"
-profile a fifth of the card (at most 1536 MiB on a card of 16 GB or less). A card that has no display attached, such as a
-second GPU with the screen on the integrated one, keeps 512 MiB (700 MiB with pictures on the GPU). It reads that from the
-driver (nvidia-smi `display_active`, or the Windows adapter that has the desktop); when it cannot tell, it assumes a display.
-A card that shares the PC's memory (Strix Halo) does not keep a fifth. Your own value is never raised or lowered: set "GPU
-memory for other apps" in Expert settings, or `--vram-reserve-mib 0` in `args`. The engine's own warning about low free
-memory stays; a card that also draws the desktop can freeze or slow to a few tokens a second with a very small reserve.
 
 **Pictures are refused, or slow.**
 "this server was started without the vision encoder": the model was set up for text only (someone chose "No", or the engine
-has no picture reader). Switch pictures on in the app or on the Pictures step of `strata launch` (`--vision on|gpu|cpu`);
+has no picture reader). Switch pictures on with the Pictures step of `strata launch` (`--vision on|gpu|cpu`);
 in a source checkout run setup again with `--vision yes` (or `--vision gpu` / `--vision cpu`). Pictures are on by default
 wherever a model can read them, and `--vision off` (source setup: `--vision no`) turns them off; that is different from
 optional [image generation](IMAGES.md). The reader runs on the CPU under 24 GB of graphics memory and on the card from
@@ -237,8 +200,7 @@ start PolyStrata outside the session's limits, for example `systemd-run --user -
 PolyStrata prints a warning at start when it sees this limit.
 
 **The prompt exceeds the context.**
-The conversation is longer than the context you chose. Start a new chat, shorten the input, or use the app's Summarize and
-continue action. A larger context needs more memory. In the Terminal, restart your chosen model with an explicit
+The conversation is longer than the context you chose. Start a new chat or shorten the input. A larger context needs more memory. In the Terminal, restart your chosen model with an explicit
 `--context`, such as `64k`; keep its family, model and other choices. In a PolyStrata copy, run `START-HERE.bat --setup`
 (Linux: `./setup.sh --setup`) and pick more context.
 
@@ -358,19 +320,11 @@ overwrite local branches or edits just to make `git pull` succeed.
 ## Logs and bug reports
 
 **Sending logs for a bug report.**
-- **App:** Settings → Engine → Diagnostics → View logs → Save logs. It writes one text file,
-  `strata-diagnostics-<date>.txt`, into your Downloads folder and shows where. It holds the engine's messages, the failed
-  steps and the end of each model's server log.
 - **Terminal:** include `strata --version`, `strata doctor --live`, `strata launch --status`, and the relevant log excerpt.
-- **Windows app crash:** if the app closes right after you start it, it shows a message with the reason and writes
-  `desktop-crash-<date>.log` in `%LOCALAPPDATA%\PolyStrata\logs`; Save logs includes it, and so can you, by hand.
-- **Linux app crash:** if the window crashes or will not open, run the AppImage with `--save-logs` in a terminal; it writes
-  the crash log and the other logs to one file in Downloads.
 - **PolyStrata (START-HERE.bat or setup.sh):** `strata-<model>.log` from the `terminal` folder.
-- **Developer tools:** To open the developer tools in the app window on Windows or Linux, start the app with `STRATA_DEVTOOLS=1`.
 
 Look through a log before you send it, and never send an API key. Include model and quantization, OS, GPU/VRAM, RAM,
-driver, install route (app, Terminal or the installer), PolyStrata and engine versions, exact command, expected result and
+driver, install route (Terminal or setup), PolyStrata and engine versions, exact command, expected result and
 actual error. Open an [issue](https://github.com/simplexai-labs/PolyStrata/issues) and attach the log. Follow
 [CONTRIBUTING.md](../.github/CONTRIBUTING.md). The full table of error messages, with the older engine fixes, is in the
 [details](DETAILS.md#troubleshooting).

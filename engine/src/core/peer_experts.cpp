@@ -17,6 +17,14 @@
 #include <cstdlib>
 #include <stdexcept>
 #include <vector>
+#if defined(_MSC_VER) || defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>
+#endif
+#if defined(__linux__)
+#include <cctype>
+#include <climits>
+#include <unistd.h>
+#endif
 
 namespace strata::core {
 
@@ -38,7 +46,8 @@ struct Meta {                           // one block, uploaded with one copy per
     int32_t out_row[CAP];               // multi-GPU: compact row -> entry row in the host `out`
 };
 
-/// Switches the calling thread to `dev` and back.  The engine's own thread lives on device 0.
+/// Switches the calling thread to `dev` and back.  It asks the runtime for the thread's device: a thread can be on
+/// any device here (STRATA_PRIMARY_DEVICE puts the engine's own thread on another one).
 struct On {
     int prev = 0;
     explicit On(int dev) { cudaGetDevice(&prev); if (prev != dev) cudaSetDevice(dev); }
@@ -50,18 +59,71 @@ struct On {
 /// were zeros and the rows it sent back never arrived, so the first prompt's MoE output was garbage and the logits NaN.  Without
 /// peer access enabled the same copies are right (the driver stages them).  So the pair is asked once, with a small copy each way,
 /// whether the direct path really carries data.  true = both ways exact (or nothing could be tested: the old trust is kept).
+/// Returns false when two CUDA GPUs sit behind separate PCIe root ports (PHB / SYS topology) without
+/// NVLink / native P2P atomics. On such boards (e.g. Intel Xeon PHB + ACS, 2x RTX A4000) merely calling
+/// cudaDeviceEnablePeerAccess + cudaMemcpyPeer can fault GPU 1's CUDA context (unspecified launch failure)
+/// or stall at ~98 ms per copy. Skipping P2P upfront avoids poisoning the device and uses fast portable host staging.
+bool p2p_topology_safe(int dev0, int dev1) {
+    if (const char* np = std::getenv("STRATA_PEER_NO_P2P"); np != nullptr && np[0] != '\0' && std::atoi(np) == 0) return true;
+#if !defined(STRATA_USE_HIP)
+    int atomic_ok = 0;
+    if (cudaDeviceGetP2PAttribute(&atomic_ok, cudaDevP2PAttrNativeAtomicSupported, dev0, dev1) == cudaSuccess && atomic_ok) {
+        return true;   // NVLink or true hardware P2P switch with native atomics
+    }
+    (void) cudaGetLastError();
+#if defined(__linux__)
+    auto ancestors = [](int d) -> std::vector<std::string> {
+        char bdf[64] = {};
+        if (cudaDeviceGetPCIBusId(bdf, sizeof(bdf), d) != cudaSuccess) { (void) cudaGetLastError(); return {}; }
+        for (char* p = bdf; *p; ++p) *p = (char) std::tolower((unsigned char) *p);
+        std::string sys = std::string("/sys/bus/pci/devices/") + bdf;
+        char resolved[PATH_MAX] = {};
+        if (!realpath(sys.c_str(), resolved)) return {};
+        std::vector<std::string> parts;
+        std::string s(resolved);
+        size_t pos = 0;
+        while (pos < s.size()) {
+            size_t nxt = s.find('/', pos);
+            if (nxt == std::string::npos) nxt = s.size();
+            if (nxt > pos) parts.push_back(s.substr(pos, nxt - pos));
+            pos = nxt + 1;
+        }
+        if (!parts.empty()) parts.pop_back();   // drop the GPU's own BDF
+        return parts;
+    };
+    const auto a0 = ancestors(dev0), a1 = ancestors(dev1);
+    if (!a0.empty() && !a1.empty()) {
+        size_t common_bridges = 0;
+        const size_t n = std::min(a0.size(), a1.size());
+        for (size_t i = 0; i < n && a0[i] == a1[i]; ++i) {
+            // PCI bridge components look like "0000:00:02.0" (contains ':' and '.'), whereas root complex is "pci0000:00"
+            if (a0[i].find(':') != std::string::npos && a0[i].find('.') != std::string::npos) ++common_bridges;
+        }
+        if (common_bridges == 0) return false;   // PHB / NODE / SYS (no shared PCIe switch)
+    }
+#endif
+#endif
+    return true;
+}
+
 bool p2p_copies_data(int device) {
     constexpr size_t kN = 1 << 14;   // floats
     std::vector<float> h(kN), back(kN);
     for (size_t i = 0; i < kN; ++i) h[i] = 1.0f + (float) ((i * 2654435761u) % 4093u);
     float* d[2] = {nullptr, nullptr};
-    const int dev[2] = {0, device};
+    cudaStream_t st[2] = {nullptr, nullptr};
+    const int dev[2] = {primary_device(), device};
     bool ok = true, tested = true;
     for (int k = 0; k < 2 && tested; ++k) {
         On on(dev[k]);
-        if (cudaMalloc((void**) &d[k], kN * 4) != cudaSuccess) { cudaGetLastError(); tested = false; }
+        if (cudaMalloc((void**) &d[k], kN * 4) != cudaSuccess ||
+            cudaStreamCreateWithFlags(&st[k], cudaStreamNonBlocking) != cudaSuccess) {
+            cudaGetLastError();
+            tested = false;
+        }
     }
-    for (int dir = 0; dir < 2 && tested && ok; ++dir) {   // 0: device 0 -> peer, 1: peer -> device 0
+    double copy_ms = 0.0;
+    for (int dir = 0; dir < 2 && tested && ok; ++dir) {   // 0: primary -> peer, 1: peer -> primary
         const int from = dir == 0 ? 0 : 1, to = 1 - from;
         {
             On on(dev[from]);
@@ -70,18 +132,23 @@ bool p2p_copies_data(int device) {
         {
             On on(dev[to]);
             if (cudaMemset(d[to], 0, kN * 4) != cudaSuccess) { tested = false; break; }
-        }
-        if (cudaMemcpyPeer(d[to], dev[to], d[from], dev[from], kN * 4) != cudaSuccess) { tested = false; break; }
-        {
-            On on(dev[to]);
+            const auto t0 = std::chrono::steady_clock::now();
+            if (cudaMemcpyPeerAsync(d[to], dev[to], d[from], dev[from], kN * 4, st[to]) != cudaSuccess ||
+                cudaStreamSynchronize(st[to]) != cudaSuccess) { tested = false; break; }
+            copy_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
             if (cudaMemcpy(back.data(), d[to], kN * 4, cudaMemcpyDeviceToHost) != cudaSuccess) { tested = false; break; }
         }
         ok = std::memcmp(back.data(), h.data(), kN * 4) == 0;
+        if (copy_ms > 5.0) break;
     }
-    for (int k = 0; k < 2; ++k)
-        if (d[k] != nullptr) { On on(dev[k]); cudaFree(d[k]); }
-    if (!tested) { cudaGetLastError(); return true; }
-    return ok;
+    for (int k = 0; k < 2; ++k) {
+        On on(dev[k]);
+        if (st[k] != nullptr) cudaStreamDestroy(st[k]);
+        if (d[k] != nullptr) cudaFree(d[k]);
+    }
+    if (!tested) { cudaGetLastError(); return false; }
+    if (!ok) return false;
+    return copy_ms <= 2.0;   // reject stalling PCIe host-bridge P2P (~98 ms/copy) in favor of portable host staging
 }
 
 bool ck(cudaError_t e, const char* what, std::string& err) {
@@ -103,14 +170,15 @@ void PeerExperts::close() {
         cache_.close();
         if (d_x_) cudaFree(d_x_);
         if (d_out_) cudaFree(d_out_);
-        if (d_meta_) cudaFree(d_meta_);
         if (d_q8_) cudaFree(d_q8_);
         if (d_scratch_) cudaFree(d_scratch_);
+        if (d_blocks_finished_) cudaFree(d_blocks_finished_);
         if (h_x_) cudaFreeHost(h_x_);
         if (h_out_) cudaFreeHost(h_out_);
         if (h_meta_) cudaFreeHost(h_meta_);
         if (d_gate_vals_) cudaFree(d_gate_vals_);
         if (h_gate_) cudaFreeHost((void*) h_gate_);
+        if (h_done_seq_) cudaFreeHost((void*) h_done_seq_);
         if (refill_ev_) cudaEventDestroy(refill_ev_);
         if (stream_) cudaStreamDestroy(stream_);
         if (refill_) cudaStreamDestroy(refill_);
@@ -121,6 +189,10 @@ void PeerExperts::close() {
     d_sx_ = d_sh_ = nullptr;
     d_gate_vals_ = nullptr;
     h_gate_ = nullptr;
+    h_done_seq_ = nullptr;
+    d_done_seq_ = nullptr;
+    d_blocks_finished_ = nullptr;
+    seq_ = 0;
     stream_ = refill_ = nullptr;
     refill_ev_ = nullptr;
     device_ = -1;
@@ -132,9 +204,9 @@ bool PeerExperts::open(int device, const std::vector<std::pair<int32_t, int32_t>
     close();
     int count = 0;
     if (!ck(cudaGetDeviceCount(&count), "cudaGetDeviceCount", err)) return false;
-    if (device < 1 || device >= count) {
-        err = "peer experts: CUDA device " + std::to_string(device) + " is not visible (" + std::to_string(count) +
-              " devices; set CUDA_VISIBLE_DEVICES)";
+    if (device < 0 || device >= count || device == primary_device()) {
+        err = "peer experts: CUDA device " + std::to_string(device) + " is not a valid secondary GPU (" + std::to_string(count) +
+              " devices, primary=" + std::to_string(primary_device()) + "; set CUDA_VISIBLE_DEVICES)";
         return false;
     }
     const auto& lay = strata::kernels::cpu::expert_layout();
@@ -148,6 +220,11 @@ bool PeerExperts::open(int device, const std::vector<std::pair<int32_t, int32_t>
         cudaDeviceCanAccessPeer(&b, device, primary_device());
         if (const char* np = std::getenv("STRATA_PEER_NO_P2P"); np != nullptr && std::atoi(np) != 0) a = 0;   // test knob: pretend the pair has no P2P
         p2p_ = a && b;
+        if (p2p_ && !p2p_topology_safe(primary_device(), device)) {
+            std::fprintf(stderr, "strata: peer GPU %d: GPUs sit behind a PCIe host bridge (PHB/SYS, no shared PCIe switch or NVLink); "
+                                 "using portable host-pinned staging instead of P2P (STRATA_PEER_NO_P2P=0 overrides)\n", device);
+            p2p_ = false;
+        }
         if (p2p_) {
             On on0(primary_device());
             cudaError_t e0 = cudaDeviceEnablePeerAccess(device, 0);
@@ -161,8 +238,8 @@ bool PeerExperts::open(int device, const std::vector<std::pair<int32_t, int32_t>
                 std::fprintf(stderr, "strata: peer GPU %d: peer access is enabled but a test copy between the two GPUs arrived wrong "
                                      "(a host bridge between them, no real P2P): the prompt path takes the host route instead "
                                      "(STRATA_PEER_NO_P2P=1 does that by hand)\n", device);
-                { On q0(0); cudaDeviceDisablePeerAccess(device); cudaGetLastError(); }
-                { On q1(device); cudaDeviceDisablePeerAccess(0); cudaGetLastError(); }
+                { On q0(primary_device()); cudaDeviceDisablePeerAccess(device); cudaGetLastError(); }
+                { On q1(device); cudaDeviceDisablePeerAccess(primary_device()); cudaGetLastError(); }
                 p2p_ = false;
             }
         }
@@ -182,12 +259,25 @@ bool PeerExperts::open(int device, const std::vector<std::pair<int32_t, int32_t>
         ck(cudaHostAlloc((void**) &h_x_, (size_t) CAP * H * sizeof(float), cudaHostAllocPortable | cudaHostAllocMapped), "input staging", err) &&
         ck(cudaHostAlloc((void**) &h_out_, (size_t) CAP * H * sizeof(float), cudaHostAllocPortable | cudaHostAllocMapped), "result staging", err) &&
         ck(cudaHostAlloc(&h_meta_, sizeof(Meta), cudaHostAllocPortable | cudaHostAllocMapped), "plan staging", err) &&
+        ck(cudaHostGetDevicePointer(&d_meta_, h_meta_, 0), "plan dev ptr", err) &&
         ck(cudaMalloc((void**) &d_x_, (size_t) CAP * H * sizeof(float)), "input", err) &&
         ck(cudaMalloc((void**) &d_out_, (size_t) CAP * H * sizeof(float)), "result", err) &&
-        ck(cudaMalloc(&d_meta_, sizeof(Meta)), "plan", err) &&
         ck(cudaMalloc((void**) &d_q8_, (size_t) CAP * (H / 32) * 36), "activations", err) &&
-        ck(cudaMalloc(&d_scratch_, scratch), "scratch", err);
+        ck(cudaMalloc(&d_scratch_, scratch), "scratch", err) &&
+        ck(cudaMalloc(&d_blocks_finished_, sizeof(int)), "blocks counter", err) &&
+        ck(cudaMemset(d_blocks_finished_, 0, sizeof(int)), "blocks counter zero", err);
     if (!alloc_ok) { close(); return false; }
+    void* hp_done = nullptr;
+    if (cudaHostAlloc(&hp_done, 64, cudaHostAllocPortable | cudaHostAllocMapped) == cudaSuccess &&
+        cudaHostGetDevicePointer((void**) &d_done_seq_, hp_done, 0) == cudaSuccess) {
+        h_done_seq_ = (volatile uint32_t*) hp_done;
+        *h_done_seq_ = 0;
+        seq_ = 0;
+    } else {
+        (void) cudaGetLastError();
+        h_done_seq_ = nullptr;
+        d_done_seq_ = nullptr;
+    }
     if (strata::kernels::cpu::hadamard_spec().any()) {   // APR: this device's copies of the sign vectors
         d_sx_ = strata::kernels::hadamard_device_signs(strata::kernels::cpu::hadamard_signs((int) H), (int) H);
         d_sh_ = strata::kernels::hadamard_device_signs(strata::kernels::cpu::hadamard_signs((int) ff), (int) ff);
@@ -226,15 +316,13 @@ bool PeerExperts::open(int device, const std::vector<std::pair<int32_t, int32_t>
         if (advise && i + kAhead < pick.size()) (void) src.advise_pairs(&pick[i + kAhead], 1);
         const int32_t slot = cache_.admit(pr.first, pr.second);
         const uint8_t* b = src.blob(pr.first, pr.second);
-        if (slot < 0 || b == nullptr || !cache_.fill_slot(slot, b, refill_, err, (int64_t) lay.blob_bytes(pr.first))) {
+        if (slot < 0 || b == nullptr || !cache_.fill_slot_blocking(slot, b, err, (int64_t) lay.blob_bytes(pr.first))) {
             err = "peer experts: fill failed: " + err;
             close();
             return false;
         }
-        src.note_async_read(b, refill_);   // #1237
         res_[(size_t) (pr.first * n_expert + pr.second)] = slot;
     }
-    if (!ck(cudaStreamSynchronize(refill_), "fill", err)) { close(); return false; }
     const auto& f0 = pick.front();
     if (!cache_.verify_slot(res_[(size_t) (f0.first * n_expert + f0.second)], src.blob(f0.first, f0.second), err,
                             (int64_t) lay.blob_bytes(f0.first))) {
@@ -298,8 +386,7 @@ bool PeerExperts::launch(int64_t layer, const float* x, const int32_t* ids, int6
     if (!direct) std::memcpy(h_x_, x, (size_t) (n_tok * H) * sizeof(float));
     On on(device_);
     const cudaStream_t s = stream_;
-    if (!ck(cudaMemcpyAsync(d_x_, direct ? x : h_x_, (size_t) (n_tok * H) * sizeof(float), cudaMemcpyHostToDevice, s), "input", err) ||
-        !ck(cudaMemcpyAsync(d_meta_, h_meta_, sizeof(Meta), cudaMemcpyHostToDevice, s), "plan", err))
+    if (!ck(cudaMemcpyAsync(d_x_, direct ? x : h_x_, (size_t) (n_tok * H) * sizeof(float), cudaMemcpyHostToDevice, s), "input", err))
         return false;
     Meta* dm = (Meta*) d_meta_;
     const auto& lay = strata::kernels::cpu::expert_layout();
@@ -316,26 +403,43 @@ bool PeerExperts::launch(int64_t layer, const float* x, const int32_t* ids, int6
         err = "peer experts: only native packs are supported";
         return false;
     }
+    ++seq_;
     if (direct) {   // the rows straight into the host `out` (zero-copy, coalesced float4 writes)
         try {
-            strata::kernels::scatter_rows_f32(d_out_, out, dm->out_row, rows, H, s);
+            if (d_done_seq_ != nullptr && d_blocks_finished_ != nullptr) {
+                strata::kernels::scatter_rows_and_signal_f32(d_out_, out, dm->out_row, rows, H, d_done_seq_, seq_, d_blocks_finished_, s);
+            } else {
+                strata::kernels::scatter_rows_f32(d_out_, out, dm->out_row, rows, H, s);
+                if (d_done_seq_ != nullptr) strata::kernels::signal_stream_done(d_done_seq_, seq_, s);
+            }
         } catch (const std::exception& e) { err = std::string("peer experts: scatter: ") + e.what(); return false; }
         launched_direct_ = true;
-        return true;
+    } else {
+        if (!ck(cudaMemcpyAsync(h_out_, d_out_, (size_t) rows * H * sizeof(float), cudaMemcpyDeviceToHost, s), "results", err))
+            return false;
+        if (d_done_seq_ != nullptr) strata::kernels::signal_stream_done(d_done_seq_, seq_, s);
     }
-    return ck(cudaMemcpyAsync(h_out_, d_out_, (size_t) rows * H * sizeof(float), cudaMemcpyDeviceToHost, s),
-              "results", err);
+    return true;
 }
 
 bool PeerExperts::finish(float* out, std::string& err) {
     if (launched_rows_ == 0) return true;
     ++launches;
     const auto t0 = std::chrono::steady_clock::now();
-    {
+    if (d_done_seq_ != nullptr) {
+        const uint32_t target = seq_;
+        while (*h_done_seq_ < target) {
+#if defined(_MSC_VER) || defined(__x86_64__) || defined(_M_X64)
+            _mm_pause();
+#endif
+        }
+    } else {
         On on(device_);
-        // spin on the stream (a blocking sync would sleep the pool thread and wake it late)
         cudaError_t e;
         while ((e = cudaStreamQuery(stream_)) == cudaErrorNotReady) {
+#if defined(_MSC_VER) || defined(__x86_64__) || defined(_M_X64)
+            _mm_pause();
+#endif
         }
         if (!ck(e, "finish", err)) return false;
     }

@@ -190,7 +190,7 @@ With Qwen3.6, Ornith and Tiel Coder, if you ask for it. Their template leaves th
 the prompt, so a model that thought of two numbers and said one makes the other up when asked for it later. Add
 `"preserve_thinking": true` to `strata-<model>.json` and restart, or send `"chat_template_kwargs":
 {"preserve_thinking": true}` with a request, as with llama.cpp. The server also remembers the thinking of the
-answers it wrote, so an app that sends an answer back without it (the chat page, Open WebUI) still gets it, as long as
+answers it wrote, so an app that sends an answer back without it (Open WebUI, for example) still gets it, as long as
 the answer's text comes back unchanged.
 
 ### Can several people use one server at once?

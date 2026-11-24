@@ -2,6 +2,7 @@ name: Portable monitor client
 
 on:
   push:
+    branches: [main]
     paths:
       - .github/workflows/terminal-portable-monitor.yml
       - tools/packaging/monitor_bundle.py
@@ -30,12 +31,17 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: terminal-portable-monitor-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   client:
     name: ${{ matrix.os }} / Python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         os: [ubuntu-latest, windows-latest]
         python: ['3.10', '3.11']

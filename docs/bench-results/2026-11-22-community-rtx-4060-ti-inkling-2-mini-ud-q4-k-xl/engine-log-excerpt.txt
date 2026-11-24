@@ -1,0 +1,2 @@
+[strata] running on GPU 1 (as nvidia-smi numbers it); the engine's log calls it GPU 0 / CUDA0
+ready: http://127.0.0.1:8080/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, context 32768 tokens)

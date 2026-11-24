@@ -256,7 +256,7 @@ VISION_EXE = ROOT / "build-vision" / "bin" / "strata-vision"
 
 
 def build_vision(llama: Path) -> Path:
-    """strata-vision (terminal/tools/vision: Strata's own vision towers, no llama.cpp or ggml), with the towers' Metal
+    """strata-vision (terminal/tools/vision: the Strata project's own vision towers, no llama.cpp or ggml), with the towers' Metal
     kernels: --gpu reads the picture on the GPU, and without it the same program reads on the CPU."""
     stamp = ROOT / "build-vision" / "BUILD.json"
     src = source_digest()
@@ -418,7 +418,7 @@ def start(cfg_path: Path, port: int | None, open_browser: bool = True) -> int:
         S.refresh_draft_vocab(Path(cfg["args"][cfg["args"].index("--mtp") + 1]), cfg.get("draft_vocab", "cjk"))
     cmd = [sys.executable, str(ROOT.parent / "terminal" / "serve" / "server.py"), "--engine", "strata", "--config", str(cfg_path),
            "--port", str(port or cfg.get("port", 8080))]
-    if open_browser and cfg.get("open_browser") is not False:
+    if open_browser and cfg.get("open_browser") is True:     # only after --browser: the Monitor page
         cmd.append("--open")
     S.say()
     S.say(f"  Starting {cfg.get('model_name', 'the model')} on Metal: the engine maps the model file and is ready in about "
@@ -579,7 +579,7 @@ def setup_poly(a, info: dict, data: Path, elsewhere: list) -> int:
     if P.flag_value(cfg["args"], "--metal-memory") == "balanced":
         S.say("  balanced KV grows in 4096-token steps with 1024 tokens ahead, up to the chosen context")
     S.write_setup_config(cfg_path, cfg)
-    script = S.write_run_script(tag, cfg_path, cfg["port"], cfg.get("open_browser") is not False)
+    script = S.write_run_script(tag, cfg_path, cfg["port"], cfg.get("open_browser") is True)
     S.ok(f"start script: {script.name}")
     return 0 if a.no_start else start(cfg_path, a.port, a.browser is not False)
 
@@ -648,7 +648,7 @@ def setup_q36(a, info: dict, data: Path, elsewhere: list) -> int:
                          "model": str(gguf), "gpu": True, "max_tokens": a.vision_tokens or 1024}
     cfg_path = config_path(tag)
     S.write_setup_config(cfg_path, cfg)
-    script = S.write_run_script(tag, cfg_path, cfg["port"], cfg.get("open_browser") is not False)
+    script = S.write_run_script(tag, cfg_path, cfg["port"], cfg.get("open_browser") is True)
     S.ok(f"start script: {script.name}")
     return 0 if a.no_start else start(cfg_path, a.port, a.browser is not False)
 
@@ -992,7 +992,7 @@ def main(argv=None) -> int:
         cfg["open_browser"] = a.browser
     cfg_path = config_path(tag)
     S.write_config(cfg_path, cfg)
-    script = S.write_run_script(tag, cfg_path, port, cfg.get("open_browser") is not False)
+    script = S.write_run_script(tag, cfg_path, port, cfg.get("open_browser") is True)
     S.ok(f"start script: {script.name}")
     S.say()
     S.say("All set.")

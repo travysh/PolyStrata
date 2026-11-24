@@ -91,17 +91,7 @@ class World:
         (self.data / "mtp" / "mtp-q2_0.gguf").write_bytes(b"m")
         (self.root / "settings.json").write_text(json.dumps({"data_dir": str(self.data), "installs": [str(self.install)]}), encoding="utf-8")
         self.config_path.write_text(json.dumps(self.base_config(), indent=1), encoding="utf-8")
-        (self.root / "world-info.json").write_text(json.dumps(self.info(), indent=1), encoding="utf-8")
         return self
-
-    def info(self) -> dict:
-        """What the app driver (Node) needs to know about this world; written next to it so the two sides read the same facts."""
-        m = self.machine
-        platform = {"windows": "windows-x86_64", "linux": f"linux-{m.machine}", "macos": "macos-arm64"}[m.os]
-        family = self.mset.family
-        return {"tag": self.tag, "family": family, "title": family, "modelName": self.mset.model_name, "model": self.mset.model, "sizeId": self.tag,
-                "configPath": str(self.config_path), "hardware": self.hardware_report(), "backend": m.backend, "platform": platform, "exe": str(self.exe),
-                "context": context_for(m, self.mset)}
 
     def close(self) -> None:
         if self._tmp is not None:
@@ -141,7 +131,7 @@ class World:
 
     # ------------------------------------------------------------------ what the probes answer
     def hardware_report(self) -> dict:
-        """The hardware report the Terminal's catalog and the app's host read (the shape tests/terminal/launch_support.py and the host tests use)."""
+        """The hardware report the Terminal's catalog reads (the shape tests/terminal/launch_support.py and the host tests use)."""
         m = self.machine
         card = {"index": 0, "name": m.card, "vendor": m.vendor, "vram_gb": m.vram_gb, "usable": True}
         if m.arch_field is not None:

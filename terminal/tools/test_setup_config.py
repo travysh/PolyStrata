@@ -203,8 +203,9 @@ class CarryOver(unittest.TestCase):
 
 
 class NoBrowser(unittest.TestCase):
-    """#609 (#631): --no-browser keeps the chat page from opening: "open_browser": false in the run config, no --open
-    on the start's server command or in run-<model>.bat/.sh.  Without the flag nothing changes."""
+    """#609 (#631): setup opens no browser unless --browser (the page has no chat; the app it recommends is Linger):
+    "open_browser": true in the run config puts --open on the start's server command and in run-<model>.bat/.sh.
+    --no-browser writes false, and without either flag the config keeps what it had."""
 
     def setUp(self):
         self.ram, self.found = PROFILES["64GB-1x32GB"]
@@ -249,19 +250,24 @@ class NoBrowser(unittest.TestCase):
 
     def test_on_a_start(self):
         cmd, out, _ = self.start_cmd({})
-        self.assertIn("--open", cmd)                                      # the default, as before
-        self.assertIn("the browser opens when it is ready", out)
+        self.assertNotIn("--open", cmd)                                   # the default: no browser
+        self.assertNotIn("the browser opens", out)
+        self.assertIn("the server says when it is ready", out)
+        self.assertIn("We recommend Linger (optional): https://github.com/simplexai-labs/linger", out)
         cmd, out, _ = self.start_cmd({"open_browser": False})
         self.assertNotIn("--open", cmd)
         self.assertNotIn("the browser opens", out)
-        self.assertIn("no browser", out)                                  # the Settings line says so
-        cmd, out, saved = self.start_cmd({}, {"open_browser": False})     # START-HERE --no-browser: kept from now on
-        self.assertNotIn("--open", cmd)
-        self.assertIs(saved["open_browser"], False)
-        self.assertIn("saved for this model: no browser", out)
-        cmd, out, saved = self.start_cmd({"open_browser": False}, {"open_browser": True})
+        cmd, out, _ = self.start_cmd({"open_browser": True})
+        self.assertIn("--open", cmd)
+        self.assertIn("the browser opens when it is ready", out)
+        self.assertIn("opens the Monitor page", out)                      # the Settings line says so
+        cmd, out, saved = self.start_cmd({}, {"open_browser": True})      # START-HERE --browser: kept from now on
         self.assertIn("--open", cmd)
         self.assertIs(saved["open_browser"], True)
+        self.assertIn("saved for this model: the browser opens", out)
+        cmd, out, saved = self.start_cmd({"open_browser": True}, {"open_browser": False})
+        self.assertNotIn("--open", cmd)
+        self.assertIs(saved["open_browser"], False)
 
 
 class VisionTokens(unittest.TestCase):

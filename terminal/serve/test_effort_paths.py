@@ -2,7 +2,7 @@
 
 The level is nothing but a sentence in the rendered prompt (the template: xhigh / low sentences, none = the empty think
 block, medium = no sentence), so "the effort does not work" is always a request form whose level never reached the template.
-This pins the prompt each form produces, over the three APIs, the Chat settings shared with apps and the config's
+This pins the prompt each form produces, over the three APIs, the settings shared with apps and the config's
 "reasoning_effort" (#1641).  0.1.44.1: the Responses API (/v1/responses, Codex) ignored the config's level.
 
     python -m unittest serve.test_effort_paths -v

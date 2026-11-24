@@ -3,9 +3,6 @@
 One small document, ``strata-feed.json``, with a detached Ed25519 signature ``strata-feed.json.sig`` (the signature covers the
 file's exact bytes, so there is no canonicalisation to get wrong). It lists, for one channel:
 
-* ``app``: the desktop app, in exactly the shape of Tauri's static updater JSON (``version``, ``notes``, ``pub_date``,
-  ``platforms{<tauri target>: {url, signature}}``), plus ``sha256`` and ``size`` per platform. The Tauri updater plugin
-  reads a copy of this member at ``app/latest.json`` and checks the minisign signature itself;
 * ``control``: the runtime component (Control: bundled Python, ``strata_control``, the CLI and server), one archive per platform;
 * ``engine``: the engine packages, one entry per platform / backend / variant, each with ``version``, ``archs``,
   ``min_driver``, ``min_runtime``, ``size``, ``sha256`` of the archive, ``manifest_sha256`` of the package's
@@ -15,6 +12,9 @@ The feed's signature plus those hashes is the whole chain of trust: a package wh
 one in the signed feed is never installed. Three refusals are tested: a bad signature, a bad hash and a downgrade. The
 downgrade guard has two parts: a feed whose ``sequence`` is lower than the last one this PC accepted is refused (a replayed
 old feed), and a package older than the installed one is never installed by an update.
+
+A Strata feed may also carry an ``app`` member (that project's desktop app installers). PolyStrata has no desktop app and
+ignores it.
 
 Nothing here touches the network itself; `strata_control.transfer` does.
 """
@@ -39,9 +39,6 @@ AARCH64_FEED_NAME = "strata-feed-linux-aarch64.json"
 SIGNATURE_SUFFIX = ".sig"
 FORMATS = ("tar.gz", "tar.xz", "zip")
 PLATFORMS = ("windows-x86_64", "linux-x86_64", "linux-aarch64", "macos-arm64", "macos-x86_64")
-#: Tauri's names for the same platforms (no desktop app is built for linux-aarch64: the entry only keeps the name parsable).
-TAURI_TARGETS = {"windows-x86_64": "windows-x86_64", "linux-x86_64": "linux-x86_64", "linux-aarch64": "linux-aarch64",
-                 "macos-arm64": "darwin-aarch64", "macos-x86_64": "darwin-x86_64"}
 _VERSION = re.compile(r"\d+\.\d+\.\d+(?:\.\d+)?")
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _log = logging.getLogger("strata.feed")
@@ -71,15 +68,6 @@ def version_key(value: str) -> tuple[int, ...]:
         raise FeedError(f"{value!r} is not a version number (expected like 0.1.46 or 0.1.46.1)")
     parts = [int(p) for p in value.split(".")]
     return tuple(parts + [0] * (4 - len(parts)))
-
-
-def app_version_key(value: str) -> tuple[int, ...]:
-    """Compare the INSTALLED app's version: like `version_key`, but a pre-release (0.2.0-beta) is allowed and sorts below the same number without
-    the suffix. The feed's own versions stay strict (`version_key`)."""
-    base, dash, pre = str(value).partition("-")
-    if dash and not re.fullmatch(r"[0-9A-Za-z.]+", pre):
-        raise FeedError(f"{value!r} is not a version number (expected like 0.2.0 or 0.2.0-beta)")
-    return version_key(base) + (0 if dash else 1,)
 
 
 def _need(obj: dict, key: str, kind, where: str):
@@ -261,24 +249,12 @@ class ControlPackage:
         return f"control {self.version} {self.platform}"
 
 
-@dataclass(frozen=True)
-class AppRelease:
-    version: str
-    notes: str
-    pub_date: str
-    platforms: dict          # {platform: {"url", "signature", "sha256", "size", "format"?}}
-
-    def for_platform(self, platform: str) -> dict | None:
-        return self.platforms.get(platform)
-
-
 @dataclass
 class Feed:
     sequence: int
     channel: str
     generated_at: str
     expires_at: str | None
-    app: AppRelease | None
     control: tuple[ControlPackage, ...]
     engine: tuple[EnginePackage, ...]
     source: str                    # where it was read from (the base for relative URLs)
@@ -563,30 +539,6 @@ def parse(payload: bytes, *, source: str, key_id: str) -> Feed:
     if expires is not None:
         _time(expires, "expires_at")
     skipped: list = []
-    app = None
-    raw_app = data.get("app")
-    if raw_app is not None:
-        if not isinstance(raw_app, dict):
-            raise FeedError("the feed's app member is not an object")
-        app_version_key(_need(raw_app, "version", str, "app entry"))
-        platforms = raw_app.get("platforms")
-        if not isinstance(platforms, dict) or not platforms:
-            raise FeedError("the feed's app entry lists no platforms")
-        parsed_platforms = {}
-        by_tauri = {v: k for k, v in TAURI_TARGETS.items()}
-        for target, entry in platforms.items():
-            plat = by_tauri.get(str(target).split("-nsis")[0].split("-msi")[0])
-            if plat is None:
-                _skipping(skipped, f"the app for {target}", "a platform this Strata does not know")
-                continue
-            if not isinstance(entry, dict):
-                raise FeedError(f"the feed's app entry for {target!r} is not an object")
-            parsed_platforms[plat] = {"url": _need(entry, "url", str, "app entry"),
-                                      "signature": _need(entry, "signature", str, "app entry"),
-                                      "sha256": _hex(entry.get("sha256"), "app entry"),
-                                      "size": _need(entry, "size", int, "app entry"), "target": target}
-        app = AppRelease(version=raw_app["version"], notes=str(raw_app.get("notes") or ""),
-                         pub_date=str(raw_app.get("pub_date") or ""), platforms=parsed_platforms)
     control = []
     raw_control = data.get("control")
     if raw_control is not None:
@@ -630,7 +582,7 @@ def parse(payload: bytes, *, source: str, key_id: str) -> Feed:
         if len({d.name for d in drafters}) != len(drafters):
             raise FeedError("the feed lists a drafter twice")
     models, models_dropped = _models_member(data.get("models"))
-    return Feed(sequence=sequence, channel=channel, generated_at=generated, expires_at=expires, app=app,
+    return Feed(sequence=sequence, channel=channel, generated_at=generated, expires_at=expires,
                 control=tuple(control), engine=tuple(engine), source=source, key_id=key_id, raw=payload,
                 skipped=tuple(skipped), drafters=tuple(drafters), models=tuple(models), models_dropped=tuple(models_dropped), shape_engines=tuple(shapes))
 
@@ -720,10 +672,12 @@ def fetch(source: str, trusted: dict[str, bytes], *, timeout: float = 30, say=No
 # ---------------------------------------------------------------------------------------------- hardware and selection
 
 def gfx_covers(archs, present: list[str]) -> bool:
-    """HIP: the build holds machine code for at least one of the installed AMD GPUs (``gfx1201``). Unknown GPUs: not a refusal."""
+    """HIP: the build holds machine code for at least one of the installed AMD GPUs (``gfx1201``, ``gfx1150``).
+    Feature suffixes such as ``:xnack-`` are stripped before comparison. Unknown GPUs: not a refusal."""
     if not present:
         return True
-    return any(a in present for a in archs)
+    have = {str(p).split(":", 1)[0].lower() for p in present if p}
+    return any(str(a).split(":", 1)[0].lower() in have for a in archs)
 
 
 def engine_fit_reasons(pkg: EnginePackage, hardware: dict) -> list[str]:
@@ -768,6 +722,11 @@ def select_engine(packages, hardware: dict) -> tuple[EnginePackage | None, list[
     fitting = _settle_hip_variants(fitting, hardware, reasons)
     if not fitting:
         return None, reasons
+    wanted_variant = str(hardware.get("variant_wanted") or "").lower()
+    if wanted_variant and hardware.get("backend") == "hip":
+        exact = [p for p in fitting if p.backend == "hip" and p.variant.lower() == wanted_variant]
+        if exact:
+            fitting = exact
     best = max(fitting, key=lambda p: (version_key(p.version), ec._version_key(p.min_driver.get("nvidia", "0")),
                                        ec.hip_preference(p.archs) if p.backend == "hip" else 1,
                                        ec.arch_native(p.archs, hardware.get("cuda_archs") or []) if p.backend == "cuda" else False))

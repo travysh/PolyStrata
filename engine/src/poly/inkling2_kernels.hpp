@@ -49,6 +49,9 @@ void ink_cat_norm_set(const float* const* cur, const float* const* msg, float* c
 /// would run another block.  With bf16 the matrices are BF16 (--loop-bf16).
 bool ink_ctrl_down(const float* const* cur, const float* const* msg, const void* const* down, float* const* ch,
                    int count, int n_embd, int rank, int rows, void* stream, bool bf16 = false);
+/// ink_ctrl_down()'s one-pass kernel (opt-in, other bits: STRATA_INK_FAST_CTRL=1), set for the process by its kernel
+/// test; the variable is read at the first call otherwise.  CUDA only: under HIP it stays off.
+void ink_set_fast_ctrl(bool on);
 
 /// ink_gate() of 1 to 3 controllers in one launch.  Every cur is read before any out is written, so an out may be
 /// any of the cur.
@@ -79,6 +82,17 @@ void ink_conv(const float* x, float* state, const float* w, const float* dyn, fl
 /// acc = acc + out * a (axpy()), mode 1 keep = acc and then acc = out, mode 2 acc = out.  The same bits.
 void ink_conv_add(const float* x, float* state, const float* w, float* out, float* acc, float* keep, float a, int mode,
                   int channels, int taps, void* stream);
+/// The most tokens a launch of the _rows kernels takes: Engine::step()'s rows, each a token of its own sequence with
+/// its own convolution states and caches (Inkling2::layer_head()).  Each token gets the bits its own launch gives it.
+constexpr int kInkRows = 32;
+/// A state for each token of a _rows launch.
+struct InkStateRows {
+    float* p[kInkRows] = {};
+};
+/// ink_conv_add() of `rows` tokens of different sequences in one launch: token t's x, out, acc and keep (null: none)
+/// a row of channels on from the ones given, its state state.p[t].
+void ink_conv_add_rows(const float* x, const InkStateRows& state, const float* w, float* out, float* acc, float* keep,
+                       float a, int mode, int channels, int taps, int rows, void* stream);
 /// One token's routed experts' sum into fo (moe_sum() onto zeros: fo = 0 + the n_used rows of x weighted by w, each
 /// weight first times scale[ids[k]] where scale is set, expert_weights()'s product), then ink_conv_add() of fo in
 /// mode 0, in one launch with the same bits.
@@ -111,6 +125,7 @@ struct InkClips {
     uint16_t* cache[4] = {};
     int ring = 0;
     bool kv8 = false;   ///< the caches are FP8 (InkAttn::kv8)
+    bool kvq8 = false;  ///< the caches are Q8_0 (InkAttn::kvq8)
 };
 void ink_clips(const InkClips& c, void* stream);
 
@@ -168,8 +183,19 @@ struct InkQkv {
     float qk_thr = 0.f, rel_thr = 0.f, alpha = 0.f, floor = 1.f, eps = 0.f;
     int n_head = 0, n_kv = 0, dim = 0, n_rel = 0, taps = 0, ring = 0;
     bool kv8 = false;   ///< the caches are FP8 (InkAttn::kv8)
+    bool kvq8 = false;  ///< the caches are Q8_0 (InkAttn::kvq8)
 };
 void ink_qkv(const InkQkv& a, void* stream);
+/// ink_qkv() of `rows` tokens of different sequences in one launch: token t's rows of q, r, kraw, vraw, kdyn, vdyn, k
+/// and v a token's on from a's, its states and caches here, and its position what the card holds at a.at[2 t] (a.at
+/// is required; a.pos is not read).
+struct InkQkvRows {
+    float* kstate[kInkRows] = {};
+    float* vstate[kInkRows] = {};
+    uint16_t* keys[kInkRows] = {};
+    uint16_t* vals[kInkRows] = {};
+};
+void ink_qkv_rows(const InkQkv& a, const InkQkvRows& r, int rows, void* stream);
 
 /// The attention of `rows` tokens from position pos over the keys and values of an fp16 cache.  A key at distance
 /// d = the query's position - its own scores scale * q.k + bias(d) - sink, where bias(d) is the dot product of the
@@ -200,16 +226,50 @@ struct InkAttn {
     /// the caches are FP8 E4M3: a row the n_kv heads' dim codes, then a float scale a head (its largest magnitude
     /// over 448), ink_kv8_row() bytes; else fp16, n_kv * dim halves a row
     bool kv8 = false;
+    /// the caches are Q8_0: a row the n_kv heads' dim int8 codes, then a half scale for each block of 32 values in
+    /// the codes' order (a block's largest magnitude over 127), ink_kvq8_row() bytes
+    bool kvq8 = false;
+    /// STRATA_KV_INT8, with kvq8: a full layer's (window 0) token that reads 32,768 keys or more takes its scores by
+    /// __dp4a, its queries quantized to Q8_0 codes too (a 32-value block's delta its largest |value| / 127).  Other
+    /// arithmetic, so other bits; window layers, the other tokens, the values and ink_attend_batch() ignore it.  The
+    /// engine sets it for decode only (Inkling2::layer_head()).
+    bool int8_dot = false;
 };
 void ink_attend(const InkAttn& a, void* stream);
+/// ink_attend() of a.rows tokens of different sequences: token t over keys[t] and vals[t] (a.keys and a.vals are not
+/// read), at the position the card holds at a.at[2 t] (required), a.room the most rows any of them reads, and parts[t]
+/// the value parts it has alone (ink_attend_parts() of its own room), which its join adds.  A token's scores and parts
+/// do not change in a launch sized for more keys (the parts past its keys are zeros), so each gets its own launch's
+/// bits.  No q8.
+struct InkAttnRows {
+    const uint16_t* keys[kInkRows] = {};
+    const uint16_t* vals[kInkRows] = {};
+    int parts[kInkRows] = {};
+};
+void ink_attend_rows(const InkAttn& a, const InkAttnRows& c, void* stream);
+/// The value parts ink_attend() takes a token's keys in when its launch is sized for `last` rows (InkAttn::room with
+/// the positions on the card, else pos + rows).
+int ink_attend_parts(int n_head, int n_kv, int dim, int window, int64_t last);
 /// ink_attend() of a prompt batch on the tensor cores, its scores never written out (FlashAttention-2's way): the
 /// scores attend_batch() with an AttnBias makes, the weights rounded to halves for the values' product, then the gate
 /// when a.gate is set.  Heads of 128 values, up to 4 on a key head, 16 relative values, positions on the host, no q8;
-/// a card from Ampere on.  False, with nothing launched, where it does not take them.
+/// a card from Ampere on, or Turing with fp16 caches.  On HIP an RDNA4 card's matrix cores take 3 heads on a key head
+/// and fp16 caches, their products split in halves (hi + lo, about float-exact), the weights too.  False, with nothing
+/// launched, where it does not take them.
 bool ink_attend_batch(const InkAttn& a, void* stream);
+/// ink_attend_batch() with the rows a block of ink_flash_kernel (without LEAN) fixed: `tokens` 64, 48 or 32, which
+/// change no bit (poly_ink_flash_test compares them); anything else, the size ink_flash_tokens() picks.  The other
+/// kernels ink_attend_batch() may take ignore it.  CUDA and HIP only (Metal has its own ink_attend_batch()).
+bool ink_attend_batch_rows(const InkAttn& a, void* stream, int tokens);
+/// The rows a block ink_flash_kernel takes for this call on the current card, by how its blocks fill the
+/// multiprocessors' last wave: 64, 48 or 32 (STRATA_INK_FLASH_TOKENS=64/48/32 fixes it).  0 where the call goes
+/// elsewhere: attend_batch(), Turing's kernel, LEAN (sm_80), STRATA_FAST_ATTN's kernel, HIP.
+int ink_flash_tokens(const InkAttn& a);
 
 /// An FP8 cache row's bytes.
 inline size_t ink_kv8_row(int n_kv, int dim) { return (size_t) n_kv * dim + (size_t) n_kv * sizeof(float); }
+/// A Q8_0 cache row's bytes (InkAttn::kvq8): n_kv * dim codes, then n_kv * dim / 32 half scales.
+inline size_t ink_kvq8_row(int n_kv, int dim) { return (size_t) n_kv * dim + (size_t) n_kv * dim / 32 * sizeof(uint16_t); }
 /// Whether ink_attend_batch() runs here (FP8 caches need it: attend_batch() reads fp16 only).
 bool ink_kv8_ok();
 

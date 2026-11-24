@@ -1,5 +1,6 @@
-// src/poly/fattn.hpp - a prompt batch's attention with llama.cpp's flash-attention MMA kernel (fattn_mma.cuh, MIT)
-// over a q8_0 or fp16 cache: heads of 256 values, 8 or 16 heads a group (Qwen3.6 / Ornith 122B).
+// src/poly/fattn.hpp - a prompt batch's attention with llama.cpp's flash-attention MMA kernel (fattn_mma.cuh, MIT;
+// in a build without llama.cpp the same kernel cut down to these shapes, fattn_mma_d256.cuh) over a q8_0 or fp16
+// cache: heads of 256 values, 8 or 16 heads a group (Qwen3.6 / Ornith 122B), on Ampere or later NVIDIA cards.
 // The keys go in blocks: under q8_0 each block's K and V are dequantized to fp16 in the scratch, the kernel attends
 // to them with the causal mask computed from the positions, and the blocks' results are merged by their softmax max
 // and sum.  An fp16 cache is read where it lies, but for the last block (the batch's own rows), which is copied.

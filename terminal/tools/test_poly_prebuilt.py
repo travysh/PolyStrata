@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 import zipfile
@@ -173,6 +174,68 @@ class PolyPrebuilt(unittest.TestCase):
         made = self.compile_here({"arch": 61, "driver": "550.54"}, 12)
         self.assertIn("-DSTRATA_EXPERIMENTAL_SM60=ON", made["strata-poly"])
         self.assertIn("-DCMAKE_CUDA_ARCHITECTURES=61", made["strata-poly"])
+
+
+class OnLinux(unittest.TestCase):
+    """#181: on x86-64 Linux the release's tarball of this source is installed the same way, when its programs start
+    here (glibc, libstdc++ and pip's CUDA 13 libraries); otherwise setup compiles."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name) / "repo"
+        self.rel = Path(self.tmp.name) / "release"
+        self.root.mkdir()
+        self.rel.mkdir()
+        self.eng = self.root / setup.ENGINE_POLY_DIR
+        asset = "strata-poly-linux-x64-cuda13-{src}.tar.gz"
+        with tarfile.open(self.rel / asset.format(src=SRC), "w:gz") as t:
+            for name, data in ((setup.POLY_EXE, b"new engine"), (setup.VEXE, b"new encoder"),
+                               ("BUILD.json", json.dumps({"source": "release", "archs": [75, 80, 86, 89, 120], "cuda": "13.0",
+                                                          "src": SRC, "vision_src": SRC, "platform": "linux-x64"}).encode())):
+                info = tarfile.TarInfo("./" + name)
+                info.size, info.mode = len(data), 0o755 if name != "BUILD.json" else 0o644
+                t.addfile(info, io.BytesIO(data))
+        for p in (mock.patch.object(setup, "ROOT", self.root), mock.patch.object(setup, "WIN", False),
+                  mock.patch("sys.platform", "linux"), mock.patch.object(setup, "is_arm64", lambda: False),
+                  mock.patch.object(setup, "POLY_ASSET", asset), mock.patch.object(setup, "POLY_PREBUILT_URL", str(self.rel)),
+                  mock.patch.object(setup, "source_hash", lambda parts: SRC),
+                  mock.patch.object(setup, "cpu_info", lambda: ("an AVX2 CPU", True, False)),
+                  mock.patch.object(setup, "pip_cuda_libs", lambda toolkit=13: None),
+                  mock.patch.object(setup, "poly_will_not_start", lambda folder: "")):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_installs_the_tarball_of_this_source(self):
+        self.assertTrue(setup.get_poly_prebuilt(GPU))
+        self.assertEqual((self.eng / setup.POLY_EXE).read_text(), "new engine")
+        self.assertEqual((self.eng / setup.VEXE).read_text(), "new encoder")
+        self.assertEqual(sorted(p.name for p in self.eng.iterdir()), sorted(["BUILD.json", setup.POLY_EXE, setup.VEXE]))
+        if os.name == "posix":
+            self.assertTrue(os.access(self.eng / setup.POLY_EXE, os.X_OK), "the engine keeps its execute bit")
+
+    def test_none_when_its_programs_do_not_start_here(self):
+        with mock.patch.object(setup, "poly_will_not_start", lambda folder: "version `GLIBC_2.34' not found"):
+            self.assertFalse(setup.get_poly_prebuilt(GPU))
+        self.assertFalse(self.eng.exists() and any(self.eng.iterdir()), "nothing is left for the compile to trip on")
+
+    def test_none_on_arm64(self):
+        with mock.patch.object(setup, "is_arm64", lambda: True):
+            self.assertFalse(setup.get_poly_prebuilt(GPU))
+
+
+@unittest.skipUnless(os.name == "posix", "the Linux loader check runs the programs")
+class WillNotStart(unittest.TestCase):
+    def test_what_the_loader_said_or_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            folder = Path(d)
+            for name, code in ((setup.POLY_EXE, 2), (setup.VEXE, 0)):    # strata-poly --help exits 2
+                (folder / name).write_text(f"#!/bin/sh\nexit {code}\n")
+                (folder / name).chmod(0o755)
+            self.assertEqual(setup.poly_will_not_start(folder), "")
+            (folder / setup.VEXE).write_text("#!/bin/sh\necho 'strata-vision: error while loading shared libraries: "
+                                             "libcublas.so.13: cannot open shared object file' >&2\nexit 127\n")
+            self.assertIn("libcublas.so.13", setup.poly_will_not_start(folder))
 
 
 class FromARelease(unittest.TestCase):

@@ -91,12 +91,23 @@ void scalar_value(uint32_t t, const unsigned char* b, int64_t& i, double& d) {
     }
 }
 
+// the bytes of one block of 32 weights (ggml's block_q4_0 ... block_q8_0); 0 for any other type
+uint64_t block32_bytes(uint32_t type) {
+    switch (type) {
+        case GT_Q4_0: return 18;   // half d, 16 bytes of 4-bit values
+        case GT_Q4_1: return 20;   // half d, half m, 16 bytes
+        case GT_Q5_0: return 22;   // half d, 4 bytes of fifth bits, 16 bytes
+        case GT_Q5_1: return 24;   // half d, half m, 4 bytes, 16 bytes
+        case GT_Q8_0: return 34;   // half d, 32 int8
+        default: return 0;
+    }
+}
+
 uint64_t tensor_nbytes(uint32_t type, int64_t nelem, int64_t row) {
     switch (type) {
         case GT_F32: return (uint64_t) nelem * 4;
         case GT_F16: case GT_BF16: return (uint64_t) nelem * 2;
-        case GT_Q8_0: return row % 32 == 0 ? (uint64_t) (nelem / 32) * 34 : 0;
-        default: return 0;
+        default: return row % 32 == 0 ? (uint64_t) (nelem / 32) * block32_bytes(type) : 0;
     }
 }
 
@@ -249,7 +260,7 @@ bool Gguf::read_at(uint64_t pos, void* dst, uint64_t n, std::string& err) const 
 }
 
 bool Gguf::read_raw(const GgufTensorInfo& t, void* dst, std::string& err) const {
-    if (t.nbytes == 0) { err = "tensor " + t.name + ": type " + std::to_string(t.type) + " is not handled by this reader (F32, F16, BF16 and Q8_0 are)"; return false; }
+    if (t.nbytes == 0) { err = "tensor " + t.name + ": type " + std::to_string(t.type) + " is not handled by this reader (F32, F16, BF16, Q8_0, Q4_0, Q4_1, Q5_0 and Q5_1 are)"; return false; }
     return read_at(data_start_ + t.offset, dst, t.nbytes, err);
 }
 
@@ -263,13 +274,29 @@ bool Gguf::read_f32(const GgufTensorInfo& t, float* dst, std::string& err) const
         for (int64_t i = 0; i < n; ++i) { uint16_t h; std::memcpy(&h, raw.data() + 2 * i, 2); dst[i] = gguf_f16_to_f32(h); }
     } else if (t.type == GT_BF16) {
         for (int64_t i = 0; i < n; ++i) { uint16_t h; std::memcpy(&h, raw.data() + 2 * i, 2); dst[i] = gguf_bf16_to_f32(h); }
-    } else {   // Q8_0: blocks of {half scale, 32 x int8}
+    } else {   // blocks of 32, as ggml's dequantize_row_q*: y = q * d (Q4_0 q - 8, Q5_0 q - 16), Q4_1 and Q5_1 y = q * d + m
+        const uint64_t bytes = block32_bytes(t.type);
+        auto half = [](const unsigned char* p) { uint16_t h; std::memcpy(&h, p, 2); return gguf_f16_to_f32(h); };
         for (int64_t b = 0; b < n / 32; ++b) {
-            const unsigned char* blk = raw.data() + 34 * b;
-            uint16_t h;
-            std::memcpy(&h, blk, 2);
-            const float d = gguf_f16_to_f32(h);
-            for (int j = 0; j < 32; ++j) dst[b * 32 + j] = d * (float) (int8_t) blk[2 + j];
+            const unsigned char* blk = raw.data() + bytes * b;
+            float* y = dst + b * 32;
+            const float d = half(blk);
+            if (t.type == GT_Q8_0) {
+                for (int j = 0; j < 32; ++j) y[j] = d * (float) (int8_t) blk[2 + j];
+                continue;
+            }
+            const bool offset = t.type == GT_Q4_1 || t.type == GT_Q5_1, five = t.type == GT_Q5_0 || t.type == GT_Q5_1;
+            const float m = offset ? half(blk + 2) : 0.0f;
+            uint32_t qh = 0;                                // Q5: the fifth bit of weight j is bit j
+            if (five) std::memcpy(&qh, blk + (offset ? 4 : 2), 4);
+            const unsigned char* qs = blk + (offset ? 4 : 2) + (five ? 4 : 0);
+            const int zero = offset ? 0 : five ? 16 : 8;
+            for (int j = 0; j < 16; ++j) {                  // the low nibble is weight j, the high one weight j + 16
+                const int lo = (qs[j] & 0x0F) | (five ? (int) ((qh >> j) << 4 & 0x10) : 0);
+                const int hi = (qs[j] >> 4) | (five ? (int) ((qh >> (j + 12)) & 0x10) : 0);
+                y[j] = (float) (lo - zero) * d + m;
+                y[j + 16] = (float) (hi - zero) * d + m;
+            }
         }
     }
     return true;

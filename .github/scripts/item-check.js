@@ -55,7 +55,7 @@ const FORMS = {
     detect: /what happened/i,
     parts: [
       ['Area', /^area$/i, 2],
-      ['Desktop app, Terminal or source?', /desktop app, terminal or source/i, 2],
+      ['Terminal or source?', /terminal or source/i, 2],
       ['What happened', /what happened/i, 20],
       ['Reproduction status', /reproduction status/i, 2],
       ['PolyStrata version', /strata version/i, 3],

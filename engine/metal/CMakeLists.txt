@@ -229,7 +229,7 @@ file(GLOB STRATA_METAL_ENGINE_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_D
 
 add_library(strata_metal_host STATIC ${STRATA_METAL_HOST_SOURCES})
 target_include_directories(strata_metal_host PUBLIC ${STRATA_ROOT}/include ${S}/core ${STRATA_ROOT}/third_party/ggml)
-target_compile_definitions(strata_metal_host PUBLIC STRATA_NATIVE_EXPERTS=1 STRATA_HAVE_DFLASH2=1 STRATA_VERSION="0.1.65-metal")
+target_compile_definitions(strata_metal_host PUBLIC STRATA_NATIVE_EXPERTS=1 STRATA_HAVE_DFLASH2=1 STRATA_VERSION="0.1.66-metal")
 target_compile_options(strata_metal_host PRIVATE -Wno-unused-parameter -Wno-deprecated-declarations)
 target_link_libraries(strata_metal_host PUBLIC strata_gpu_metal)
 if(TARGET ggml-base)   # the ggml-cpu pool (STRATA_OWN_CPU_QUANT=OFF) or a test build: ggml's headers and libraries, as before
@@ -393,9 +393,10 @@ if(STRATA_METAL_POLY)
   add_custom_command(OUTPUT ${Q36_GENERATED}/q36_host.cpp ${Q36_GENERATED}/q36_launch.hpp ${Q36_GENERATED}/q36.metal
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/q36_host.py ${S}/qwen35/q36_engine.cu ${Q36_GENERATED}
     DEPENDS ${S}/qwen35/q36_engine.cu tools/q36_host.py VERBATIM)
-  # (the engine's stub files: the CUDA int8 experts and the AVX-512 CPU rows the host library's expert pool asks for)
+  # (the engine's stub files: the CUDA int8 experts and the AVX-512 CPU rows the host library's expert pool asks for;
+  # stubs_0220.cpp: the second card's kernels of 0.2.20's peer_experts.cpp)
   add_executable(strata-q36 ${Q36_GENERATED}/q36_host.cpp ${S}/qwen35/q36_main.cpp src/q36/bindings.cpp src/q36/cpu_compat.cpp
-    src/engine/stubs_i8.cpp src/engine/stubs_025.cpp)
+    src/engine/stubs_i8.cpp src/engine/stubs_025.cpp src/q36/stubs_0220.cpp)
   target_include_directories(strata-q36 PRIVATE ${Q36_GENERATED} src/q36 ${S}/poly ${_strata_ggml_root}/ggml/include)
   target_compile_definitions(strata-q36 PRIVATE STRATA_Q36_CPU_POOL=1 STRATA_Q36_METAL_SOURCE="${Q36_GENERATED}/q36.metal")
   target_link_libraries(strata-q36 PRIVATE strata_metal_host strata_poly_metal_kernels ggml-cpu ggml-base)

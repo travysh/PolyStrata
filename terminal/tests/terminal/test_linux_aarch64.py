@@ -52,7 +52,6 @@ class PlatformName(unittest.TestCase):
 
     def test_the_feed_knows_the_platform(self):
         self.assertIn("linux-aarch64", feedmod.PLATFORMS)
-        self.assertEqual(feedmod.TAURI_TARGETS["linux-aarch64"], "linux-aarch64")
         self.assertEqual(feedmod.PLATFORMS[:2], ("windows-x86_64", "linux-x86_64"))
 
 

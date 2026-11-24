@@ -7,6 +7,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <functional>
@@ -92,6 +93,15 @@ struct CpuExpert {
 
 /// Checks that ggml-cpu has a dot product for both types.  Call once per layer format at load.
 bool cpu_expert_types_ok(int gu_type, int d_type, int n_embd, int n_ff, std::string& err);
+
+/// The product cpu_experts() takes four weight rows at a time with for weights of `type`, one activation row against
+/// rows w, w + row_bytes, ... (`four`), and the one-row product whose bits each of its values is (`one`); both null where
+/// it takes one row at a time.  For cpu_x4_test.
+struct CpuDotX4 {
+    void (*one)(int n, float* s, const void* w, const void* a) = nullptr;
+    void (*four)(int n, float out[4], const void* w, size_t row_bytes, const void* a) = nullptr;
+};
+CpuDotX4 cpu_dot_x4(int type);
 
 
 /// For each of `rows` tokens, with n_embd values of x and of out each:

@@ -316,6 +316,8 @@ class NonInteractiveInstallFlow(unittest.TestCase):
             mock.patch.object(setup, "pip_install", lambda *a, **k: None),
             mock.patch.object(setup, "get_llama_cpp", lambda: self.t / "llama.cpp"),
             mock.patch.object(setup, "build_engine_poly", fake_build),
+            # no ready-made strata-poly for this source (#181 asks the release on Linux too): the step compiles
+            mock.patch.object(setup, "get_poly_prebuilt", lambda gpu: False),
             mock.patch.object(setup, "download", fake_download),
             mock.patch.object(setup, "whole_shard", lambda s: True),
             mock.patch.object(setup, "check_shards", lambda shards: None),

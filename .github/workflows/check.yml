@@ -1,7 +1,7 @@
 name: Checks
 
-# The fast checks (tools/check), one job per step so a failure names its step: the CPU CMake preset, the Python suites, the host's
-# typecheck / test / build.  No GPU, no model and no download of weights.  The config snapshot has its own workflow (snapshot.yml)
+# The fast checks (tools/check), one job per step so a failure names its step: the CPU CMake preset and the Python suites.
+# No GPU, no model and no download of weights.  The config snapshot has its own workflow (snapshot.yml)
 # and the backend compile checks theirs (backends.yml).  Run the same thing by hand:  python tools/check --only <step>
 
 on:
@@ -27,8 +27,6 @@ on:
       - terminal/tools/**
       - tools/packaging/**
       - tools/docker/**
-      - app/host/**
-      - app/desktop/**
       - engine/metal/**
       - engine/sycl/**
   pull_request:
@@ -52,8 +50,6 @@ on:
       - terminal/tools/**
       - tools/packaging/**
       - tools/docker/**
-      - app/host/**
-      - app/desktop/**
       - engine/metal/**
       - engine/sycl/**
   workflow_dispatch:
@@ -72,13 +68,13 @@ jobs:
     timeout-minutes: 90
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         include:
           - { name: cpu CMake preset, only: cmake-cpu }
           - { name: Python tests/, only: py-tests }
           - { name: Python terminal/serve/, only: py-serve }
           - { name: Python terminal/tools/, only: py-tools }
-          - { name: host typecheck + test + build, only: "host-typecheck,host-test,host-build" }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -88,12 +84,6 @@ jobs:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: requirements*.txt
-      - uses: actions/setup-node@v4
-        if: ${{ startsWith(matrix.only, 'host') }}
-        with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: app/host/package-lock.json
       - name: Python packages
         run: python -m pip install -r terminal/requirements.txt -r terminal/requirements-dev.txt -r terminal/requirements-build.txt
       - name: tools/check
@@ -114,13 +104,13 @@ jobs:
     timeout-minutes: 120
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         include:
           - { name: cpu CMake preset (MSVC), only: cmake-cpu }
           - { name: Python tests/, only: py-tests }
           - { name: Python terminal/serve/, only: py-serve }
           - { name: Python terminal/tools/, only: py-tools }
-          - { name: host typecheck + test + build, only: "host-typecheck,host-test,host-build" }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -130,34 +120,12 @@ jobs:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: requirements*.txt
-      - uses: actions/setup-node@v4
-        if: ${{ startsWith(matrix.only, 'host') }}
-        with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: app/host/package-lock.json
       - name: Python packages
         run: python -m pip install -r terminal/requirements.txt -r terminal/requirements-dev.txt -r terminal/requirements-build.txt
-      # Diagnostic, not a check: what a Windows PowerShell 5.1 child returns when its parent runs under PowerShell 7 (a user who starts
-      # the app or `strata` from a PowerShell 7 window). The tests drop PowerShell 7's PSModulePath entries; the product does not yet.
-      - name: PowerShell 7 parent (diagnostic)
-        if: ${{ startsWith(matrix.only, 'host') }}
-        continue-on-error: true
-        shell: pwsh
-        env:
-          STRATA_HOME: ${{ runner.temp }}\ps7-probe
-        run: |
-          "PSModulePath: $env:PSModulePath"
-          "--- powershell.exe Get-CimInstance | Select-Object (as hardware.mjs)"
-          powershell.exe -NoProfile -NonInteractive -Command "Get-CimInstance Win32_VideoController | Select-Object Name,PNPDeviceID | ConvertTo-Json -Compress"
-          "exit $LASTEXITCODE"
-          "--- the host's hardware probe (app/host/server/hardware.mjs detect)"
-          node -e "import('./app/host/server/hardware.mjs').then(m => m.detect({ force: true })).then(h => console.log(JSON.stringify({ cpu: h.cpu, gpus: h.gpus })), e => console.log('ERROR', e && e.stack))"
-          "--- terminal/setup.py cpu_info (powershell Get-CimInstance Win32_Processor)"
-          python -c "import sys; sys.path.insert(0, 'terminal'); import setup; print(repr(setup.cpu_info()))"
-      # tools/check finds Visual Studio's compiler itself (vcvars64.bat); bash is Git for Windows' (the tester-README tests need it)
+      # tools/check finds Visual Studio's compiler itself (vcvars64.bat)
+      # --timeout-scale 1.5: tests/ took 59m28s of its 60 minutes here on 2026-11-23 and timed out on the next run
       - name: tools/check
-        run: python tools/check --only "${{ matrix.only }}" --keep --scratch "$env:RUNNER_TEMP\check" --json "$env:RUNNER_TEMP\check\result.json"
+        run: python tools/check --only "${{ matrix.only }}" --timeout-scale 1.5 --keep --scratch "$env:RUNNER_TEMP\check" --json "$env:RUNNER_TEMP\check\result.json"
       - name: Logs
         if: ${{ failure() }}
         uses: actions/upload-artifact@v4
@@ -169,7 +137,7 @@ jobs:
           retention-days: 7
 
   macos:
-    # Cheap and useful (the audit found the host and Python fixtures reading the Mac's own paths), but this job has not run on a
+    # Cheap and useful (the audit found Python fixtures reading the Mac's own paths), but this job has not run on a
     # Mac runner yet: it reports and does not block until its first green run.
     name: macOS / ${{ matrix.name }}
     runs-on: macos-15
@@ -180,7 +148,6 @@ jobs:
       matrix:
         include:
           - { name: Python terminal/tools/, only: py-tools }
-          - { name: host typecheck + test + build, only: "host-typecheck,host-test,host-build" }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -190,12 +157,6 @@ jobs:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: requirements*.txt
-      - uses: actions/setup-node@v4
-        if: ${{ startsWith(matrix.only, 'host') }}
-        with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: app/host/package-lock.json
       - name: Python packages
         run: python -m pip install -r terminal/requirements.txt -r terminal/requirements-dev.txt
       - name: tools/check

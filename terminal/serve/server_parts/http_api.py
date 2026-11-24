@@ -315,7 +315,7 @@ SHARED_KEYS = ("reasoning_effort", "reasoning_budget_tokens", "temperature", "to
 
 
 def load_shared_settings(path, warn=print) -> dict:
-    """The Chat settings kept next to a config between starts, read so that one bad key cannot erase the others.
+    """The settings kept next to a config between starts, read so that one bad key cannot erase the others.
 
     The strict reader below belongs to POST /settings, where a client is there to be told which key is wrong and can
     fix it.  At start-up nobody is there: the old code called the same strict reader and caught its ValueError with
@@ -330,10 +330,10 @@ def load_shared_settings(path, warn=print) -> dict:
     except FileNotFoundError:
         return {}                   # no file yet: the normal case on a first start, nothing to report
     except (OSError, ValueError) as e:
-        warn(f"[strata] the Chat settings in {path} are ignored ({e}); other apps use their own settings")
+        warn(f"[strata] the settings in {path} are ignored ({e}); other apps use their own settings")
         return {}
     if not isinstance(doc, dict):
-        warn(f"[strata] the Chat settings in {path} are ignored (a JSON object was expected, found "
+        warn(f"[strata] the settings in {path} are ignored (a JSON object was expected, found "
              f"{type(doc).__name__}); other apps use their own settings")
         return {}
     out = {}
@@ -345,8 +345,8 @@ def load_shared_settings(path, warn=print) -> dict:
     return out
 
 
-def clean_shared_defaults(d) -> dict:
-    """The Chat settings other apps get (POST /settings): only known keys, each checked; ValueError names a bad one."""
+def clean_shared_defaults(d, hy4: bool = False) -> dict:
+    """The settings other apps get (POST /settings): only known keys, each checked; ValueError names a bad one."""
     if d is None:
         return {}
     if not isinstance(d, dict):
@@ -357,8 +357,9 @@ def clean_shared_defaults(d) -> dict:
             continue
         number = isinstance(value, (int, float)) and not isinstance(value, bool)
         if key == "reasoning_effort":
-            if value not in ("none", "low", "medium", "high"):
-                raise ValueError("reasoning_effort: none, low, medium or high")
+            if value not in ("none", "low", "medium", "high") + (("max",) if hy4 else ()):    # Hy4's template also has max
+                raise ValueError("reasoning_effort: none, low, medium, high or max" if hy4
+                                 else "reasoning_effort: none, low, medium or high")
         elif key == "temperature":
             if not number or not 0 <= value <= 2:
                 raise ValueError("temperature: 0..2")
@@ -366,8 +367,9 @@ def clean_shared_defaults(d) -> dict:
             if not number or not 0 < value <= 1:
                 raise ValueError("top_p: 0 < top_p <= 1")
         elif key == "top_k":
-            if not number or value != int(value) or not 1 <= value <= 64:
-                raise ValueError("top_k: an integer 1..64")
+            # as a request's top_k: 0 is off, and the engine keeps at most 64 candidates (Service.run)
+            if not number or value != int(value) or value < 0:
+                raise ValueError("top_k: a whole number, 0 for off (the engine keeps at most 64)")
             value = int(value)
         elif key in ("seed", "max_tokens"):
             if not number or value != int(value) or value <= 0:
@@ -523,8 +525,11 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
                 raise SystemExit(f"[strata] config sampling.min_p={value!r}: expected 0 <= min_p <= 1")
             out[key] = float(value)
         elif key == "top_k":
-            if not number or value != int(value) or not 1 <= value <= 64:
-                raise SystemExit(f"[strata] config sampling.top_k={value!r}: the sampled path takes an integer 1..64")
+            # 0 is off, as in a request and in the model cards (Inkling 2 Mini's recommended sampling has top_k 0):
+            # the engine's sampled path then keeps its widest list, 64 candidates
+            if not number or value != int(value) or value < 0:
+                raise SystemExit(f"[strata] config sampling.top_k={value!r}: a whole number, 0 for off (the engine "
+                                 "keeps at most 64)")
             out[key] = int(value)
         elif key == "presence_penalty":
             if not number or value < 0:
@@ -603,7 +608,7 @@ def check_request_sampling(req) -> None:
 FAMILY_MODEL_NAMES = {"qwen4exp": "qwen3.8-flash-next", "qwen35moe": "qwen3.6-35b-a3b"}
 
 
-# The sampling each model card recommends ("Best Practices"), used when neither the request, the Chat settings nor the
+# The sampling each model card recommends ("Best Practices"), used when neither the request, the settings nor the
 # run config's `sampling` block says otherwise.  Greedy is only for a request or config that asks for temperature 0.
 # min_p 0, repetition_penalty 1 and presence_penalty 0 are the engine's own "off", so they are not listed.
 MODEL_CARD_SAMPLING = {
@@ -613,11 +618,28 @@ MODEL_CARD_SAMPLING = {
     # Qwen3.6-35B-A3B: the general-task sets (the card's precise-coding set is temperature 0.6, presence_penalty 0)
     "qwen35moe": {"thinking": {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "presence_penalty": 1.5},
                   "instruct": {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "presence_penalty": 1.5}},
+    # Hy4-Flash (HY-4-Flash-200B): HuggingFace model card defaults when request/config omits sampling
+    "hy4flash": {"thinking": {"temperature": 0.9, "top_p": 1.0},
+                 "instruct": {"temperature": 0.9, "top_p": 1.0}},
 }
 
 
 # The card's penalties: a greedy request must not get them (see model_card_sampling)
 CARD_PENALTIES = ("presence_penalty", "frequency_penalty", "repetition_penalty")
+SAMPLING_PARAM_KEYS = (
+    "temperature", "top_p", "top_k", "min_p",
+    "presence_penalty", "frequency_penalty", "repetition_penalty",
+)
+
+
+def request_asks_sampling(*layers) -> bool:
+    """True when any layer explicitly specifies any sampling or penalty parameter."""
+    for layer in layers:
+        if isinstance(layer, dict):
+            for k in SAMPLING_PARAM_KEYS:
+                if layer.get(k) is not None:
+                    return True
+    return False
 
 
 def model_card_sampling(arch, thinking, greedy=False) -> dict:

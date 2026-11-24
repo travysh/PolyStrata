@@ -7,7 +7,7 @@ const bot = require('./reset-bot');
 const bugForm = (over = {}) => {
   const f = {
     'Area': '[Engine]  (speed, kernels, models, the server and API)',
-    'Desktop app, Terminal or source?': 'Terminal (the `strata` command)',
+    'Terminal or source?': 'Terminal (the `strata` command)',
     'What happened': 'Decode stops after two minutes with "CUDA error 700". I expected it to continue.',
     'Smallest steps or command that reproduce it': '_No response_',
     'Reproduction status': 'Reproduced locally',
@@ -60,7 +60,7 @@ test('html comments and placeholders do not count', () => {
 });
 
 test('feature and question forms', () => {
-  const f = '### Area\n\n[GUI]  (the desktop app)\n\n### What do you want to do?\n\nLet me pin a model to the top of the list in the app.';
+  const f = '### Area\n\n[GUI]  (the web page: Monitor, Requests, About)\n\n### What do you want to do?\n\nLet me pin a model to the top of the list on the page.';
   assert.ok(c.checkIssue({ title: '[GUI] pin models', body: f, mode: 'reopen' }).ok);
   assert.ok(!c.checkIssue({ title: '[GUI] pin models', body: '### Area\n\n[GUI]\n\n### What do you want to do?\n\n_No response_' }).ok);
   const q = '### Area\n\n[Other]\n\n### Your question\n\nHow do I move the model folder to another drive?';

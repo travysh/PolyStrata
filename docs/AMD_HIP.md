@@ -147,7 +147,13 @@ no NVIDIA card PolyStrata can use, the AMD card is chosen by itself; with both, 
   combinations measured. A tested Linux pair does not validate the same pair on Windows.
 - **VRAM budget:** `hipMemGetInfo` on Windows does not subtract what the desktop and other programs hold. The engine lowers
   the free figure by what Windows' video memory budget for the process withholds (logged once). `STRATA_WDDM_BUDGET=0` turns
-  that off.
+  that off. The budget does not always count the other programs: on an RX 9070 XT it stayed at 15,419 of 16,304 MiB
+  while the desktop held 2.5 GB, and prompts were read at a third of their speed. strata-poly therefore also lowers the
+  free figure by what the other processes hold on the card (the "GPU Adapter Memory" counter minus this process's own
+  use) and a 1,024 MiB margin, whichever of the two takes more, for each card on its own (logged once per card:
+  `other programs hold N MiB of card D`; the counter is read again at most once a second). `STRATA_WDDM_OTHERS=0`
+  leaves that out (`STRATA_WDDM_BUDGET=0` turns off only the budget's share), and `STRATA_WDDM_MARGIN_MIB=N` sets
+  the margin.
 - **Pinned expert arena (#3431):** the HIP runtime gives each page-locked range of the arena a second address for the GPU, and
   it takes any pointer of the process inside that range for the arena. Through engine 0.1.54 about one start in ten on an RX
   7900 XTX had the engine thread's stack there (the same symptom was reported on an R9700): every long prompt was then read
@@ -214,6 +220,12 @@ ctest --test-dir build-hip --output-on-failure --timeout 60 -E '^(ple_parity|pla
 ```
 
 `ple_parity` needs an external model fixture. `platform_memory_test` needs a memlock limit above the shell's default.
+
+### Hy4-Flash: experts on multiple AMD GPUs
+
+`strata-hy4 --gpus 0,1` (or `--gpus 2` / `--devices 0,1`) distributes routed experts across all selected AMD GPUs by default (`HY4_HIP_PEERS=1`). When PCIe peer access (`hipDeviceCanAccessPeer`) is available, partial activations transfer directly with `hipMemcpyPeerAsync`; when peer access is unavailable (or disabled with `HY4_PEER_NO_P2P=1`), the runner falls back automatically to async pinned host bounce buffers.
+
+Each peer card reserves workspace memory sized automatically for the active prefill chunk (`Tc`); set `HY4_PEER_RESERVE_MB` to override the per-peer reserve explicitly.
 
 ## Model and serving configuration
 
@@ -512,6 +524,16 @@ before it installs a model.
   The engine now waits after it maps a piece (`Engine::vmm_settle()`: an ordinary allocation, which the kernel does
   wait for). `STRATA_VMM_SETTLE=0` leaves the wait out. An engine from before that runs there with
   `--vram-reserve-mib 512`, which keeps the cache from growing.
+- Under WSL2 (ROCm 7.2.4 with librocdxg: `/dev/dxg` and no `/dev/kfd`) ROCm refuses `hipMemSetAccess` on a piece
+  mapped after a larger one in the same reservation, so every piece of a reservation is made one size there (the
+  expert cache had lost its last 64 MiB piece, and an attention cache grown to its end failed).
+  `STRATA_VMM_EQUAL_PIECES=1` or `=0` turns that on or off on any Linux HIP build.
+- hipBLASLt loads a product type's kernels at its first call. On Windows (RX 9070 XT, ROCm 10.2.0a20260930) the
+  first single-precision product of a prompt took 4 s on one CPU thread with the card idle, inside the first prompt
+  of every strata-poly process. strata-poly now makes one small product of each kind the prompt uses (halves into
+  floats, and floats) while it loads, on HIP builds: there the first 302-token prompt took 1.35 s instead of 5.0 s
+  and the 2,048-token one 3.4 s instead of 7.2 s, and the load 11.6 s instead of 8.1 s (Inkling 2 Mini IQ4_NL,
+  `--vram-reserve-mib 3072`). `STRATA_POLY_WARMUP=0` leaves those products out.
 - Opt-in `--vram-pool` (strata-poly, VMM): the engine claims the card's VRAM once at load, as 2 MiB
   handles, and keeps it for the whole run. The attention caches and the expert cache trade handles of that pool as the
   context grows and shrinks, and nothing is released to the card, so the "released VRAM never returns" above does not
@@ -521,7 +543,9 @@ before it installs a model.
   to 6,956 MiB while 3.4 GiB were claimed), and memory past it is moved out to system RAM: sized from the card's free
   VRAM, a margin of 256 MiB left the process 150 MiB over its budget and 2.4 GB were moved out (decode 6 tokens/s).
   The pool is capped at what the model can use (every expert slot, the caches' whole address range and 512 MiB), so a
-  card that holds the model keeps the rest. Measured on that RX 5700 XT (Ryzen 5 3600X, 32 GB, Windows 11), Tiel
+  card that holds the model keeps the rest, and at the card's free VRAM less the margin: on an RTX 4070 Laptop
+  (8 GB, Windows 11) the budget's usage did not grow while the pool was claimed, the pool took 13,204 MiB with
+  4,760 MiB free, and every prompt past a few dozen words failed with "no VRAM for the prompt products' work memory". Measured on that RX 5700 XT (Ryzen 5 3600X, 32 GB, Windows 11), Tiel
   Coder 35B-A3B UD-Q4_K_XL, `--max-context 262144 --kv q8_0`, a 34K-token prompt between short chats:
   `--vram-reserve-mib 2048` without the pool held 1,172 experts and wrote 40 to 46 tokens/s after the prompt;
   `--vram-pool` with a margin of 256 MiB held 1,882 and wrote 50 to 53, with the same 648 MiB of shared GPU memory and
@@ -784,15 +808,15 @@ builds make that identity easy to mistake, see below - so calibrate it on the ca
 
 ```sh
 cmake --build build-hip --target tune_rocblas
-LD_LIBRARY_PATH=/opt/rocm/lib ./build-hip/tune_rocblas --tuning-out table.txt   # 14 shapes x 8 token buckets, about 5 min
+LD_LIBRARY_PATH=/opt/rocm/lib ./build-hip/tune_rocblas --tuning-out table.txt   # 14 shapes x 12 token buckets, about 15 min
 ```
 
-The tool times rocBLAS's default kernel and every solution the library lists for each shape at T = 256 ... 8192 (`--case
+The tool times rocBLAS's default kernel and every solution the library lists for each shape at T = 256 ... 16384 (`--case
 T,N,K,ldy` adds a shape, `--tokens` changes the buckets), checks the fastest against the default's output, and writes one row
 per shape and bucket: the winning solution where it beats the default by `--min-gain` (1.05), `default` otherwise. The header
 names the architecture and version (`STRATA_ROCBLAS_TUNING_V1 gfx1030 5.6.0.8d1ae90e`). Save it as
 `terminal/tools/hip/<arch>-rocblas-<version>.txt` (trailing dots dropped) for setup, or point `STRATA_ROCBLAS_TUNING` at the file.
-`STRATA_ROCBLAS_VERBOSE=1` prints the solution picked per shape and a `tuned_launches=... fallbacks=...` summary at exit. A
+`STRATA_ROCBLAS_VERBOSE=1` prints the solution picked per shape (or `default kernel; no row for T=... N=... K=... ldy=...`) and a `tuned_launches=... fallbacks=...` summary at exit; a read at the prompt lengths you use lists every (T, N, K, ldy) the engine calls, which is the way to check that a table covers them (a row matches N, K and ldy exactly; T goes to the nearest bucket). A
 solution rocBLAS refuses at run time falls back to the default kernel for that call, and after three refusals for good.
 `hip_prefill_rocblas_gemm` (with `STRATA_ROCBLAS_TUNING` set) is the smoke test.
 

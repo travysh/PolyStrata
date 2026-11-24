@@ -1,6 +1,6 @@
 """#5484: the Monitor's recent-requests table shows the VRAM hit rate column only when a request has a hit rate. On a Mac
 (unified memory) and for a model wholly in VRAM the engine reports none, and a column of dashes read as something
-missing. The web page (serve/web/app.js, run in node with stand-ins) and the app's Monitor (app/host) both."""
+missing. The web page's code (serve/web/app.js) runs in node with stand-ins."""
 from __future__ import annotations
 
 import json
@@ -54,15 +54,6 @@ class WebTable(unittest.TestCase):
     def test_the_header_cell_is_the_one_the_page_hides(self):
         html = (WEB / "index.html").read_text(encoding="utf-8")
         self.assertRegex(html, r'<th class="num" id="req-hit"[^>]*>VRAM hit rate</th>')
-
-
-class AppTable(unittest.TestCase):
-    def test_the_app_monitor_shows_the_column_only_with_a_reading(self):
-        src = (ROOT.parent / "app" / "host" / "src" / "screens" / "Monitor.tsx").read_text(encoding="utf-8")
-        self.assertIn("const anyHit = requests.some(r => hasReading(r.hitRate));", src)
-        self.assertRegex(src, r'\{tr\(anyHit \? <th className="num"[^>]*>\{tr\("VRAM hit rate"\)\}</th> : null\)\}')
-        self.assertRegex(src, r"\{tr\(anyHit \? <td className=\"num\">\{tr\(hasReading\(r\.hitRate\)")
-        self.assertIn("colSpan={(multipleModels ? 9 : 8) - (anyHit ? 0 : 1)}", src)
 
 
 if __name__ == "__main__":

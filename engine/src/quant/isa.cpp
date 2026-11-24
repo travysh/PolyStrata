@@ -78,11 +78,13 @@ Caps probe() {
         c.bmi2 = (ebx >> 8) & 1;
         c.avx512 = zmm && ((ebx >> 16) & 1) && ((ebx >> 17) & 1) && ((ebx >> 30) & 1) && ((ebx >> 31) & 1);   // F, DQ, BW, VL
         c.avx512_vnni = c.avx512 && ((ecx >> 11) & 1);
+        c.avx512_vbmi = c.avx512_vnni && ((ecx >> 1) & 1);
         cpuid(7, 1, r);
         c.avx_vnni = c.avx2 && ((r[0] >> 4) & 1);
     }
     const int cap = isa_cap();
-    if (cap < 3) c.avx512 = c.avx512_vnni = c.avx_vnni = false;
+    if (cap < 3) c.avx512 = c.avx512_vnni = c.avx512_vbmi = c.avx_vnni = false;
+    if (const char* f = std::getenv("STRATA_FORCE_AVX2"); f != nullptr && f[0] == '1') c.avx512_vbmi = false;
     if (cap < 2) c.avx2 = c.bmi2 = false;
     if (cap < 1) c.avx = false;
 #elif defined(STRATA_QUANT_ARM64)
@@ -113,6 +115,7 @@ const Caps& caps() noexcept {
 
 Isa best_isa() noexcept {
     const Caps& c = caps();
+    if (c.avx512_vbmi) return Isa::Avx512Vbmi;
     if (c.avx512 && c.avx512_vnni) return Isa::Avx512;
     if (c.avx_vnni) return Isa::AvxVnni;
     if (c.avx2) return Isa::Avx2;
@@ -138,6 +141,7 @@ bool isa_ok(Isa i) noexcept {
         case Isa::Avx2: return c.avx2;
         case Isa::AvxVnni: return c.avx_vnni;
         case Isa::Avx512: return c.avx512 && c.avx512_vnni;
+        case Isa::Avx512Vbmi: return c.avx512_vbmi;
     }
     return false;
 }
@@ -150,6 +154,7 @@ const char* isa_name(Isa i) noexcept {
         case Isa::Avx2: return "avx2";
         case Isa::AvxVnni: return "avxvnni";
         case Isa::Avx512: return "avx512";
+        case Isa::Avx512Vbmi: return "avx512vbmi";
     }
     return "?";
 }

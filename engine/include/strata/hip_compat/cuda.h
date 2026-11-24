@@ -18,6 +18,14 @@
 #define STRATA_VMM_MAP_SETTLES 1
 #endif
 
+// ROCm 7.2.4 under WSL2 (librocdxg 1.2.2, an RX 9070 XT) refuses hipMemSetAccess (hipErrorInvalidValue) on a piece
+// mapped after a larger one in the same reservation - 64 MiB then 1 MiB, 2 then 1, 64 then 4 - while pieces of one
+// size always pass (64 + 64, 8 + 8, 1 + 1 MiB): the expert cache lost its shorter last piece, and an attention cache
+// grown to its reservation's end failed.  Under WSL (Engine::vmm_map()) every piece of a reservation is one size.
+#if !defined(_WIN32)
+#define STRATA_VMM_EQUAL_PIECES 1
+#endif
+
 typedef hipError_t CUresult;
 typedef int CUdevice;
 // HIP's own CUdeviceptr/handle equivalents are pointer-typed; CUDA's are integers, and strata-poly's Mapped
