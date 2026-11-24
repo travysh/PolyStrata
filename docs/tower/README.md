@@ -1407,7 +1407,7 @@ block and both new flags (`--constrained-decoding`, upstream's `--strict-model`)
 the Anthropic path (#6460, unasked thinking turned off near the context limit) passes `prefill` as the first one does.
 Image `polystrata:next-aadae31e`, built from `next/` as before (the Dockerfile is Pass 18's). Its engine log says
 `STRATA_FATTN: prompt attention through llama.cpp's flash-attention kernel` and `STRATA_FDEC: decode attention
-through the tensor-core decode kernel from 4,096 tokens of context`. **Not live yet**: the decode loss below is open.
+through the tensor-core decode kernel from 4,096 tokens of context`. Live from 2026-11-23 with `STRATA_CPU_NO_X4=1` (below).
 
 **How it was measured.** `p20/t.sh` runs the test container with live's environment and config; `p20/chain.sh` ran
 new, current (`tower-c868922e`), new, current. Each run: `features.py`, the three ported features' unit tests inside the
@@ -1530,10 +1530,13 @@ Image `polystrata:next-9172f75e`. `p20/chain3.sh` built it and ran 0.1.45 (`o.sh
 
 **Not checked:** GLM's models, the add-on pattern, a long agent session.
 
-**To make it live** (not done): `docker tag polystrata:next-9172f75e polystrata:tower`, add `STRATA_CPU_NO_X4=1` to the
-template (`my-PolyStrata.xml`), then
-`/usr/local/emhttp/plugins/dynamix.docker.manager/scripts/rebuild_container PolyStrata`, `docker start PolyStrata`.
-Rollback: tag `polystrata:tower-c868922e` back.
+**Live since 2026-11-23 20:50.** `polystrata:tower` = `polystrata:tower-9172f75e` = `next-9172f75e`. The template
+(`my-PolyStrata.xml`, backup `.pre-0220`) gains `STRATA_CPU_NO_X4=1` beside `TMPDIR=/park` and `STRATA_POLY_MIRROR=0`.
+After `rebuild_container PolyStrata`, the engine process has the switch in its environment. It logs both kernels on and
+loads in 19.7 s with 2,287 experts in VRAM. `features.py` is all ok, and `decode.py` gives 67.4, 80.1, 84.2 tok/s (the
+first run after a load is the slow one). The decode gap after long prompts (-4% to -11% against 0.1.45) stays open.
+Rollback: `docker tag polystrata:tower-c868922e polystrata:tower`, restore `my-PolyStrata.xml.pre-0220`,
+`rebuild_container PolyStrata`, `docker start PolyStrata`. For 0.1.45, use `tower-893468a5` and `.pre-0219`.
 
 ## Shared-load changes (2026-10-17)
 
