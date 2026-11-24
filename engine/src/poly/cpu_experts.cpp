@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <immintrin.h>
 #include <mutex>
@@ -92,7 +93,10 @@ Rows rows_of(int type) {
     // the layer's four-row kernel of dot's own level only: one of another level (AVX-512 beside the AVX2 Q4_K the
     // table keeps) need not give dot's bits.  cpu_x4_test checks that each one taken here does.
     const Q::DotX4Kernel* x4 = Q::dot_x4_kernel(t->type, arith, dot->isa);
-    if (x4 != nullptr && x4->isa == dot->isa) r.x4 = x4->fn;
+    // STRATA_CPU_NO_X4=1: one weight row a call, as before e7f467548.  On Tower's Ryzen 5 2600X (Zen+, AVX2 on
+    // 128-bit units) the four-row kernels made the CPU experts 9.8 -> 12.4 ms a token and decode 70 -> 59 tok/s.
+    static const bool no_x4 = std::getenv("STRATA_CPU_NO_X4") != nullptr;
+    if (!no_x4 && x4 != nullptr && x4->isa == dot->isa) r.x4 = x4->fn;
     r.act = act->fn;
     r.blck = t->blck;
     r.act_blck = a->blck;
