@@ -1689,6 +1689,113 @@ one is `next/repo-9172f75e`. They differ only in `server.py` and `test_inkling.p
 Then live started again, still on `polystrata:tower` = `tower-9172f75e`. `features.py` passes on it. Live and
 `PolyStrata-Inkling` get the fix only when `polystrata:tower` is pointed at `next-f6bc1acf`, which hasn't been done.
 
+## Pass 22: a coding benchmark for Cyber-Tiel and Inkling 2 Mini (2026-11-24)
+
+The aim is to compare the two models' coding without either one having an advantage it didn't earn. This is the
+coding part only; thinking, pictures and long context come later. The task set is frozen: the prompts hash to
+`315b1f5f46befe6b` (sha256 of every `tasks/*/task.json`, in order, the same on the Mac and on Tower), and the
+graders and builders to `9c37d0ac92e41650` (`grade.py func_tasks.py run_bench.py repo_tasks.json build_repo.py`).
+Nothing in those files is changed after seeing results. A broken task would be dropped for both models, and the
+write-up would say so.
+
+**Rules against cheating.**
+- **No public benchmarks.** Every task is either a PolyStrata bug fixed after 2026-11-19, which is after both models
+  were released, or a problem written for this pass.
+- **Hidden tests decide.** The model never sees the tests. A repo fix passes when every test in the fix's test modules
+  passes; a function passes when every hidden case is right.
+- **Only the answer counts.** The reasoning text is not graded. A reply that never reaches an answer fails.
+- **Same request for both models.** Each task's prompt is sent as the only user message, with thinking on and the same
+  sampling for both: temperature 0.6, top_p 0.95, top_k 20, seed 1000 + sample number. Neither model card gives the
+  server a default for Inkling, so neither model gets its card's sampling. The limit is 16,384 output tokens, of which
+  at most 12,288 can be thinking, so an answer always has room.
+- **Grading is separate.** It runs after both models, in the image with `--network none`.
+- **Tokens and time are reported** beside the score.
+
+**Repo fixes (13).** `build_repo.py` turns a fix commit into a task:
+- the code at the commit's parent, with the bug;
+- a bug report I wrote, in `repo_tasks.json`. It describes the symptom and what must not change, but not the fix. It
+  names an interface only where the hidden tests call one the fix added (`runtime.recover_lost`, the `backend`
+  argument, `ple_table_file`);
+- excerpts of the files the fix changed: about 36,000 characters in all, placed at random around the changed lines
+  and seeded by the task id, so the bug isn't always in the middle.
+
+The model answers with SEARCH/REPLACE blocks, which have to match the file exactly once (trailing spaces ignored).
+
+`grade.py check` turns the real fix into blocks the same way and checks two things on each task: the fix's tests fail
+on the parent, and they pass with the fix. 18 commits were tried and 13 hold up the same way in two runs:
+- r06, r17 and r18 were dropped: their test modules don't load in the image.
+- r09 was dropped: its test checks the source text of the fix.
+- r15 was dropped: its test needs the internals of the server's `Vision` class, which the prompt doesn't show.
+
+Two tests fail with the real fix too, on this image (one each in r10 and r11), so they are allowed to fail. These are
+the 13:
+
+| Task | Commit | The bug |
+|---|---|---|
+| r01 | `05e60735e` | a stray backtick in the reasoning hides the tool calls after it |
+| r02 | `a2497178b` | a quote right before `</think>` keeps the answer in the reasoning |
+| r03 | `859f0da47` | a nested `<parameter>` pair cuts a tool argument short |
+| r04 | `e626616e4` | an unexpected handler error drops the connection, not a 500 |
+| r05 | `4f0e0f8b0` | a slot's live view restarts its clocks after a move |
+| r07 | `cfc124573` | a stale runtime record makes `strata update` say a model is running |
+| r08 | `840cbb012` | a setup run again loses `STRATA_RESIDENT_PIN=1` |
+| r10 | `147cf024b` | a Hyper-V virtual adapter hides the NVIDIA card |
+| r11 | `6b6098465` | an AMD setup is handed the CUDA package |
+| r12 | `f6bc1acf1` | Inkling 2's prefill leaks `<|end_message|>` (Pass 21's fix) |
+| r13 | `417d24af8` | Inkling 2's `strata_prefix` is a few tokens with thinking off |
+| r14 | `f4afdd80d` | `--parallel` never reaches the engine |
+| r16 | `12d491da4` | `make_room` drops the PLE shard's page cache |
+
+**Functions (24).** `func_tasks.py` has 16 in Python and 8 in C++, each a spec with examples:
+- **Python:** durations, SemVer order, a TTL cache, shell words, integer expressions (no `eval`), a token bucket, JSON
+  Pointer, justified text, meeting rooms, build order, rotating rings, window medians (with a time limit), business
+  days, npm-style version ranges, signed LEB128 and glob matching (no exponential backtracking).
+- **C++:** inversions, a UTF-8 check, components, sliding maximum, checked 64-bit expressions, big-integer sums,
+  top words and walls to break.
+
+A seeded generator makes 80 to 500 hidden cases per problem. Every expected answer is computed by a reference
+solution, never typed. Some cases are large (200,000 values, a 60 x 60 grid) to catch slow solutions.
+`func_tasks.py selftest` checks that every reference passes its own cases, that an empty answer fails, and that the
+examples in each prompt agree with the reference. All 24 pass.
+
+**Scripts** (`p22/`, on Tower in `/mnt/user/appdata/polystrata/p22`):
+- `model.sh MODEL LABEL SAMPLES [ids]`: starts the model in the test container with live's environment and runs
+  `run_bench.py`. Cyber-Tiel uses `strata-cybertiel-next.json`, Inkling `strata-inkling2-mini.json`.
+- `all.sh TAG SAMPLES [ids]`: both models, then grading, then live started again.
+- `score.py`: the tables.
+
+The image is `polystrata:next-f6bc1acf` for both models.
+
+**Trial run (6 tasks, 1 sample each: r01 r12 p01 p05 c02 c05).** It checks the pipeline; the scores mean nothing
+with this few. Every step worked:
+- answers were kept;
+- C++ compiled or its compile errors were reported;
+- tests ran;
+- a SEARCH block that matched nothing was caught;
+- live came back.
+
+Time for the 6 tasks: Cyber-Tiel 16 min (decode about 74 tok/s with sampling), Inkling 25 min (about 47 tok/s).
+Hard tasks used the whole thinking budget on both models: 12,000 to 13,800 output tokens.
+
+**What the trial found: the code quotes the models' own control tokens.** On r12, Inkling wrote its own
+end-of-message token while thinking about the `<|end_message|>` bug. That ended its thinking after 363 characters;
+the rest of its thinking went into the answer and ran to the 16,384-token limit with no SEARCH block.
+
+The prompt itself is safe: `encode_prompt` keeps control-token text inside a message as plain text. What happened is
+the model generating the real token. It is a fair weakness to count, since it happens to anyone who uses the model
+on this code, but it doesn't hit both models equally:
+- Cyber-Tiel's tags (`</think>`, `<tool_call>`, `<|im_start|>`) are in 7 prompts: r01-r03, r05 and r12-r14.
+- Inkling's are in 2: r12 and r13.
+
+So `score.py` also reports the 6 repo tasks with no control-token text (r04, r07, r08, r10, r11, r16), and the
+per-task table marks a reply cut off at the limit as `L`.
+
+**Not done yet: the full run.** At the trial's pace one sample of all 37 tasks takes about 1.6 h for Cyber-Tiel and
+2.6 h for Inkling, plus loading and grading, so about 4.5 h with live down. Two samples take about 9 h.
+
+**Not covered:** the agent loop (read, patch, run tests, try again), tool calls, CUDA code, Inkling without the
+small-card settings, and greedy decoding.
+
 ## Shared-load changes (2026-10-17)
 
 With Plex, Deluge and Duplicati running again, the GGUF (22.7 GB) has to stay cached next to them, and about 22.5 GB
