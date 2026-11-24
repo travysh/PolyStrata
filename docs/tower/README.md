@@ -1501,11 +1501,37 @@ token. The first run after the live container stops is always slow (17.8-46.2 to
   `STRATA_CPU_DOWN_ORDER=0` on 0.1.45 cost about that much there (64.2 -> 60.7, `run1.sh`), so the rest is likely
   Tower's own CPU-expert change from Pass 14, which 0.2.x does not have. Not measured on 0.2.20. The four-row kernels
   are likely slow on the 2600X because Zen+ runs AVX2 on 128-bit units; this was not profiled.
-- Not yet run: the server set (`t.sh`, `o.sh`) with the switch, and long-context decode (32K, 64K) with it.
+
+**The server set with the switch.** `tower-next` `9172f75e8` carries it (opt-in; the default path is upstream's).
+Image `polystrata:next-9172f75e`. `p20/chain3.sh` built it and ran 0.1.45 (`o.sh`), the new image with
+`STRATA_CPU_NO_X4=1` (`t.sh`, which now takes environment settings), 0.1.45, new.
+
+| | 0.1.45 | 0.2.20 + `STRATA_CPU_NO_X4=1` | |
+|---|---|---|---|
+| `features.py`; the image's grammar, logit_bias, prefill tests | all ok; 2 of 46 fail (its own copies) | all ok; 46 ok | |
+| read 11K (runs 1-3) | 7.31-7.50 s | 5.52-5.58 s | -25% |
+| read 32K (A1, B1) | 17.3-17.8 s | 13.4-13.9 s | -22% |
+| read 64K (A1, B1) | 35.3-36.6 s | 28.2-28.7 s | -21% |
+| back to A after B, 32K / 64K (A2) | 2.9-3.0 / 4.9-5.0 s | 0.7 / 0.9 s | |
+| decode after a short prompt, `runbench.sh` (runs 2-4; mean) | 75.7-82.1 (79.2) | 77.5-87.9 (82.4) | +4% |
+| decode after a short prompt, `dprobe.py` (runs 2-4; mean) | 72.2-80.6 (77.6) | 60.6-84.7 (74.6) | -4% |
+| decode after 11K, thinking on (`dprobe.py`) | 75.9-80.2 | 81.2-84.1 | +7% |
+| decode after 11K, thinking off (`ldecode.py`) | 67.0-68.5 | 64.4-66.1 | -4% |
+| decode after 32K, thinking off | 74.8-76.4 | 68.2-71.6 | -7% |
+| decode after 64K, thinking off | 70.0-72.1 | 62.7-63.8 | -11% |
+| engine RSS after the set | 24.6-24.7 GB | 19.9 GB | |
+
+- Short-prompt decode is level with 0.1.45, within the runs' spread. Without the switch it was 9-13% under.
+- Decode after a long prompt is still under 0.1.45, more so the longer the prompt: -4% at 11K, -7% at 32K, -11% at
+  64K (without the switch it was -23%, -17%, -20%). Not found yet. Candidates: Tower's `STRATA_CPU_DOWN_ORDER`
+  (about 5% after 11K on 0.1.45, and not in 0.2.x), and the decode attention at long context (0.2.20's kernel takes
+  256 keys a block where its scratch holds them, 0.1.45's 1,024).
+- `features.py` and the unit tests passed on every run; the engine logged no errors.
 
 **Not checked:** GLM's models, the add-on pattern, a long agent session.
 
-**To make it live** (not done): `docker tag polystrata:next-aadae31e polystrata:tower`, then
+**To make it live** (not done): `docker tag polystrata:next-9172f75e polystrata:tower`, add `STRATA_CPU_NO_X4=1` to the
+template (`my-PolyStrata.xml`), then
 `/usr/local/emhttp/plugins/dynamix.docker.manager/scripts/rebuild_container PolyStrata`, `docker start PolyStrata`.
 Rollback: tag `polystrata:tower-c868922e` back.
 
