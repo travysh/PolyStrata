@@ -1538,6 +1538,101 @@ first run after a load is the slow one). The decode gap after long prompts (-4% 
 Rollback: `docker tag polystrata:tower-c868922e polystrata:tower`, restore `my-PolyStrata.xml.pre-0220`,
 `rebuild_container PolyStrata`, `docker start PolyStrata`. For 0.1.45, use `tower-893468a5` and `.pre-0219`.
 
+## Pass 21: Inkling 2 Mini on the live image (2026-11-23)
+
+Inkling 2 Mini (Thinking Machines, Unsloth's GGUF; upstream's notes are `docs/models/inkling.md`) on live's image
+`polystrata:tower-9172f75e`, which already has upstream's Inkling 2 engine (`inkling2_loop`, the small-card settings,
+`--cache-bias`). Run in the test container only. Live stayed on Cyber-Tiel-Coder.
+
+**The file.** UD-Q4_K_XL, the largest size setup offers. Setup's RAM estimate for it beside an 8 GB card is 21 GB, and
+Tower has 31 GiB. Upstream has not run this size on an 8 GB card. Both files come from `unsloth/Inkling-2-Mini-GGUF` at
+setup's pinned revision `ea0c79b2`: `Mainline_Support/Inkling-2-Mini-UD-Q4_K_XL.gguf_file` (17,629,760,736 bytes) and
+the picture reader `mmproj-F16.gguf` (639,348,160 bytes). They are in `/mnt/cache/llm/inkling/`, apart from the Qwen
+`mmproj-F16.gguf` of the same name. Both sha256 sums match setup.py's. One curl got about 2 MB/s, so `p21/pdl.sh`
+fetches 16 byte ranges at once and joins them. Both files took about 13 minutes, sha256 checks included.
+
+**The config.** `/data/config/strata-inkling2-mini.json` (`p21/strata-inkling2-mini.json`), written by hand the way
+`setup.py` writes an Inkling 2 config on this card:
+- 64K context.
+- `--conversation-cache-mib auto`.
+- The three small-card settings that setup adds when the card can't hold every expert: `--attn-requant q5_0`,
+  `--loop-bf16`, `--tail-skip 4`.
+- Pictures read on the CPU (6 threads, 300 tokens).
+- Live's `--vram-reserve-mib 512` and `"constrained_decoding": true`.
+
+The tokenizer pack is `/data/packs/inkling-ud-q4_k_xl`, built by the image's `tools/strata_tokenizer.py --gguf`
+(vocab 200,058, pretokenizer `inkling2`). The engine writes the expert profile there when it stops. Live's environment:
+`TMPDIR=/park`, `STRATA_POLY_MIRROR=0`, `STRATA_CPU_NO_X4=1`.
+
+**How it was measured.** `p21/t.sh` is `p20/t.sh` with the Inkling config (`CFG=` picks another config). It stops live
+`PolyStrata` first. Each round loads the model, then runs:
+- `p21/features.py`: `/data/features.py` with the tokenizer path as an argument, for logit_bias.
+- `p21/stream.py`: streaming on both APIs, with thinking on and off.
+- The image's grammar, logit_bias and prefill unit tests.
+- `decode.py` (400 tokens x4).
+- `bench_11k.py`.
+- `aba.py 24000`, about 32K tokens.
+- `ldecode.py 8000 24000`: 300 tokens with thinking off, after about 11K and 32K.
+
+`p21/chain.sh` ran a second round of setup's config (b), then a round without the three small-card settings (c,
+`p21/acc.json`, upstream's high-accuracy mode `--inkling-small-card off`). Round a was the first load. Its stream test
+was later fixed to ask the Anthropic API for no thinking explicitly (below), and was rerun on the same load. The
+prompts are counted in Inkling's tokens: `bench_11k.py` makes 10,872 and `aba.py 24000` makes 32,702.
+
+| Inkling 2 Mini UD-Q4_K_XL, RTX 3070 8 GB | setup's config (a, b) | without the small-card settings (c) |
+|---|---|---|
+| load | 20.3-21.2 s | 19.1 s |
+| experts in VRAM | 997 and 1,103 of 3,072 (4.8 GiB) | 1,043 (4.5 GiB) |
+| `features.py` (grammar, json_schema, prefill both APIs, logit_bias) | all ok | all ok |
+| streaming, both APIs, thinking on and off | all ok | all ok |
+| grammar, logit_bias and prefill unit tests | 46 ok (1 skipped) | 46 ok (1 skipped) |
+| decode after a short prompt (runs 2-4) | 53.6-57.7 tok/s | 37.6-38.2 |
+| decode after 10,956 tokens, thinking off | 42.9-45.6 | 34.4 |
+| decode after 32,745 tokens, thinking off | 39.6-41.3 | 30.4 |
+| read 10,872 tokens (runs 1-3) | 16.8-17.9 s (607-648 tok/s) | 16.6-17.0 s |
+| read 32,702 tokens (A1, B1) | 42.0-45.8 s (714-778 tok/s) | 41.2-43.0 s |
+| back to A after B at 32K (A2) | 1.5-1.7 s | 2.1 s |
+| engine RSS after the set | 14.7-14.9 GB (13.0 GB of it file pages) | 15.2 GB |
+
+- **It runs and answers on both APIs, streamed and not, with thinking on and off.** The engine logged no errors.
+- **The small-card settings are worth 29-46% in decode on this card**: 55 against 38 tok/s short (+46%), and
+  41 against 30 after 32K (+33%). They don't change prompt reads. Upstream measured what they cost in answers on other cards: the same most
+  likely token at 94.3-95.0% of steps with all four (it measured `--expert-swaps 0` too), against 98.2-99.0% for a
+  second run without them. `--tail-skip 4` leaves out about a quarter of a token's expert picks on 8 GB cards, where
+  upstream didn't measure what that does to answers. Tower didn't measure the answers either.
+- **Against Cyber-Tiel-Coder on the same image and card** (Pass 20's last table, the column with the switch):
+  - Inkling reads prompts about 3 times slower: 11K in 16.8-17.9 s against 5.5-5.6 s, 32K in 42.0-45.8 s against
+    13.4-13.9 s.
+  - Inkling decodes at a half to two thirds of Cyber-Tiel's speed: 54-58 against 78-88 tok/s short, 40-41 against 68-72 after 32K.
+    Cyber-Tiel guesses ahead with its MTP head, and Inkling has no draft model here.
+  - The card holds a third of Inkling's experts. Its 24 layers run as 48, so a prompt batch sends the rest over
+    PCIe 3.0 for every layer run.
+  - Not checked: `--prompt-batch 2048`. setup.py says it halves how often a small card copies the missing experts,
+    but setup doesn't give it to Inkling.
+- 0.1.45 has no Inkling 2 engine, so there is no baseline run.
+- **Pictures** (`p21/vision.py`: a red circle and the text "TOWER 21", 448x448): both APIs answer "The shape is red,
+  and the text says "TOWER 21"." in 6.2 s with the CPU reader (179 prompt tokens). The same picture again reads from
+  the cache in 0.4 s.
+
+**Our ported features with Inkling 2.**
+- Grammar, constrained `json_schema` and logit_bias: work. The answers are `no`, `{"name":"Creeper","hp":20}`, and
+  `Hello` -> `Hi` with token 32269 banned.
+- **Prefill: the continuation is right, but it ends with the literal text `<|end_message|>`** on both APIs (`' three,
+  four, five<|end_message|>'`). `features.py` passes it because it only looks for "three". A plain answer ends cleanly.
+- The prefill cause is in our port (`c868922e3`, `terminal/serve/server.py`), not in upstream, which has no prefill:
+  - `Service.run` tells Inkling's output parser that the reply's text block is open only when the prompt ends with
+    `<|message_model|><|content_text|>` (`opened = ids[-len(self.text_open_ids):] == self.text_open_ids`).
+  - `prepare()` adds the prefill's tokens after that opening.
+  - So the parser starts outside a block and passes the block's end through as text.
+  - Not fixed in this pass.
+- **Thinking is on unless the request turns it off, on both APIs.** An Anthropic request with no `thinking` field
+  thinks, as an OpenAI request without `enable_thinking: false` does. With `max_tokens` 32 that left no text.
+  `"thinking": {"type": "disabled"}` gives the answer straight away.
+
+**Not checked:** tool calls, a long agent session, `"parallel"`, `--kv fp8` (about 0.7 GB more for experts, per
+upstream), `--cache-bias`, contexts past 32K, and how far the small-card settings move the answers on this card.
+After the runs: `docker rm -f polystrata-next && docker start PolyStrata`. Live is back on Cyber-Tiel-Coder.
+
 ## Shared-load changes (2026-10-17)
 
 With Plex, Deluge and Duplicati running again, the GGUF (22.7 GB) has to stay cached next to them, and about 22.5 GB
