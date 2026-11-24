@@ -1624,7 +1624,7 @@ prompts are counted in Inkling's tokens: `bench_11k.py` makes 10,872 and `aba.py
     `<|message_model|><|content_text|>` (`opened = ids[-len(self.text_open_ids):] == self.text_open_ids`).
   - `prepare()` adds the prefill's tokens after that opening.
   - So the parser starts outside a block and passes the block's end through as text.
-  - Not fixed in this pass.
+  - Fixed later in this pass (`f6bc1acf1`, below).
 - **Thinking is on unless the request turns it off, on both APIs.** An Anthropic request with no `thinking` field
   thinks, as an OpenAI request without `enable_thinking: false` does. With `max_tokens` 32 that left no text.
   `"thinking": {"type": "disabled"}` gives the answer straight away.
@@ -1659,6 +1659,35 @@ once and stops it again if it isn't set to autostart. Then `docker start PolyStr
 - `/v1/models` answers from the LAN at `192.168.1.166:5004`.
 
 Then it was stopped and `PolyStrata` started again. `features.py` passes on it.
+
+**The prefill fix.** The fix is commit `f6bc1acf1` on `tower-next`. It adds `open_block_at_end()` to
+`terminal/serve/server.py`, which reads back from the prompt's end. If the text block's opening comes before any
+`<|end_message|>`, the reply's text block is open, with or without a prefill after it. An earlier reply in the history
+always ends with `<|end_message|>`, so it never counts as open. Only Inkling 2 sets `text_open_ids`, so other
+families' path is the same as before.
+
+`test_inkling.py` gains two tests:
+- A prefill after the opening, with one and with two user turns.
+- A prompt that ends after a closed text block.
+
+The first failed before the fix with `'three<|end_message|>'`. The tests ran in the image on Tower with this `serve/`
+mounted over its own: grammar, Inkling, logit_bias, prefill, run config, server and structured output, plus the family
+parsers. 601 tests ran, and one failed: `test_server.LoadSharedSettings.test_several_bad_keys_are_each_named`, which
+also fails without the fix (599 tests there). `unittest discover` over all of `serve/` hung with the CPU idle and was
+stopped after 10 minutes. Not looked into.
+
+Image `polystrata:next-f6bc1acf`, built from `next/` as before. `next/repo` is the new commit's archive, and the old
+one is `next/repo-9172f75e`. They differ only in `server.py` and `test_inkling.py`. `p21/chain2.sh` ran on that image:
+
+- The Inkling set (`t.sh fix`): prefill is `' three, four, five'` on both APIs, without the tag.
+  - Everything else is as before.
+  - Decode 56.1-58.4 tok/s short, 42.8 after 11K, 40.7 after 32K.
+  - Reads 17.4-17.6 s at 11K and 42.5-46.0 s at 32K.
+- Cyber-Tiel's live config: `features.py` all ok. The image's grammar, logit_bias, prefill and Inkling tests: 100 ok
+  (4 skipped).
+
+Then live started again, still on `polystrata:tower` = `tower-9172f75e`. `features.py` passes on it. Live and
+`PolyStrata-Inkling` get the fix only when `polystrata:tower` is pointed at `next-f6bc1acf`, which hasn't been done.
 
 ## Shared-load changes (2026-10-17)
 
