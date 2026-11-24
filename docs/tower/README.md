@@ -1471,6 +1471,38 @@ the same set as above plus `dprobe.py` after `ldecode.py`. Both 0.1.45 runs logg
 - The 0.1.45 image's own copies of the grammar, logit_bias and prefill unit tests fail 2 of 46; its `features.py` run is
   clean. Its tests are not the ones the new image runs.
 
+**Cause of the decode loss: the CPU experts' four-row kernels (`e7f467548`).** Found with the engine alone
+(one-shot mode, `p20/cli/`), not the server: the same token ids for both builds (`gen_ids.py`: the INI question,
+33 tokens, and the same after an 11K `long_prompt`, thinking off), 300 tokens, each run a fresh load with its own copy
+of the expert profile. The engine's last line gives decode tok/s, the share of experts from VRAM and CPU expert ms a
+token. The first run after the live container stops is always slow (17.8-46.2 tok/s) and is left out.
+
+- 0.2.20 against 0.1.45 (`run1.sh`): short 59.3-59.6 against 70.9-72.9 tok/s, 11K 52.9-54.4 against 63.7-64.2. The
+  new engine takes more experts from VRAM (62-67% against 54-60%) and still spends more CPU time a token (12.0-12.7
+  against 9.6-10.0 ms): each CPU expert costs about 1.5 times as much.
+- Not the threads (`run2.sh`): 0.2.x takes 70% of the CPUs by default (8 of the 2600X's 12; 0.1.45 took 12), but
+  `--threads 12` gives 57.6 short and 53.4-55.1 at 11K, `--threads 10` 62.6 and 53.5.
+- Not the mirror: `STRATA_POLY_MIRROR` on, 62.7 short.
+- Between 0.2.19 and 0.2.20 (`run3.sh`): 0.2.19 72.0 short (CPU 9.7 ms) and 59.6-61.2 at 11K; 0.2.20 60.4-61.4
+  (12.1-12.3 ms) and 50.6-54.2. 0.2.20's one CPU-expert change is `e7f467548`: a gate, up or down matrix four weight
+  rows a call where the quant type has a four-row kernel (Strata 0.2.20's `dot_x4_kernel()`). Upstream measured it on
+  an i7-14700HX at +2% with every expert on the CPU and level with a split. It has no switch.
+- `p20/cli/x4.patch` adds one, `STRATA_CPU_NO_X4=1` (one row a call, as before), image `polystrata:p20-x4` on top of
+  `next-aadae31e` (`p20/cli/Dockerfile`). `run4.sh`, after a discarded warm-up, two rounds in turn:
+
+| Engine alone, tok/s | short | CPU experts ms a token | after 11K |
+|---|---|---|---|
+| 0.2.20, four-row (upstream default) | 58.7-59.5 | 12.1-12.8 | 51.9-54.6 |
+| 0.2.20, `STRATA_CPU_NO_X4=1` | 69.9-71.1 | 9.8-10.0 | 60.5-63.4 |
+| 0.2.19 | 67.0-68.2 | 10.0 | 59.7-60.3 |
+| 0.1.45 (FATTN, FDEC, CPU_DOWN_ORDER on) | 68.0-73.7 | 9.5-10.2 | 65.1-67.9 |
+
+  With the switch, short decode is back to 0.1.45 and 0.2.19; after 11K it is 0.2.19's and 4-7% under 0.1.45.
+  `STRATA_CPU_DOWN_ORDER=0` on 0.1.45 cost about that much there (64.2 -> 60.7, `run1.sh`), so the rest is likely
+  Tower's own CPU-expert change from Pass 14, which 0.2.x does not have. Not measured on 0.2.20. The four-row kernels
+  are likely slow on the 2600X because Zen+ runs AVX2 on 128-bit units; this was not profiled.
+- Not yet run: the server set (`t.sh`, `o.sh`) with the switch, and long-context decode (32K, 64K) with it.
+
 **Not checked:** GLM's models, the add-on pattern, a long agent session.
 
 **To make it live** (not done): `docker tag polystrata:next-aadae31e polystrata:tower`, then

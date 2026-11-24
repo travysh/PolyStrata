@@ -1,0 +1,8 @@
+10a11
+> #include <cstdlib>
+95c96,98
+<     if (x4 != nullptr && x4->isa == dot->isa) r.x4 = x4->fn;
+---
+>     // STRATA_CPU_NO_X4=1: one weight row a call, as before e7f467548 (Tower Pass 20 test)
+>     static const bool no_x4 = std::getenv("STRATA_CPU_NO_X4") != nullptr;
+>     if (!no_x4 && x4 != nullptr && x4->isa == dot->isa) r.x4 = x4->fn;
