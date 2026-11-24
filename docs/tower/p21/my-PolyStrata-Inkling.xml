@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>PolyStrata-Inkling</Name>
+  <Repository>polystrata:tower</Repository>
+  <Registry/>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/travysh/PolyStrata</Support>
+  <Project>https://github.com/travysh/PolyStrata</Project>
+  <ReadMe/>
+  <Overview>Inkling 2 Mini UD-Q4_K_XL (Unsloth) on the same image as PolyStrata (polystrata:tower, the tower-next build). One RTX 3070: stop PolyStrata before starting this one, and stop this one before starting PolyStrata. Engine config: /data/config/strata-inkling2-mini.json (setup's small-card settings: --attn-requant q5_0 --loop-bf16 --tail-skip 4). Notes: docs/tower/README.md Pass 21 on the cybertiel-family branch.</Overview>
+  <Category>AI:</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <TemplateURL/>
+  <Icon/>
+  <ExtraParams>--gpus all --ulimit memlock=-1 --stop-timeout 60</ExtraParams>
+  <PostArgs>.venv/bin/python serve/server.py --engine strata --config /data/config/strata-inkling2-mini.json --port 8080 --gpu 0</PostArgs>
+  <CPUset/>
+  <DateInstalled>1792556340</DateInstalled>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+  <Config Name="API port" Target="8080" Default="8080" Mode="tcp" Description="Server port (also the web app)." Type="Port" Display="always" Required="true" Mask="false">5004</Config>
+  <Config Name="Data" Target="/data" Default="/mnt/user/appdata/polystrata/data" Mode="rw" Description="Config, packs, expert profile. Shared with the PolyStrata container." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/polystrata/data</Config>
+  <Config Name="Park" Target="/park" Default="/mnt/cache/appdata/polystrata/park" Mode="rw" Description="Parked conversations spill here (TMPDIR=/park). Keep on /mnt/cache: a disk, not RAM." Type="Path" Display="always" Required="false" Mask="false">/mnt/cache/appdata/polystrata/park</Config>
+  <Config Name="GGUF folder" Target="/gguf" Default="/mnt/cache/llm" Mode="rw" Description="Model files. Keep on /mnt/cache (skips shfs)." Type="Path" Display="always" Required="true" Mask="false">/mnt/cache/llm</Config>
+  <Config Name="TMPDIR" Target="TMPDIR" Default="/park" Mode="" Description="Where strata-poly spills parked conversations (nameless temp files)." Type="Variable" Display="always" Required="false" Mask="false">/park</Config>
+  <Config Name="STRATA_POLY_MIRROR" Target="STRATA_POLY_MIRROR" Default="0" Mode="" Description="0: no pinned RAM copy of the experts outside VRAM (same speed on Tower, 15 GB less locked RAM)." Type="Variable" Display="always" Required="false" Mask="false">0</Config>
+  <Config Name="STRATA_CPU_NO_X4" Target="STRATA_CPU_NO_X4" Default="1" Mode="" Description="1: CPU experts one weight row a call (upstream e7f467548 four-row kernels are 15% slower decode on the 2600X, Pass 20)." Type="Variable" Display="always" Required="false" Mask="false">1</Config>
+  <TailscaleStateDir/>
+</Container>

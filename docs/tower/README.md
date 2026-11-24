@@ -1633,6 +1633,33 @@ prompts are counted in Inkling's tokens: `bench_11k.py` makes 10,872 and `aba.py
 upstream), `--cache-bias`, contexts past 32K, and how far the small-card settings move the answers on this card.
 After the runs: `docker rm -f polystrata-next && docker start PolyStrata`. Live is back on Cyber-Tiel-Coder.
 
+**Offered as a second container (2026-11-23).** `PolyStrata-Inkling`, from the template
+`/boot/config/plugins/dockerMan/templates-user/my-PolyStrata-Inkling.xml` (`p21/my-PolyStrata-Inkling.xml`). It is
+live's template with:
+- Port 5004.
+- `PostArgs` that start the server on `/data/config/strata-inkling2-mini.json` (in place of the image's `CMD`, which
+  names Cyber-Tiel's config).
+- Its own name and description.
+
+It has the same image (`polystrata:tower`), mounts and environment as live, so it follows live's image when that
+container is rebuilt. Live's template was not changed. Neither container is set to autostart.
+
+The two share the one card, so only one runs at a time:
+
+```sh
+docker stop PolyStrata && docker start PolyStrata-Inkling     # Inkling 2 Mini on :5004, loads in about 25 s
+docker stop PolyStrata-Inkling && docker start PolyStrata     # back to Cyber-Tiel-Coder on :5002
+```
+
+Created with `rebuild_container PolyStrata-Inkling` while live was stopped. That command starts a new container
+once and stops it again if it isn't set to autostart. Then `docker start PolyStrata-Inkling`:
+- It loaded in 21.1 s with 1,103 experts in VRAM.
+- `features.py`, `stream.py` and `vision.py` passed, with prefill's `<|end_message|>` as above.
+- `decode.py` gave 44.0, 49.2 and 52.0 tok/s, the first runs after a load.
+- `/v1/models` answers from the LAN at `192.168.1.166:5004`.
+
+Then it was stopped and `PolyStrata` started again. `features.py` passes on it.
+
 ## Shared-load changes (2026-10-17)
 
 With Plex, Deluge and Duplicati running again, the GGUF (22.7 GB) has to stay cached next to them, and about 22.5 GB
