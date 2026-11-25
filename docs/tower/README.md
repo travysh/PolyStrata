@@ -1790,8 +1790,90 @@ on this code, but it doesn't hit both models equally:
 So `score.py` also reports the 6 repo tasks with no control-token text (r04, r07, r08, r10, r11, r16), and the
 per-task table marks a reply cut off at the limit as `L`.
 
-**Not done yet: the full run.** At the trial's pace one sample of all 37 tasks takes about 1.6 h for Cyber-Tiel and
-2.6 h for Inkling, plus loading and grading, so about 4.5 h with live down. Two samples take about 9 h.
+**Full run, 1 sample of all 37 tasks (2026-11-24, tag `full1`).**
+- Run times: Cyber-Tiel 14:25-15:43, Inkling 15:43-17:28. Grading took 2 min. Live was down from 14:25 to 17:30
+  and came back loaded.
+- Prompt hash `315b1f5f46befe6b` and script hash `9c37d0ac92e41650`, both unchanged since the trial.
+- Graded rows, without the answers: `p22/results/full1-*.graded.jsonl`. The answers themselves are on Tower in
+  `p22/runs/`.
+
+| | Cyber-Tiel Coder 35B-A3B UD-Q4_K_XL | Inkling 2 Mini UD-Q4_K_XL |
+|---|---|---|
+| repo fixes | 2 of 13 | 4 of 13 |
+| repo fixes with no control-token text | 1 of 6 | 3 of 6 |
+| Python functions | 9 of 16 | 15 of 16 |
+| C++ functions | 8 of 8 | 8 of 8 |
+| all tasks | 19 of 37 | 27 of 37 |
+| output tokens, median | 9,333 | 8,542 |
+| answers of 12,288 output tokens or more | 16 | 14 |
+| time per answer, median | 139 s | 176 s |
+| generation time, all tasks | 1.29 h (67.9 tok/s) | 1.75 h (47.4 tok/s) |
+| cut off at 16,384 tokens | 1 | 2 |
+| repo answers whose blocks did not apply | 8 | 6 |
+
+Per task (P pass, `.` fail, L cut off at the limit, A blocks did not apply):
+
+| | c01-c08 | p01-p16 | r01 | r02 | r03 | r04 | r05 | r07 | r08 | r10 | r11 | r12 | r13 | r14 | r16 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Cyber-Tiel | `PPPPPPPP` | `.PP..PPPPPP...P.` | A | A | A | A | A | . | . | P | A | L | . | P | A |
+| Inkling | `PPPPPPPP` | `PPPPPPPPPPPPP.PP` | A | P | A | P | A | L | A | P | P | L | A | . | . |
+
+Every failure was read, to tell model mistakes from grader mistakes.
+
+What went wrong, Cyber-Tiel:
+- Python, 7 failures. Each one is the model's own bug:
+  - p01 raised ValueError on extra spaces.
+  - p04 returned `[]` for input with a tab.
+  - p05 accepted `%( 5**+0)** -3`.
+  - p12 hit an IndexError.
+  - p13 wrote "`timedelta` needs importing" under its code but didn't add the import (NameError; 566 tokens).
+  - p14 accepted a bad range.
+  - p16 got a `*` glob wrong.
+- Repo, 4 answers used the example file name from the format text. Three named `path/of/the/file.py` (r03, r11,
+  r16) and one named `path/terminal/serve/server.py` (r04), so the grader could not find the file.
+  - Graded again with the real file name put in, by hand and outside the scores above: r04 and r16 pass, r03 and
+    r11 still fail. With that forgiven, Cyber-Tiel has 4 of 13 repo fixes and 3 of 6 neutral ones, the same as
+    Inkling.
+  - The scores above stay strict, because the format text asks for the file's path.
+- Repo, broken format: r02 wrote SEARCH ... REPLACE ... REPLACE with no `=======` line.
+- Repo, control-token tasks:
+  - r02's thinking ended after 225 characters, at its own `</think>`.
+  - r05 ended its answer with a `<tool_call>` to search the repo for a field name. No tools were offered.
+  - r01's answer stops right after `=======`.
+- r07, r08 and r13: the blocks applied, but the tests failed.
+- r12 ran to the limit.
+
+What went wrong, Inkling:
+- Python: 1 failure. p14 accepted an invalid range.
+- Repo, SEARCH did not match: r01 matched twice; r03 and r05 matched nothing.
+- r08 (neutral): the whole block was written on one line with `\n` escapes, so there was no `=======` line.
+- Repo, syntax errors after the blocks applied:
+  - r07 left a `=======` line inside `updater.py`; the answer also ran to the limit.
+  - r14 wrote `[*cfg.get("args") or [], ...]`, which is invalid Python.
+- Repo, control-token tasks:
+  - r12 wrote its own `<|end_message|>` while thinking and ran to the limit with no block, as in the trial.
+  - r13 put `<|end_message|>` into the block's file name.
+- r16: the blocks applied, but the tests failed.
+
+**What this says, from one sample (each task's result is a single draw at temperature 0.6, so one task more or
+less is noise):**
+- Small self-contained functions: both models got every C++ task right.
+  - In Python, Inkling made 1 mistake and Cyber-Tiel 7.
+  - Cyber-Tiel's Python mistakes are edge cases it missed, not format problems.
+  - That gap of 6 is the clearest result here.
+- Bug fixes in real code: both are weak.
+  - Inkling fixed 4 of 13 and Cyber-Tiel 2. If the file name it copied is forgiven, Cyber-Tiel also has 4.
+  - Most repo failures are answers that could not be applied: wrong file names, SEARCH text that does not match,
+    or a broken block. Fewer are wrong fixes.
+- Cyber-Tiel thinks longer and decodes faster: a median of 30,000 thinking characters at 68 tok/s, against Inkling's
+  18,000 at 47 tok/s. Over these 37 tasks it finished in 74% of Inkling's time.
+- Writing their own control tokens hurt both models, but Cyber-Tiel more often. Its tags appear in 7 of these
+  prompts and Inkling's in 2.
+
+**Next, if wanted:**
+- A second sample, to see which of these results hold.
+- A format text whose example path cannot be copied as is. That changes the prompts, so its scores would not
+  compare with `full1`.
 
 **Not covered:** the agent loop (read, patch, run tests, try again), tool calls, CUDA code, Inkling without the
 small-card settings, and greedy decoding.
