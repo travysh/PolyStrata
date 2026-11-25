@@ -16,6 +16,11 @@
 
 #include "engine.hpp"
 #include "inkling2_kernels.hpp"
+#include "inkling2_zha.hpp"
+
+#include <functional>
+#include <utility>
+#include <vector>
 
 namespace strata::poly {
 
@@ -238,6 +243,65 @@ private:
           *ds_ctxf_ = nullptr, *ds_in_ = nullptr, *ds_sp_ = nullptr, *ds_state_ = nullptr, *ds_lat_ = nullptr,
           *ds_frc_ = nullptr, *ds_approx_ = nullptr, *ds_hscr_ = nullptr;
     void *ds_yq_ = nullptr, *ds_hq_ = nullptr, *ds_latq_ = nullptr;
+    // STRATA_INK_ZHA=REFS: the full layers' attention through a ZHA index (arXiv 2610.42112): their keys and values
+    // in pinned RAM as 4-bit leaves, chunk summaries in VRAM, a ring of the recent rows; each token reads the chunks
+    // the summaries pick exactly and the others by their summaries (inkling2_zha.cu).  The rest of the cache: none.
+    struct ZSlot {
+        int8_t *kc = nullptr, *vc = nullptr;      ///< the leaves: codes, 4 bits a value, a row a position
+        uint16_t *ksc = nullptr, *vsc = nullptr;  ///< their fp16 scales, a 32 values
+        int8_t *rkc = nullptr, *rvc = nullptr;    ///< the ring of the last zring_ rows, Q8_0 codes, in VRAM
+        uint16_t *rks = nullptr, *rvs = nullptr;
+        float* zrefs = nullptr;                   ///< the reference queries [kv][R][128]
+        uint16_t *zk = nullptr, *zv = nullptr;    ///< the chunks' summaries
+        float* zb = nullptr;
+        int zbuilt = 0;                           ///< the chunks summarized
+        int zcap = 0;                             ///< the summaries' room, chunks a KV head (it grows: zha_recap())
+        int64_t zpos = -1;                        ///< the position after the last call's rows (-1: rebuild)
+        ink::ZhaCache zcache;                     ///< an answer's chunks in VRAM
+    };
+    std::vector<ZSlot> zs_;   ///< a slot's, by its index
+    ink::Zha zha_;
+    bool zha_on_ = false;
+    int zha_pool_ = 0, zha_max_chunks_ = 0;
+    int64_t zring_ = 0;
+    std::vector<float> zha_refs_;
+    std::vector<std::pair<int, int>> zha_ids_;
+    ink::ZhaWork zw_;
+    const void* zw_owner_ = nullptr;
+    int64_t zw_next_ = -1;
+    bool zha_full(const Block& B) const { return zha_on_ && !B.swa; }
+    size_t zha_q8n(int cap) const {
+        return ink::zha_q8n_make((size_t) n_kv_ * cap * zha_.R, cap, true);   // 4-bit summaries
+    }
+    bool zgrow_ = false;   ///< the summaries grow with the context
+    int zcap0_ = 0;        ///< a slot's first room
+    void zha_recap(ZSlot& S, int cap);
+    void zha_room(ZSlot& S, int need);
+    void zha_room_all(int64_t end);
+    bool zread_full_ = false;   ///< the read under way is max_read()'s: the prompt goes on, the room is whole
+    void zha_load();
+    void zha_alloc(int slot, int il, int pass);
+    void zha_scratch();
+    void zha_attention(int il, int n);
+    // the prompt buffers lent (with the driver's virtual memory): score, rstar, sel, stage kc, vc, ks, vs, S
+    Mapped zmap_[8];          // 0-6: zha_scratch()'s p[], 7: S
+    size_t zfull_[8] = {};
+    bool zlend_ = false, zwide_ = false;
+    int zkeep_now_ = 1;   ///< the heads the prompt staging is mapped for now
+    size_t zcut_ = 0;
+    ink::ZhaWork zwd_;   ///< an answer's token's (rows <= 4) when the prompt's are lent
+    static constexpr int64_t zkeep_from_ = 131072;   ///< KEEP (every KV head's staging kept) for prompts from here on
+    void zha_widen(bool keep);
+    void zha_narrow();
+    void prompt_begins() override {
+        if (zgrow_) zha_room_all(std::max<int64_t>(pos_, read_end_));   // before the read takes the VRAM
+        if (zlend_) zha_widen(std::max<int64_t>(pos_, read_end_) >= zkeep_from_);
+    }
+    void prompt_ends() override { if (zlend_) zha_narrow(); }
+    void head_part(Layer& L, int il, int n, int part);
+    void* grab(const std::function<void()>& work);
+    std::vector<void*> zgraph_;   ///< a full slot's two recorded parts of its head (an answer's token)
+
     void* side_ = nullptr;                             ///< fork()'s stream
     void *side_go_ = nullptr, *side_done_ = nullptr;   ///< its fork and its join
 

@@ -24,6 +24,17 @@ namespace strata::poly {
 namespace {
 
 constexpr size_t kScoreFloats = size_t(16) << 20;   // the attention's scores of the tokens it takes at a time
+
+double env_num(const char* key, double fallback) {
+    const char* v = std::getenv(key);
+    return v && *v ? std::atof(v) : fallback;
+}
+
+// STRATA_INK_ZHA's value: the ZHA index's reference file ("" when unset).
+std::string zha_file() {
+    const char* v = std::getenv("STRATA_INK_ZHA");
+    return v ? v : "";
+}
 const char* const kCtrlName[] = {"q", "k", "v", "ffn"};
 
 // Unsloth's top-level files (architecture "inkling2": unsloth/Inkling-2-Mini-GGUF outside its Mainline_Support folder)
@@ -309,6 +320,10 @@ void Inkling2::load_geometry() {
             }
     if (!opt_.draft_model.empty()) ds_open();
     if (opt_.window == 0) opt_.window = ds_file_ ? ds_block_ : 1;
+    zha_load();
+    // The index keeps one sequence's leaves, ring and summaries, and has not been run beside the drafter.
+    need(!zha_on_ || !ds_file_, "the ZHA index (STRATA_INK_ZHA) runs without --draft-model");
+    one_sequence(!zha_on_, "with the ZHA index (STRATA_INK_ZHA)");
 }
 
 // --draft-model's DSpark drafter: its shape, checked against what guess_block() runs.
@@ -661,7 +676,9 @@ void Inkling2::load_layer(int il) {
             out_query_ = upload(gg_->find("output_res_query.weight"), "output_res_query.weight", e, 1, kF32);
     }
     B.swa = swa_[(size_t) il];
-    L.fixed = true;    // the launches read the position on the card when they are recorded (head_key(), tail_key())
+    // the launches read the position on the card when they are recorded (head_key(), tail_key()); a full layer
+    // through the ZHA index decides on the host what it launches (chunks built, the ring, a jump): never recorded
+    L.fixed = !zha_full(B);
     B.wq = att("attn_q.weight", e, hq);
     B.wk = att("attn_k.weight", e, kv);
     B.wv = att("attn_v.weight", e, kv);
@@ -764,6 +781,7 @@ void Inkling2::alloc_caches() {
     keep_ = std::min(window_, ring_);
     const size_t row = kv_row();
     float* st = state_;
+    if (zha_on_ && zs_.size() != slots_.size()) zs_.assign(slots_.size(), ZSlot{});
     for (Slot& s : slots_) {
         if (!runs(s.il)) continue;
         s.past = st;
@@ -771,6 +789,10 @@ void Inkling2::alloc_caches() {
         if (blocks_[(size_t) s.il].swa) {
             s.keys = (uint16_t*) seq_alloc((size_t) ring_ * row, "the attention cache");
             s.vals = (uint16_t*) seq_alloc((size_t) ring_ * row, "the attention cache");
+        } else if (zha_on_) {   // the index's: leaves in RAM, the ring and the summaries in VRAM
+            const int i = (int) (&s - slots_.data()), core = core_end_ - core_start_;
+            s.keys = s.vals = nullptr;
+            zha_alloc(i, s.il, i < n_layer_ ? 0 : 1 + (i - n_layer_) / core);
         } else {
             s.keys = (uint16_t*) kv_alloc(row, 1);
             s.vals = (uint16_t*) kv_alloc(row, 1);
@@ -819,7 +841,10 @@ void Inkling2::assign_scratch() {
     aoraw_ = fbuf(e);
     fc_ = fbuf(e);
     // a token's scores of the whole context, and what ink_attend() keeps beside them
-    score_n_ = std::max(kScoreFloats, ink_attend_floats(n_head_, n_kv_, head_dim_, opt_.max_context));
+    // under the index only the window layers' ring goes through ink_attend(): its keys, not the context's (the
+    // same for both layouts, which share the scores where they are apart)
+    const int64_t att_keys = zha_on_ ? std::min<int64_t>(opt_.max_context, (int64_t) window_ + rows_) : opt_.max_context;
+    score_n_ = std::max(kScoreFloats, ink_attend_floats(n_head_, n_kv_, head_dim_, att_keys));
     if (scores_apart()) {   // sized for the context, not for a call's tokens: 64 MiB that both layouts share
         if (!scores_) scores_ = (float*) dmalloc(score_n_ * sizeof(float), "the attention's scores");
         score_ = scores_;
@@ -837,6 +862,7 @@ void Inkling2::assign_scratch() {
         kvw_halves_ = (size_t) std::min<int64_t>(opt_.max_context, kKvq8WorkRows) * n_kv_ * head_dim_;
         kvw_ = fbuf(kvw_halves_);   // 2 * kvw_halves_ halves
     }
+    if (zha_on_) zha_scratch();
     if (ds_file_) {   // the drafter's: a call's features and mixes, and a block's rows
         const size_t E = (size_t) n_embd_, hq = (size_t) n_head_ * head_dim_, kv = (size_t) n_kv_ * head_dim_,
                      B = (size_t) ds_block_, V = (size_t) n_vocab_, R = (size_t) ds_rank_;
@@ -884,6 +910,12 @@ void Inkling2::assign_scratch() {
 
 Inkling2::~Inkling2() {
     if (side_) cudaStreamSynchronize(cs(side_));
+    for (ZSlot& z : zs_) {   // the summaries and the leaves are the slots' own
+        for (void* p : {(void*) z.zk, (void*) z.zv, (void*) z.zb})
+            if (p) cudaFree(p);
+        for (void* p : {(void*) z.kc, (void*) z.ksc, (void*) z.vc, (void*) z.vsc})
+            if (p) cudaFreeHost(p);
+    }
     for (void* e : {side_go_, side_done_})
         if (e) cudaEventDestroy((cudaEvent_t) e);
     if (side_) cudaStreamDestroy(cs(side_));
@@ -1188,8 +1220,53 @@ void Inkling2::layer_head(Layer& L, int il, int n) {
     // A call starts at its card's first layer.  A card that starts at the loop's first layer comes back to it for
     // each later pass, so it keeps the pass there: next_layer() leaves it 0 after the last pass.
     if (il == lo_ && il != core_start_) pass_ = 0;
+    // A full layer under the index, a token: its launches before the index's and after them as two recordings of
+    // its own (the engine records only a fixed layer's head, and this one decides on the host what the index runs).
+    // Not within a prompt's read: its calls' streams are then in read_groups()' rows (carry_at()), which it gives
+    // back after the read, and a recording made with them would write there at its replays.
+    const bool home = bl_[0] == home_[0] && bank_ == home_[kBlocks] && bank_out_ == home_[kBlocks + 1];
+    if (zha_full(blocks_[(size_t) il]) && n == 1 && !rows_of_ && opt_.graphs && opt_.window <= 1 && !recording_ &&
+        home && !prompt_scratch_) {
+        if (zgraph_.empty()) zgraph_.assign(slots_.size() * 2, nullptr);
+        const size_t at = (size_t) slot_of(il, pass_of(il)) * 2;
+        if (!zgraph_[at]) zgraph_[at] = grab([&] { head_part(L, il, n, 1); });
+        ck(cudaGraphLaunch((cudaGraphExec_t) zgraph_[at], cs(st_)), "layer graph");
+        zha_attention(il, n);
+        ink_mul_sigmoid(att_, gate_, (size_t) n_head_ * head_dim_, st_);
+        if (!zgraph_[at + 1]) zgraph_[at + 1] = grab([&] { head_part(L, il, n, 2); });
+        ck(cudaGraphLaunch((cudaGraphExec_t) zgraph_[at + 1], cs(st_)), "layer graph");
+        return;
+    }
+    head_part(L, il, n, 3);
+}
+
+// Engine::record()'s capture (a template of engine.cpp's): what `work` hands to the stream, as a graph.
+void* Inkling2::grab(const std::function<void()>& work) {
+    cudaGraph_t g = nullptr;
+    ck(cudaStreamBeginCapture(cs(st_), cudaStreamCaptureModeThreadLocal), "cudaStreamBeginCapture");
+    recording_ = recorded_ = true;
+    try {
+        work();
+    } catch (...) {
+        recording_ = false;
+        if (cudaStreamEndCapture(cs(st_), &g) == cudaSuccess && g) cudaGraphDestroy(g);
+        cudaGetLastError();
+        throw;
+    }
+    recording_ = false;
+    ck(cudaStreamEndCapture(cs(st_), &g), "cudaStreamEndCapture");
+    cudaGraphExec_t exec = nullptr;
+    const cudaError_t made = cudaGraphInstantiateWithFlags(&exec, g, 0);
+    cudaGraphDestroy(g);
+    ck(made, "cudaGraphInstantiate");
+    graphs_.push_back(exec);
+    return exec;
+}
+
+// A layer's head: part 1 its launches up to the keys and values, 2 the ones after the attention, 3 all of them.
+void Inkling2::head_part(Layer& L, int il, int n, int part) {
     Block& B = blocks_[(size_t) il];
-    if (ds_file_) {   // the drafter's features: the inputs of three layer runs
+    if ((part & 1) && ds_file_) {   // the drafter's features: the inputs of three layer runs
         const int visit = visit_of(il, pass_of(il));
         for (int k = 0; k < 3; ++k)
             if (visit == ds_visit_[k]) copy_rows(r_, ds_tap_ + (size_t) k * rows_ * n_embd_, n);
@@ -1210,7 +1287,7 @@ void Inkling2::layer_head(Layer& L, int il, int n) {
 #endif
 
     // the tokens' embeddings, normed (a picture's rows are not: whole(); step()'s rows have none)
-    if (il == 0 && (per_row || !image_at(pos_))) {
+    if ((part & 1) && il == 0 && (per_row || !image_at(pos_))) {
         rms_norm(r_, fp(tok_norm_), mixf_, n_embd_, n, rms_eps_, st_);
         copy_rows(mixf_, r_, n);
     }
@@ -1218,7 +1295,7 @@ void Inkling2::layer_head(Layer& L, int il, int n) {
     // before it as its bank: that pass's later block (if the core has two) and its output.
     const int core_block = core_start_ / blk_;
     const int n_bank = (core_end_ - core_start_) / blk_ - 1;
-    if (il == core_start_ && pass_ > 0) {
+    if ((part & 1) && il == core_start_ && pass_ > 0) {
         if (n_bank > 0) copy_rows(bl_[core_block + 1], bank_, n);
         copy_rows(r_, bank_out_, n);
         copy_rows(bl_[core_block], r_, n);
@@ -1239,7 +1316,7 @@ void Inkling2::layer_head(Layer& L, int il, int n) {
     const bool looped = pass_of(il) > 0;   // a later pass of the core: its inputs take the pass before's messages
     // a window layer outside a later pass has one input, normed in the mix's launch
     const bool mix_normed = il > 0 && B.swa && !looped && sum_threads(n_embd_) == 1024;
-    if (il > 0) {
+    if ((part & 1) && il > 0) {
         float* out[3] = {in_[0], in_[1], in_[2]};
         ink_mix_norm(streams_of((il - 1) / blk_ + 1, 0), fp(B.attn_query), B.swa ? 1 : 3, out, n_embd_, n,
                      mix_normed ? fp(B.attn_norm) : nullptr, mix_normed ? xin_[0] : nullptr, rms_eps_, st_,
@@ -1252,17 +1329,19 @@ void Inkling2::layer_head(Layer& L, int il, int n) {
     if (looped) {
         if (n == 1 && core_end_ - core_start_ <= 12) {
             msg = msgs_.data() + (size_t) (il - core_start_) * kCtrl;
-        } else {
+        } else if (part & 1) {
             InkStates bank;
             if (n_bank > 0) bank.p[bank.n++] = bank_;
             bank.p[bank.n++] = bank_out_;
             ink_mix(bank, fp(B.msg_query), kCtrl, msg_, n_embd_, n, st_);
         }
         // Q's last: a window layer's three inputs are one buffer until the messages make them differ
-        if (!control3(in, msg, B.ctrl, in_, n))
+        if ((part & 1) && !control3(in, msg, B.ctrl, in_, n))
             for (int j = 2; j >= 0; --j) control(in[j], msg[j], B.ctrl[j], in_[j], n);
         for (int j = 0; j < 3; ++j) in[j] = in_[j];
     }
+    const long long* at = recording_ ? at_ : nullptr;   // a recorded launch: the tokens' positions from what at_ holds
+    if (part & 1) {
     const float* x[3];
     bool quantized = false;   // project()'s inputs quantized by the norms' launch
     if (B.swa && !looped) {
@@ -1327,7 +1406,6 @@ void Inkling2::layer_head(Layer& L, int il, int n) {
         vd = vdyn_;
     }
     const float alpha = B.swa ? 0.f : log_alpha_;
-    const long long* at = recording_ ? at_ : nullptr;   // a recorded launch: the tokens' positions from what at_ holds
     // one launch for all of it, the same bits (step()'s rows: a launch a row; load_geometry() takes no other heads)
     if ((n == 1 || per_row) && head_dim_ <= 128 && n_rel_ <= 128) {
         for (int i = 0; i < each; ++i) {
@@ -1423,6 +1501,15 @@ void Inkling2::layer_head(Layer& L, int il, int n) {
         c.kvq8 = kvq8_;
         ink_clips(c, st_);
     }
+    }   // part 1
+    // a full layer under the index: its keys and values to the leaves and the ring, its attention through the
+    // summaries, then the output gate
+    const bool through_index = zha_full(B);
+    if (part == 3) {
+    if (through_index) {
+        zha_attention(il, n);
+        ink_mul_sigmoid(att_, gate_, (size_t) n * hq, st_);
+    }
     InkAttn a;
     a.q = q_;
     a.r = rr_;
@@ -1451,7 +1538,8 @@ void Inkling2::layer_head(Layer& L, int il, int n) {
     // STRATA_KV_INT8 for decode only: a token alone or a window's (guessed tokens checked), not a prompt's rows,
     // which a chunk of fewer than kStageRows also brings here (a short turn, the end of a long prompt)
     a.int8_dot = int8_dot_ && (n == 1 || windowed_);
-    if (rows_launch) {   // step()'s rows: each over its own sequence's caches, at its position, as it is alone
+    if (through_index) {   // done above
+    } else if (rows_launch) {   // step()'s rows: each over its own sequence's caches, at its position, as it is alone
 #if !defined(STRATA_GPU_METAL)
         InkAttnRows c;
         InkAttn b = a;
@@ -1520,7 +1608,9 @@ void Inkling2::layer_head(Layer& L, int il, int n) {
         if (n == 1) a.q8 = xqo_;   // and the output quantized for wo
         ink_attend(a, st_);
     }
-    lin(B.wo, att_, aoraw_, n, n == 1 && n < kStageRows ? xqo_ : nullptr);
+    }   // part 3
+    if (!(part & 2)) return;
+    lin(B.wo, att_, aoraw_, n, n == 1 && n < kStageRows && !through_index ? xqo_ : nullptr);
     // the first layer of a block starts a new stream from the attention's output; the one it had joins the mixes
     if (n == 1 || per_row) {   // the convolution and the stream's update in one launch (a launch a row of step()'s)
         const int mode = il % blk_ != 0 ? 0 : il == core_start_ && looped ? 2 : 1;
@@ -1809,7 +1899,7 @@ void Inkling2::load_extra(const uint8_t* src, int64_t pos) {
 // The full slots' rows of the whole context, keys then values a slot.
 size_t Inkling2::card_row_bytes() const {
     size_t n = 0;
-    for (const Slot& s : slots_) n += blocks_[(size_t) s.il].swa ? 0 : 1;
+    for (const Slot& s : slots_) n += blocks_[(size_t) s.il].swa || zha_on_ ? 0 : 1;   // the index's: in RAM
     return n * 2 * kv_row();
 }
 
@@ -1833,6 +1923,7 @@ void Inkling2::load_card_rows(const uint8_t* src, int64_t from, int64_t count, i
     if (from < 0 || first < from || n < 0 || first + n > from + count || first + n > opt_.max_context)
         throw std::logic_error("load_rows: the rows are outside what was saved");
     cover(first + n);
+    for (ZSlot& z : zs_) z.zpos = -1;   // the index's ring and summaries again from its leaves
     ck(cudaStreamSynchronize(cs(st_)), "load rows");
     const size_t row = kv_row();
     for (const Slot& s : slots_) {
@@ -1844,6 +1935,382 @@ void Inkling2::load_card_rows(const uint8_t* src, int64_t from, int64_t count, i
             src += (size_t) count * row;
         }
     }
+}
+
+
+// ---- the ZHA index over the full layers' keys --------------------------------------------------------------------
+
+// STRATA_INK_ZHA=FILE: the ZHA index over the full layers (docs/INKLING_ZHA.md).  The file: int32 'ZHAR', C, R,
+// slots, then each slot's int32 layer, pass and [kv][R][128] floats (its reference queries).  Its knobs, defaulting
+// to what reached 1M tokens on an 8 GB card: STRATA_INK_ZHA_BUDGET (0.16: the share of a token's far chunks it reads
+// exactly), STRATA_INK_ZHA_MAX (256: at most that many), STRATA_INK_ZHA_POOL (600: an answer's chunks kept in VRAM a
+// KV head, 0 none).
+void Inkling2::zha_load() {
+    const std::string path = zha_file();
+    if (path.empty()) return;
+#if defined(STRATA_GPU_METAL) || defined(STRATA_USE_HIP)
+    throw std::runtime_error("STRATA_INK_ZHA: the ZHA index runs on NVIDIA cards only");
+#else
+    const auto need = [](bool ok, const char* what) {
+        if (!ok) throw std::runtime_error(what);
+    };
+    {
+        int dev = 0, major = 0, minor = 0;
+        const bool known = cudaGetDevice(&dev) == cudaSuccess &&
+                           cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
+                           cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev) == cudaSuccess;
+        need(known && major * 10 + minor >= 75, "STRATA_INK_ZHA: the ZHA index needs an NVIDIA card from Turing on");
+    }
+    need(opt_.layer_split.empty() && opt_.expert_gpu < 0, "STRATA_INK_ZHA: the ZHA index runs on one card");
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) throw std::runtime_error("STRATA_INK_ZHA: cannot open " + path);
+    int32_t h[4];
+    if (std::fread(h, sizeof h, 1, f) != 1 || h[0] != 0x5A484152) {
+        std::fclose(f);
+        throw std::runtime_error("STRATA_INK_ZHA: not a ZHAR file");
+    }
+    zha_.C = h[1];
+    zha_.R = h[2];
+    if (head_dim_ != 128 || zha_.R != 4 || zha_.C != 64) {
+        std::fclose(f);
+        throw std::runtime_error("STRATA_INK_ZHA: heads of 128, chunks of 64 and 4 references");
+    }
+    const size_t per = (size_t) n_kv_ * zha_.R * head_dim_;
+    zha_refs_.resize(per * (size_t) h[3]);
+    for (int k = 0; k < h[3]; ++k) {
+        int32_t id[2];
+        if (std::fread(id, sizeof id, 1, f) != 1 || std::fread(zha_refs_.data() + k * per, sizeof(float), per, f) != per) {
+            std::fclose(f);
+            throw std::runtime_error("STRATA_INK_ZHA: the file ends early");
+        }
+        zha_ids_.push_back({id[0], id[1]});
+    }
+    std::fclose(f);
+    zha_.budget = (float) env_num("STRATA_INK_ZHA_BUDGET", 0.16);
+    zha_.max_sel = (int) env_num("STRATA_INK_ZHA_MAX", 256);
+    zha_pool_ = (int) env_num("STRATA_INK_ZHA_POOL", 600);
+    need(zha_.budget > 0.f && zha_.budget <= 1.f && zha_.max_sel >= 1 && zha_pool_ >= 0,
+         "STRATA_INK_ZHA: _BUDGET in (0, 1], _MAX 1 or more, _POOL 0 or more");
+    zring_ = (int64_t) zha_.recent + 2 * zha_.C + std::max(opt_.prompt_batch, 64) + 64;
+    zha_max_chunks_ = (int) ((opt_.max_context + zha_.C - 1) / zha_.C + 31) / 32 * 32;   // words of 32 chunks
+    zha_on_ = true;
+    std::fprintf(stderr, "strata-poly: ZHA index: chunks of %d, %d references, budget %.3f (at most %d), a pool of %d "
+                 "chunks a KV head\n", zha_.C, zha_.R, zha_.budget, zha_.max_sel, zha_pool_);
+#endif
+}
+
+// A full slot's index: its leaves in pinned RAM (every position's keys and values), the ring of its recent rows,
+// its reference queries, its summaries of the whole context and its answer's chunk cache in VRAM.
+void Inkling2::zha_alloc(int slot, int il, int pass) {
+    ZSlot& S = zs_[(size_t) slot];
+    if (S.kc) return;
+    const size_t codes = (size_t) n_kv_ * head_dim_, scales = codes / 32 * sizeof(uint16_t);
+    const size_t rows = (size_t) opt_.max_context;
+    const auto host = [&](size_t bytes) {
+        void* p = nullptr;
+        ck(cudaHostAlloc(&p, bytes, cudaHostAllocMapped | cudaHostAllocPortable), "the index's leaves (pinned RAM)");
+        return p;
+    };
+    S.kc = (int8_t*) host(rows * codes / 2);   // 4-bit
+    S.ksc = (uint16_t*) host(rows * scales);
+    S.vc = (int8_t*) host(rows * codes / 2);
+    S.vsc = (uint16_t*) host(rows * scales);
+    S.rkc = (int8_t*) dmalloc((size_t) zring_ * codes, "the index's ring");
+    S.rks = (uint16_t*) dmalloc((size_t) zring_ * scales, "the index's ring");
+    S.rvc = (int8_t*) dmalloc((size_t) zring_ * codes, "the index's ring");
+    S.rvs = (uint16_t*) dmalloc((size_t) zring_ * scales, "the index's ring");
+    if (zha_pool_ > 0) {
+        ink::ZhaCache& Z = S.zcache;
+        const size_t keys = (size_t) n_kv_ * zha_pool_ * zha_.C, per_key = head_dim_ / 2;
+        Z.P = zha_pool_;
+        Z.pool.row = head_dim_;
+        Z.pool.headed = 0;
+        Z.pool.q4 = 1;
+        Z.pool.kc = (int8_t*) dmalloc(keys * per_key, "the index's chunk cache");
+        Z.pool.vc = (int8_t*) dmalloc(keys * per_key, "the index's chunk cache");
+        Z.pool.ks = (uint16_t*) dmalloc(keys * head_dim_ / 32 * sizeof(uint16_t), "the index's chunk cache");
+        Z.pool.vs = (uint16_t*) dmalloc(keys * head_dim_ / 32 * sizeof(uint16_t), "the index's chunk cache");
+        Z.owner = (int*) dmalloc((size_t) n_kv_ * Z.P * sizeof(int), "the index's chunk cache");
+        Z.stamp = (int*) dmalloc((size_t) n_kv_ * Z.P * sizeof(int), "the index's chunk cache");
+        Z.pmap = (int*) dmalloc((size_t) n_kv_ * zha_max_chunks_ * sizeof(int), "the index's chunk cache");
+        Z.aux = (int*) dmalloc((size_t) n_kv_ * (Z.P + 2) * sizeof(int), "the index's chunk cache");
+        ink::zha_cache_clear(Z, n_kv_, zha_max_chunks_, st_);
+    }
+    size_t k = 0;
+    while (k < zha_ids_.size() && zha_ids_[k] != std::make_pair(il, pass)) ++k;
+    if (k == zha_ids_.size())
+        throw std::runtime_error("STRATA_INK_ZHA: no references for layer " + std::to_string(il) + " pass " +
+                                 std::to_string(pass));
+    const size_t refs = (size_t) n_kv_ * zha_.R * head_dim_;
+    S.zrefs = (float*) dmalloc(refs * sizeof(float), "the index");
+    ck(cudaMemcpy(S.zrefs, zha_refs_.data() + k * refs, refs * sizeof(float), cudaMemcpyHostToDevice), "the index");
+    if (zcap0_ == 0) {   // the summaries' room grows with the context where VRAM can come from the expert cache
+        zgrow_ = vmm_ && !pool_on_ && !freeze_experts_;
+        zcap0_ = zgrow_ ? std::min(zha_max_chunks_, 1024) : zha_max_chunks_;   // 64K tokens first
+    }
+    S.zcap = 0;
+    S.zbuilt = 0;
+    S.zpos = -1;
+    zha_recap(S, zcap0_);
+}
+
+// The slot's summaries in a room of cap chunks a KV head: the built ones copied over (each KV head's rows, then, as
+// q8n lays them out, the scales after every head's codes), the old room freed.  VRAM the card lacks for the new one
+// comes from the expert cache; a smaller room's leftover goes back to it.
+void Inkling2::zha_recap(ZSlot& S, int cap) {
+    if (cap == S.zcap) return;
+    const size_t R = (size_t) zha_.R, kv = (size_t) n_kv_;
+    const size_t code = head_dim_ / 2, scale = head_dim_ / 32 * sizeof(uint16_t);   // 4-bit codes, fp16 scales
+    const size_t rows_new = kv * (size_t) cap * R, rows_old = kv * (size_t) S.zcap * R;
+    const size_t bytes_new = 2 * rows_new * (code + scale) + rows_new * sizeof(float);
+    const size_t bytes_old = 2 * rows_old * (code + scale) + rows_old * sizeof(float);
+    ck(cudaStreamSynchronize(cs(st_)), "the index's summaries");
+    if (S.zk && exp_ && bytes_new > bytes_old) {
+        size_t free_b = 0, total_b = 0;
+        ck(cudaMemGetInfo(&free_b, &total_b), "cudaMemGetInfo");
+        const size_t quarter = (size_t(std::max(reserve_mib_, 0)) << 20) / 4;
+        if (free_b < bytes_new + quarter) {
+            shrink_cache(bytes_new + quarter - free_b);
+            held_is_budget();
+        }
+    }
+    void* p[3] = {};
+    const size_t sizes[3] = {rows_new * (code + scale), rows_new * (code + scale), rows_new * sizeof(float)};
+    for (int i = 0; i < 3; ++i)
+        if (cudaMalloc(&p[i], std::max<size_t>(sizes[i], 256)) != cudaSuccess) {
+            cudaGetLastError();
+            for (int k = 0; k < i; ++k) cudaFree(p[k]);
+            throw std::runtime_error("no VRAM for the index's summaries (" + std::to_string(cap) + " chunks a head)");
+        }
+    const int keep = std::min(S.zbuilt, std::min(cap, S.zcap));
+    if (S.zk && keep > 0) {
+        const size_t w = (size_t) keep * R;   // rows a KV head to copy
+        uint16_t* const olds[2] = {S.zk, S.zv};
+        for (int i = 0; i < 2; ++i) {
+            uint8_t* d = (uint8_t*) p[i];
+            const uint8_t* s = (const uint8_t*) olds[i];
+            ck(cudaMemcpy2DAsync(d, (size_t) cap * R * code, s, (size_t) S.zcap * R * code, w * code, kv,
+                                 cudaMemcpyDeviceToDevice, cs(st_)), "the index's summaries");
+            ck(cudaMemcpy2DAsync(d + rows_new * code, (size_t) cap * R * scale, s + rows_old * code,
+                                 (size_t) S.zcap * R * scale, w * scale, kv, cudaMemcpyDeviceToDevice, cs(st_)),
+               "the index's summaries");
+        }
+        ck(cudaMemcpy2DAsync(p[2], (size_t) cap * R * sizeof(float), S.zb, (size_t) S.zcap * R * sizeof(float),
+                             w * sizeof(float), kv, cudaMemcpyDeviceToDevice, cs(st_)), "the index's summaries");
+        ck(cudaStreamSynchronize(cs(st_)), "the index's summaries");
+    }
+    for (void* o : {(void*) S.zk, (void*) S.zv, (void*) S.zb})
+        if (o) cudaFree(o);
+    const bool had = S.zk != nullptr;
+    S.zk = (uint16_t*) p[0], S.zv = (uint16_t*) p[1], S.zb = (float*) p[2];
+    S.zbuilt = keep;
+    S.zcap = cap;
+    if (had && exp_ && bytes_old > bytes_new + kArenaPiece) grow_cache(bytes_old - bytes_new, true);
+}
+
+// A prompt's read starts (prompt_begins()): every slot's room for the chunks up to the read's end, now, while the
+// expert cache still has VRAM to give: inside a long prompt the cache has lent all of it to the read's buffers.  A
+// read of max_read() rows is a prompt that goes on past it (its later reads would find no VRAM to grow into): the
+// whole room at once.
+void Inkling2::zha_room_all(int64_t end) {
+    int need = (int) ((end + zha_.C - 1) / zha_.C) + 1;
+    zread_full_ = end - pos_ >= read_rows_;
+    if (zread_full_) need = zha_max_chunks_;
+    for (ZSlot& S : zs_)
+        if (S.zk) zha_room(S, need);
+}
+
+// Room for need chunks: twice the room until it holds them (at most max_chunks).
+void Inkling2::zha_room(ZSlot& S, int need) {
+    if (!zgrow_ || need <= S.zcap) return;
+    int cap = S.zcap;
+    while (cap < need && cap < zha_max_chunks_) cap = std::min(zha_max_chunks_, cap * 2);
+    zha_recap(S, cap);
+}
+
+// The index's work buffers: a prompt call's chunk scores, choices and selections, its staged chunks, an answer's
+// parts.  With the driver's virtual memory they are lent: mapped while a prompt is read, the expert cache's between.
+void Inkling2::zha_scratch() {
+    if (zw_.S) return;
+    const int per = n_head_ / n_kv_;
+    const size_t sub = (size_t) rows_, extent = (size_t) std::max(window_, 1024);
+    zlend_ = vmm_;
+    const size_t need = (size_t) per * sub * extent + 65536 + (sub / 64 + 1) * (size_t) zha_max_chunks_ +
+                        sub * per * 9 * (head_dim_ + 2) + (size_t) n_head_ * 128 * (head_dim_ + 2);
+    zw_.s_floats = std::max<size_t>(size_t(4) << 20, need + (size_t(1) << 20));
+    zfull_[7] = zw_.s_floats * sizeof(float);
+    if (zlend_) {   // lent with the other prompt buffers
+        vmm_reserve(zmap_[7], zfull_[7]);
+        zw_.S = (float*) zmap_[7].base;
+    } else {
+        zw_.S = (float*) dmalloc(zfull_[7], "the index");
+    }
+    const size_t hs = sub * zha_max_chunks_;
+    // lent, every KV head's staged chunks are kept across a slot's prompt calls (KEEP, from zkeep_from_ on): a chunk
+    // crosses the bus once a read's group, not once a call
+    zw_.heads = zlend_ ? n_kv_ : 1;
+    zw_.cmap = (int*) dmalloc((size_t) n_kv_ * zha_max_chunks_ * sizeof(int), "the index");
+    zw_.count = (int*) dmalloc((size_t) n_kv_ * sizeof(int), "the index");
+    zw_.glist = (int*) dmalloc((size_t) n_kv_ * (zha_max_chunks_ + 1) * sizeof(int), "the index");
+    const size_t keys = (size_t) zw_.heads * zha_max_chunks_ * zha_.C, per_key = head_dim_ / 2;
+    zw_.stage.row = head_dim_;
+    zw_.stage.headed = 0;
+    zw_.stage.q4 = 1;
+    zfull_[0] = (size_t) (per + 1) * hs * sizeof(float);
+    zfull_[1] = zfull_[2] = (size_t) per * hs;
+    zfull_[3] = zfull_[4] = keys * per_key;
+    zfull_[5] = zfull_[6] = keys * head_dim_ / 32 * sizeof(uint16_t);
+    void* p[7];
+    for (int i = 0; i < 7; ++i) {
+        if (zlend_) {   // addresses now, VRAM when a prompt starts
+            vmm_reserve(zmap_[i], zfull_[i]);
+            p[i] = (void*) zmap_[i].base;
+        } else {
+            p[i] = dmalloc(zfull_[i], "the index");
+        }
+    }
+    zw_.score = (float*) p[0];
+    zw_.rstar = (uint8_t*) p[1];
+    zw_.sel = (uint8_t*) p[2];
+    zw_.stage.kc = (int8_t*) p[3];
+    zw_.stage.vc = (int8_t*) p[4];
+    zw_.stage.ks = (uint16_t*) p[5];
+    zw_.stage.vs = (uint16_t*) p[6];
+    if (zlend_) {   // an answer's token's own: rows of 4 at most, the same maps and lists
+        const size_t hd = (size_t) 4 * zha_max_chunks_;
+        zwd_ = zw_;
+        zwd_.s_floats = size_t(2) << 20;
+        zwd_.S = (float*) dmalloc(zwd_.s_floats * sizeof(float), "the index");
+        zwd_.score = (float*) dmalloc((size_t) (n_head_ + n_kv_) * hd * sizeof(float), "the index");
+        zwd_.rstar = (uint8_t*) dmalloc((size_t) n_head_ * hd, "the index");
+        zwd_.sel = (uint8_t*) dmalloc((size_t) n_head_ * hd, "the index");
+        zwd_.heads = 1;
+    }
+}
+
+// The prompt buffers mapped, the expert cache giving up what the card has not free; with `keep` the staging for every
+// KV head (KEEP: a deep prompt's chunks cross the bus once a read's group), else for one.
+void Inkling2::zha_widen(bool keep) {
+    const int heads = keep && zw_.heads == n_kv_ ? n_kv_ : 1;
+    size_t want[8] = {};
+    const int nm = zmap_[7].base ? 8 : 7;   // S where it is lent
+    for (int i = 0; i < nm; ++i)
+        want[i] = i >= 3 && i < 7 && zw_.heads > 1 ? zfull_[i] / zw_.heads * heads : zfull_[i];
+    bool enough = zwide_;
+    for (int i = 0; i < nm && enough; ++i) enough = zmap_[i].mapped >= want[i];
+    if (enough) {
+        zkeep_now_ = std::max(zkeep_now_, heads);
+        return;
+    }
+    ck(cudaStreamSynchronize(cs(st_)), "the index's prompt buffers");
+    const size_t grain = pool_on_ ? pg_ : grain_;
+    const auto whole = [&](size_t x) { return (x + grain - 1) / grain * grain; };
+    size_t more = 0;
+    for (int i = 0; i < nm; ++i) more += whole(want[i]) > zmap_[i].mapped ? whole(want[i]) - zmap_[i].mapped : 0;
+    size_t free_b = 0, total_b = 0;
+    ck(cudaMemGetInfo(&free_b, &total_b), "cudaMemGetInfo");
+    if (pool_on_) free_b = vpool_bytes();
+    const size_t quarter = pool_on_ ? 0 : (size_t(std::max(reserve_mib_, 0)) << 20) / 4;
+    if (exp_ && free_b < more + quarter) {
+        const size_t had = arena_.mapped;
+        shrink_cache(more + quarter - free_b);
+        held_is_budget();
+        zcut_ += had - arena_.mapped;
+    }
+    int mapped_heads = heads;
+    try {
+        for (int i = 0; i < nm; ++i) vmm_map(zmap_[i], want[i], SIZE_MAX, "the index's prompt buffers");
+    } catch (const std::runtime_error&) {
+        if (heads == 1) throw;
+        // no VRAM for every head's staging: one head's, which an earlier prompt or the first try may have mapped
+        mapped_heads = 1;
+        for (int i = 0; i < nm; ++i)
+            vmm_map(zmap_[i], i >= 3 && i < 7 ? zfull_[i] / zw_.heads : zfull_[i], SIZE_MAX,
+                    "the index's prompt buffers");
+    }
+    zwide_ = true;
+    zkeep_now_ = mapped_heads;
+    zw_owner_ = nullptr;   // nothing staged survives the buffers' time away
+}
+
+// The prompt is read: the expert cache takes the buffers' VRAM back.
+void Inkling2::zha_narrow() {
+    if (!zwide_) return;
+    ck(cudaStreamSynchronize(cs(st_)), "the index's prompt buffers");
+    for (int i = 0; i < (zmap_[7].base ? 8 : 7); ++i) vmm_unmap(zmap_[i], 0);
+    zwide_ = false;
+    zkeep_now_ = 1;
+    zw_owner_ = nullptr;
+    if (exp_ && zcut_ > 0) grow_cache(zcut_, true);
+    zcut_ = 0;
+}
+
+
+// A full layer's call under the index: its rows' keys and values (k_, v_) into the leaves and the ring, the chunks
+// they complete summarized, the attention into att_ (before the output gate).
+void Inkling2::zha_attention(int il, int n) {
+    const Block& B = blocks_[(size_t) il];
+    ZSlot& S = zs_[(size_t) slot_of(il, pass_of(il))];
+    const int hk = n_kv_ * head_dim_, C = zha_.C;
+    ink::store_q4(k_, S.kc, S.ksc, hk, pos_, n, 0, st_);   // the leaves: 4-bit
+    ink::store_q4(v_, S.vc, S.vsc, hk, pos_, n, 0, st_);
+    {   // and the recent rows' ring in VRAM
+        const int64_t first = pos_ % zring_;
+        const int head = (int) std::min<int64_t>(n, zring_ - first);
+        store_q8(k_, S.rkc, S.rks, hk, first, head, st_);
+        store_q8(v_, S.rvc, S.rvs, hk, first, head, st_);
+        if (head < n) {
+            store_q8(k_ + (size_t) head * hk, S.rkc, S.rks, hk, 0, n - head, st_);
+            store_q8(v_ + (size_t) head * hk, S.rvc, S.rvs, hk, 0, n - head, st_);
+        }
+    }
+    ink::ZhaKv leaves, ring;
+    leaves.kc = S.kc, leaves.ks = S.ksc, leaves.vc = S.vc, leaves.vs = S.vsc;
+    leaves.q4 = 1;
+    ring.kc = S.rkc, ring.ks = S.rks, ring.vc = S.rvc, ring.vs = S.rvs;
+    leaves.row = ring.row = (long long) hk;
+    const int64_t n_ring = zring_;
+    // A jump in the sequence (a new prompt, a restored state, guesses taken back): the ring's rows before the call
+    // again from the leaves, and the summaries of the chunks before it from the leaves.
+    if (pos_ != S.zpos) {
+        const int64_t refill = std::max<int64_t>(0, pos_ - (zring_ - rows_));
+        if (refill < pos_) {   // 4-bit leaves to the Q8_0 ring
+            ink::q4_to_q8(S.kc, S.ksc, refill, S.rkc, S.rks, refill, zring_, hk, (int) (pos_ - refill), st_);
+            ink::q4_to_q8(S.vc, S.vsc, refill, S.rvc, S.rvs, refill, zring_, hk, (int) (pos_ - refill), st_);
+        }
+        S.zbuilt = std::min(S.zbuilt, (int) (pos_ / C));
+        ink::zha_cache_clear(S.zcache, n_kv_, zha_max_chunks_, st_);
+        // the read under way's end too: its start (prompt_begins()) gave the room for all of it
+        const int want = (int) (std::max<int64_t>(pos_ + n, read_end_) / C) + 1;
+        if (zgrow_ && !zread_full_ && S.zcap > zcap0_ && 4 * want <= S.zcap) {   // a short context again
+            int cap = zcap0_;
+            while (cap < want) cap *= 2;
+            zha_recap(S, std::min(cap, zha_max_chunks_));
+        }
+        zha_room(S, (int) (pos_ / C));
+        ink::zha_build(S.zrefs, leaves, (int64_t) opt_.max_context + 1, S.zbuilt, (int) (pos_ / C), C, zha_.R, n_kv_,
+                       zha_max_chunks_, S.zk, S.zv, S.zb, st_, zha_q8n(S.zcap));
+        S.zbuilt = (int) (pos_ / C);
+    }
+    const int done = (int) ((pos_ + n) / C);   // the chunks the call completes: from the ring
+    zha_room(S, done);
+    ink::zha_build(S.zrefs, ring, n_ring, S.zbuilt, done, C, zha_.R, n_kv_, zha_max_chunks_, S.zk, S.zv, S.zb, st_,
+                   zha_q8n(S.zcap));
+    S.zbuilt = std::max(S.zbuilt, done);
+    S.zpos = pos_ + n;
+    // an answer's token through the chunk cache takes its own small buffers; anything else the prompt's (a
+    // prompt's read maps them at its start: take_prompt())
+    const bool small = zlend_ && n == 1 && zha_pool_ > 0;
+    if (zlend_ && !small && !zwide_) zha_widen(false);
+    ink::ZhaWork wkp = zw_;
+    if (zlend_) wkp.heads = zkeep_now_;   // KEEP where the staging is every head's
+    const ink::ZhaWork& wk = small ? zwd_ : wkp;
+    // a prompt call that goes on from this slot's last one keeps what it staged
+    const bool keep = n >= kStageRows && zw_owner_ == &S && zw_next_ == pos_;
+    ink::zha_attend(blas_, zha_, q_, leaves, ring, n_ring, S.zk, S.zv, S.zb, S.zbuilt, zha_max_chunks_, pos_, n, n_head_,
+                    n_kv_, rr_, fp(B.rel_bias), B.extent, n_rel_, sink_, wk, att_, st_, &S.zcache, keep, S.zcap);
+    zw_owner_ = &S;
+    zw_next_ = n >= kStageRows ? pos_ + n : -1;
 }
 
 }  // namespace strata::poly

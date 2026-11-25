@@ -1,9 +1,11 @@
 // metal/src/poly/unported.cpp - the entry points of the shared strata-poly host code that have no Metal kernel yet.
 // None of them is on a Mac family's default path: llama.cpp's flash attention (which falls back to attend() and
 // attend_batch() by its own contract), Gemma 4's opt-in int8 attention caches, Qwen35's opt-in q4_0 cache and cache
-// streaming, Clover's block guesses and coreset routing, and the half-sum guard of Flint's MMQ.  A call that would
+// streaming, Clover's block guesses and coreset routing, the half-sum guard of Flint's MMQ and Inkling 2's opt-in ZHA
+// index (STRATA_INK_ZHA, which Inkling2::zha_load() turns down on Metal first).  A call that would
 // need a kernel says what is missing instead of computing something else.
 #include "fattn.hpp"
+#include "inkling2_zha.hpp"
 #include "mmq.hpp"
 #include "strata/kernels/native_mmvq.hpp"
 #include "strata/poly/kernels.hpp"
@@ -83,6 +85,23 @@ void guard_half_sums(float*, int64_t, int, int, float*, void*) { unported("half-
 void scale_rows(float*, int64_t, int, int, const int32_t*, const float*, bool, void*) {
     unported("half-sum guard (Flint)");
 }
+
+namespace ink {
+void store_q4(const float*, int8_t*, uint16_t*, int, long long, int, long long, void*) { unported("ZHA index (Inkling 2)"); }
+void q4_to_q8(const int8_t*, const uint16_t*, long long, int8_t*, uint16_t*, long long, long long, int, int, void*) {
+    unported("ZHA index (Inkling 2)");
+}
+void zha_cache_clear(ZhaCache&, int, int, void*) { unported("ZHA index (Inkling 2)"); }
+void zha_build(const float*, const ZhaKv&, long long, int, int, int, int, int, int, uint16_t*, uint16_t*, float*, void*,
+               size_t) {
+    unported("ZHA index (Inkling 2)");
+}
+void zha_attend(void*, const Zha&, const float*, const ZhaKv&, const ZhaKv&, long long, const uint16_t*, const uint16_t*,
+                const float*, int, int, long long, int, int, int, const float*, const float*, int, int, const float*,
+                const ZhaWork&, float*, void*, ZhaCache*, bool, int) {
+    unported("ZHA index (Inkling 2)");
+}
+}  // namespace ink
 
 }  // namespace strata::poly
 

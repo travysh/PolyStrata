@@ -332,6 +332,8 @@ public:
     /// The prompt's reads are done: the expert cache takes back what Options::stage_read_mib lent the staging
     /// buffer.  window() and step() do it too, if the caller has not.
     void end_read() {
+        prompt_ends();
+        read_end_ = 0;
         if (stage_lent_) narrow_stage();
         if (carry_lent_) carry_give();
         if (prompt_lends_) lend_prompt();
@@ -483,6 +485,9 @@ protected:
     /// through twice: begin_pass() is called before each.
     virtual void load_layer(int il) = 0;
     virtual void begin_pass() {}
+    /// A prompt's calls start (take_prompt()) and end (end_read()): an architecture's own prompt-only VRAM.
+    virtual void prompt_begins() {}
+    virtual void prompt_ends() {}
     /// Throws when the draft block is not one the architecture runs.
     virtual void check_draft_block() {}
     /// The weights of what guesses ahead, to VRAM.  The engine's own: the draft block's parts beside its layer.
@@ -836,6 +841,7 @@ protected:
     bool work_lent_ = false;
     void take_prompt();
     void lend_prompt();
+    int64_t read_end_ = 0;   ///< where the read or call that takes the prompt's buffers ends (prompt_begins())
     /// The scratch in two layouts (scratch_layouts()): one for a call of fewer than kStageRows tokens, which stays,
     /// and one for a prompt's batch, which is part of prompt_map_ and lent with it.  use_scratch(true) gives the
     /// buffers their places in the prompt's, use_scratch(false) in the other.  Recordings are made and replayed

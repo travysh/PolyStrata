@@ -2695,6 +2695,7 @@ bool Engine::mind_card_vram() {
 // the cache's least used experts first, and maps them again.  The products' work memory (work_map_) is lent from
 // the start, so the first prompt takes it here.
 void Engine::take_prompt() {
+    prompt_begins();
     if (!prompt_lent_ && !work_lent_) {
         if (two_scratch_ && !prompt_scratch_) use_scratch(true);
         return;
@@ -6952,6 +6953,7 @@ void Engine::trim_step_graphs(size_t keep, bool all) {
 void Engine::run(const int32_t* tokens, int n) {
     if (n < 1 || n > rows_) throw std::logic_error("eval takes 1 to max_rows() tokens");
     lock_idle_.store(false, std::memory_order_relaxed);
+    read_end_ = std::max<int64_t>(read_end_, pos_ + n);
     if (n >= kStageRows) take_prompt();
     if (pos_ + n > opt_.max_context)
         throw std::runtime_error("the context is full (" + std::to_string(opt_.max_context) + " tokens)");
@@ -7975,6 +7977,7 @@ bool Engine::read(const int32_t* tokens, int n, const Mark* marks, int n_marks,
     if (n < (n_co > 0 ? 0 : 1) || all > read_rows_)
         throw std::logic_error("read takes 1 to max_read() tokens, co-reads among them");
     lock_idle_.store(false, std::memory_order_relaxed);
+    read_end_ = pos_ + n;
     if (all >= kStageRows) take_prompt();
     for (const Image& im : images_)
         if (im.at < pos_ + n && im.at + im.n > pos_)
@@ -8307,8 +8310,11 @@ bool Engine::read_groups(const Mark* marks, int n_marks, const std::function<boo
     ck(cudaMemGetInfo(&free_b, &total_b), "cudaMemGetInfo");
     if (pool_on_) free_b = vpool_bytes();
     const size_t quarter = pool_on_ ? 0 : (size_t(std::max(reserve_mib_, 0)) << 20) / 4;
+    // what an earlier read of the prompt already holds counts too: its rows stay mapped until end_read(), and
+    // without them a later read saw no room and went a call at a time (a 1M-token prompt read in 227-call reads)
     const size_t room = (free_b > quarter ? free_b - quarter : 0) +
-                        (exp_ && arena_.mapped > kArenaPiece ? arena_.mapped - kArenaPiece : 0);
+                        (exp_ && arena_.mapped > kArenaPiece ? arena_.mapped - kArenaPiece : 0) +
+                        (carry_lent_ ? carry_map_.mapped : 0);
     int g = (int) std::min<size_t>((size_t) n_calls, room / (per * sizeof(float)));
     float* base = nullptr;
     const size_t most = (size_t) ((read_rows_ + rows_ - 1) / rows_) * per * sizeof(float);

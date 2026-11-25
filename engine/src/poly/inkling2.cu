@@ -953,6 +953,7 @@ __device__ __forceinline__ void qkv_block(const InkQkv& a, float k_norm, float v
         if (is_v) rms_head(head, a.dim, a.eps, part);
         else clip_head(head, nullptr, a.qk_thr, a.dim, 0.0f, 1.0f, p, part);
         const long long row = a.ring > 0 ? p % a.ring : p;
+        if (!(is_v ? a.vals : a.keys)) return;   // a full layer under the ZHA index keeps its keys itself
         if (KV != kKvF16) kv_store<KV>(head, is_v ? a.vals : a.keys, row, a.n_kv, a.dim, h, part);
         else if (i < a.dim)
             ((__half*) (is_v ? a.vals : a.keys))[size_t(row) * channels + size_t(h) * a.dim + i] = __float2half(head[i]);

@@ -331,6 +331,14 @@ top-20 probabilities with every expert on the CPU.
 Once a token, a card hands the next one the token's residual streams and the loop's inputs, 64.5 KB. The DSpark
 drafter (`--draft-model`) runs on one card only.
 
+## A context of 1M tokens on a small card
+
+The 8 full-attention layer runs keep 32,768 bytes a token in VRAM, so an 8 GB card runs out long before 1M tokens.
+`STRATA_INK_ZHA` (opt-in, NVIDIA) moves their keys and values to pinned RAM and reads them through a ZHA index: on an
+RTX 4060 8 GB a 1,024,338-token prompt was read at 853 tokens/s and its question answered, and at 128K the prompt
+was read 40% faster than without it. The answers change a little (a mean KL of 0.016 at 32K tokens). More in
+[INKLING_ZHA.md](../INKLING_ZHA.md).
+
 ## How does it work?
 
 A reply is a list of typed blocks: thinking, text, or a tool call with its arguments as JSON. The server turns

@@ -16816,6 +16816,152 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_INK_ZHA",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/poly/inkling2.cpp",
+     "line": 35,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/INKLING_ZHA.md:1",
+    "docs/INKLING_ZHA.md:7",
+    "docs/INKLING_ZHA.md:11",
+    "docs/INKLING_ZHA.md:22",
+    "docs/INKLING_ZHA.md:78",
+    "docs/INKLING_ZHA.md:98",
+    "docs/models/inkling.md:337"
+   ],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "poly",
+   "note": "Inkling 2 on NVIDIA from Turing on: the path of a ZHA reference file (C 64, R 4) turns on the ZHA index over the 8 full-attention runs: their keys and values in pinned RAM as 4-bit leaves, 64-key chunk summaries in VRAM, a token reading chunk 0, its last 1,024 keys and its best-scored far chunks exactly and the others through their summaries. Off unless set; the answers change (mean KL about 0.016 at 32K). One sequence on one card: refused with --batch above 1, --draft-model, --layer-split, --expert-gpu, on HIP and Metal (engine/src/poly/inkling2.cpp zha_load(), inkling2_zha.cu, docs/INKLING_ZHA.md)",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_ZHA_BUDGET",
+   "backends": [
+    "cuda"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/poly/inkling2.cpp",
+     "line": 1989,
+     "backend": "cuda",
+     "fn": "env_num"
+    }
+   ],
+   "parse": "float",
+   "default_state": null,
+   "code_default": "0.16",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/INKLING_ZHA.md:37"
+   ],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "poly",
+   "note": "With STRATA_INK_ZHA: the share of a token's far chunks it reads exactly, 0.16 unless set (engine/src/poly/inkling2.cpp zha_load(), inkling2_zha.cu, docs/INKLING_ZHA.md)",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_ZHA_MAX",
+   "backends": [
+    "cuda"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/poly/inkling2.cpp",
+     "line": 1990,
+     "backend": "cuda",
+     "fn": "env_num"
+    }
+   ],
+   "parse": "float",
+   "default_state": null,
+   "code_default": "256",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/INKLING_ZHA.md:38"
+   ],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "poly",
+   "note": "With STRATA_INK_ZHA: at most this many far chunks a token reads exactly, 256 unless set (engine/src/poly/inkling2.cpp zha_load(), inkling2_zha.cu, docs/INKLING_ZHA.md)",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_INK_ZHA_POOL",
+   "backends": [
+    "cuda"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/poly/inkling2.cpp",
+     "line": 1991,
+     "backend": "cuda",
+     "fn": "env_num"
+    }
+   ],
+   "parse": "float",
+   "default_state": null,
+   "code_default": "600",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/INKLING_ZHA.md:39"
+   ],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "poly",
+   "note": "With STRATA_INK_ZHA: an answer's chunks kept in VRAM, a KV head and a layer run, 600 unless set; 0 keeps none (every token's chunks over the bus) (engine/src/poly/inkling2.cpp zha_load(), inkling2_zha.cu, docs/INKLING_ZHA.md)",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_IO_PF_AHEAD",
    "backends": [
     "cuda-hip"
