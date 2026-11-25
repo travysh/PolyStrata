@@ -1941,8 +1941,134 @@ pipeline; 12 answers per model mean little.
 - Inkling with 2K answered "Ben" on the grid. Its thinking ended at the budget, 11 characters before the answer.
 - Cyber-Tiel with thinking off wrote its working into the answer and ran out of its 4,096 tokens on sched2a.
 
-**Not done yet: the full run.** At the trial's pace, all 108 requests take about 1.2 h per model, or about 2.5 h
-with live down. The trial's puzzles were harder than the average.
+**Full run, 1 sample of all 36 puzzles × 3 settings (2026-11-24, tag `tfull1`).**
+- Run times: Cyber-Tiel 18:07-18:54, Inkling 18:54-20:02. Live was down from 18:06.
+- Prompt hash `3b7cc2b76bb3ce8f`, unchanged since the trial.
+- Graded rows: `p22/results/tfull1-*.graded.jsonl`.
+
+| puzzles right | Cyber-Tiel off | 2k | big | Inkling off | 2k | big |
+|---|---|---|---|---|---|---|
+| logic grid | 4 | 5 | 6 | 5 | 3 | 6 |
+| scheduling | 3 | 5 | 5 | 3 | 4 | 6 |
+| shortest path | 2 | 5 | 6 | 4 | 4 | 6 |
+| dates and time zones | 0 | 5 | 5 | 3 | 6 | 6 |
+| word problems | 5 | 6 | 6 | 3 | 6 | 6 |
+| unit conversions | 4 | 6 | 5 | 5 | 5 | 6 |
+| level 1 (of 12) | 7 | 12 | 12 | 10 | 12 | 12 |
+| level 2 (of 12) | 6 | 11 | 12 | 8 | 10 | 12 |
+| level 3 (of 12) | 5 | 9 | 9 | 5 | 6 | 12 |
+| **all (of 36)** | **18** | **32** | **33** | **23** | **28** | **36** |
+| output tokens, median | 337 | 1,989 | 2,315 | 671 | 2,073 | 2,200 |
+| time per answer, median | 5 s | 24 s | 30 s | 16 s | 36 s | 37 s |
+| time for all 36 | 5 min | 14 min | 27 min | 15 min | 19 min | 33 min |
+| decode speed | 74 tok/s | 75 tok/s | 80 tok/s | 55 tok/s | 54 tok/s | 57 tok/s |
+| cut off at the limit | 2 | 1 | 0 | 5 | 0 | 0 |
+
+Every failure was read. They are the models' own errors, with one exception: word2b with thinking off (below).
+
+**What went wrong, Cyber-Tiel:**
+- Thinking off, 18 failures.
+  - All 6 date puzzles were wrong. It got the weekday or the date wrong, or counted days off by one.
+  - One flight got the right time but the wrong day. On the other it used standard time where daylight time had
+    already started: it gave 14:05 for a Los Angeles departure on the morning of the change.
+  - The rest were path, scheduling and grid answers it guessed from too little working, and `150.58` for a km/L
+    value of 15.05, a tenfold slip.
+- 2K budget, 4 failures:
+  - date2b ran to the 4,096-token limit with no answer.
+  - grid3a was wrong.
+  - path3a gave 181 for 164.
+  - sched3b gave 12, below the true minimum of 13; no schedule can do it in 12.
+- 12K budget, 3 failures:
+  - date3b made the same daylight-time slip as with thinking off.
+  - sched3b gave 14 after 13,019 tokens.
+  - unit3a gave 4350.8 for 4350.9, a rounding slip.
+
+**What went wrong, Inkling:**
+- Thinking off, 13 failures.
+  - 5 of them ran to the limit: Inkling writes its working into the reply, and the grid and scheduling puzzles
+    did not fit in 4,096 tokens.
+  - Other errors:
+    - two answers with the wrong weekday or day count;
+    - a flight one day and one hour out;
+    - `46 km` written after 7 tokens, with no working;
+    - word3b's meeting time, also given after 10 tokens;
+    - a profit of 4392.57 for 4395.77;
+    - 15.06 for 15.05.
+- 2K budget, 8 failures. Seven of them stopped at about 2,073 tokens, which is the thinking budget closing, with
+  a guess for the answer (3 grids, 2 paths, 2 schedules); the eighth, 8.45 for 8.46, is a rounding slip.
+- 12K budget: no failures.
+
+**One fault in the prompt: word2b, the sugar mix.** It asks for "the exact percent (a fraction is fine)".
+- With thinking off, both models answered with the right amount written as a share of 1, not a percent:
+  Cyber-Tiel `9/65 ≈ 13.85%`, Inkling `9/65%`. The right answer is 180/13 %, which is about 13.85%.
+- Both are counted wrong, as written. They are the only replies affected, one per model.
+- A later version should ask for a decimal percent.
+
+**What this says, from one sample:**
+- With room to think, Inkling solved all 36 puzzles, including all 12 at level 3. Cyber-Tiel solved 33 and 9 of
+  the 12 at level 3.
+- Inkling needs that room. With a 2K budget its thinking was cut off on 7 hard puzzles and it guessed, so it fell
+  to 28. Cyber-Tiel lost only 1 puzzle going from 12K to 2K: its median thinking is about 3,000 characters, against
+  Inkling's 5,000.
+- With thinking off, both drop a lot: Cyber-Tiel to 18 and Inkling to 23.
+  - Cyber-Tiel answers in a few hundred tokens and makes careless errors; it got none of the 6 dates right.
+  - Inkling works the problem out in its reply, then runs out of room on long ones.
+- Cyber-Tiel is quicker for the same setting: 74-80 tok/s against 54-57, and the whole 108 took 47 min against
+  67 min.
+- The daylight-time rules were in the prompt, and still Cyber-Tiel used standard time on the Los Angeles flight
+  both with thinking off and with 12K (it got it right with 2K).
+
+### Pass 22, images: generated pictures, thinking off and a 2K budget (2026-11-24)
+
+**The pictures.** `p22/img.py build OUT` draws 35 pictures from fixed seeds: 7 kinds, 5 of each, harder from the
+first to the fifth.
+- It runs in the PolyStrata image, because it needs Pillow, and uses Pillow's own font.
+- Each picture has one exact answer, which the program knows.
+
+| kind | 1 → 5 |
+|---|---|
+| charts | a bar's value; the second-highest bar; highest minus lowest (12 bars); the lowest month on a line; months where the blue line is above the orange (2 lines, 12 months, never closer than 8) |
+| counting | "how many green triangles", 8 to 36 shapes in up to 5 colors and 5 shapes, none overlapping |
+| reading | a code of 6, 8 and 10 characters, then one line out of 3 and out of 5; no look-alike characters (0/O, 1/I/L, 2/Z, 5/S, 6/G, 8/B) |
+| tables | a cell (4×3, 6×4); the largest in a column (8×5); a row's sum (10×6); values over 500 in a column (12×6) |
+| code with one bug | which line of a Python function is wrong (7 to 16 lines with line numbers); each bug is checked by running it: the right function passes its tests, the shown one fails |
+| a settings window | the greyed-out button (4, 6); ticked boxes (6); switches that are on (8); a text field's value |
+| grid of shapes | what is left of, above or below a shape (3×3, 5×5); a shape's row and column (4×4); how many other shapes share its color |
+
+**Asking and grading.**
+- Each picture and question go in one OpenAI `image_url` message: 70 requests per model.
+- `off`: thinking off, up to 4,096 tokens. `2k`: a 2,048-token thinking budget, up to 4,096 tokens.
+- Sampling and grading are the same as for the puzzles: `think.py grade`, with answer kinds for codes, label
+  lists, "color shape" and "row, column".
+- Prompt hash: `cat img-tasks/*/task.json | sha256` = `d5cdf3fabeef904e`.
+
+**What the image limit means for each model.** Both configs have the same `"vision": {"max_tokens": 300}`, which
+the image reader gets as `--max-tokens`. Each model's own reader decides how many tokens a picture takes.
+- Cyber-Tiel: the trial's prompts were 507 to 534 tokens. The chart question without its picture is 229 tokens
+  (measured on live). So a picture takes about 280 to 300 tokens, whatever its shape.
+- Inkling: the prompts were 265 to 340 tokens in total, so its pictures take fewer, and fewer still for square
+  ones. The 540×540 grid made a prompt of 265 tokens.
+- So at this same setting Inkling sees each picture in less detail. I haven't measured Inkling's prompt without a
+  picture yet.
+
+**Trial run (5 pictures × 2 settings: chart5, read5, ui3, space3, bug5).**
+- It ran right after the thinking run: Cyber-Tiel 20:03-20:05, Inkling 20:05-20:08. Live came back at 20:08.
+- Every reply had an `ANSWER:` line, and the grader read all 20 correctly.
+
+| | Cyber-Tiel off / 2k | Inkling off / 2k |
+|---|---|---|
+| chart5 (two lines) | P P | . P |
+| read5 (line C of 5) | P P | P P |
+| ui3 (ticked boxes) | P P | P P |
+| space3 (row and column) | P P | P P |
+| bug5 (16-line merge) | P P | . . |
+
+- Inkling with thinking off answered in 6 to 16 tokens; it gave 7 for 8 on the chart and line 7 for line 15.
+- With 2K, Inkling's thinking ran to the budget on bug5 and it answered line 14. Cyber-Tiel found line 15 in 283
+  tokens.
+
+**Not done yet: the full run.** At the trial's pace, all 70 requests take about 15 minutes per model, or about 40
+minutes with live down.
 
 ## Shared-load changes (2026-10-17)
 

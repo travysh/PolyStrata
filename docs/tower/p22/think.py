@@ -608,6 +608,19 @@ def to_frac(s):
 def right(kind, want, got):
     if got is None:
         return False
+    if kind == "code":                                   # img.py: a code or a field's text, spaces and case ignored
+        norm = lambda x: re.sub(r"\s", "", x).strip(".\"'").upper()
+        return norm(got) == norm(want) or any(t.upper() == want.upper() for t in re.findall(r"[\w./:-]+", got))
+    if kind == "set":                                    # img.py: labels in any order, "|" between them in want
+        items = {x.strip(" .\"'").casefold() for x in re.split(r",|;|\band\b", got) if x.strip(" .\"'")}
+        return items == {w.casefold() for w in want.split("|")}
+    if kind == "pair":                                   # img.py: "color shape", nothing else of either kind
+        import img
+        words = re.findall(r"[a-z]+", got.casefold())
+        return ({w for w in words if w in img.COLORS} == {want.split()[0]} and
+                {w.rstrip("s") for w in words if w.rstrip("s") in img.SHAPES} == {want.split()[1]})
+    if kind == "rc":                                     # img.py: row, column
+        return re.findall(r"\d+", got)[:2] == want.split(",")
     if kind == "text":
         return got.strip(" .").casefold() == want.casefold()
     if kind in ("date", "datetime", "clock", "datewd"):
@@ -653,7 +666,15 @@ def selftest():
                                  ("frac", "-1234.5", "-$1,234.50", True), ("dec", "12.35", "12.35 km/L", True),
                                  ("dec", "12.35", "12.3", False), ("datetime", "2027-03-14 07:05", "2027-03-14 7:05",
                                                                     True), ("text", "Ava", "Ava.", True),
-                                 ("int", "41", "about 41 hours", True), ("datewd", "2030-01-01 Tuesday",
+                                 ("int", "41", "about 41 hours", True),
+                                 ("code", "KX4R9T", "kx4r 9t", True), ("code", "KX4R9T", "KX4R9", False),
+                                 ("code", "nova-27.lan", "The host is nova-27.lan", True),
+                                 ("set", "Sound|Backups", "Backups, Sound", True), ("set", "Sound|Backups", "Sound",
+                                                                                    False),
+                                 ("pair", "red circle", "a red circle", True), ("pair", "red circle", "red square",
+                                                                                False),
+                                 ("pair", "red circle", "red or blue circle", False), ("rc", "2,3", "row 2, column 3",
+                                                                                       True), ("datewd", "2030-01-01 Tuesday",
                                                                          "2030-01-01, Tuesday", True)):
         if right(kind, want, got.replace("$", "")) != exp:
             print("grader BAD", kind, want, got)
@@ -693,14 +714,17 @@ def main():
     if cmd == "score":
         runs = [[json.loads(l) for l in Path(p).read_text().splitlines()] for p in sys.argv[2:]]
         names = [rows[0]["model"] for rows in runs]
-        print("| | " + " | ".join(f"{n} {m}" for n in names for m in MODES) + " |")
-        print("|---|" + "---|" * (len(names) * len(MODES)))
-        groups = [(f, lambda r, f=f: r["family"] == f) for f in FAMILIES] + \
-                 [(f"level {l}", lambda r, l=l: r["level"] == l) for l in (1, 2, 3)] + [("all", lambda r: True)]
+        every = [r for rows in runs for r in rows]
+        modes = list(dict.fromkeys(r["mode"] for r in every))
+        print("| | " + " | ".join(f"{n} {m}" for n in names for m in modes) + " |")
+        print("|---|" + "---|" * (len(names) * len(modes)))
+        groups = [(f, lambda r, f=f: r["family"] == f) for f in dict.fromkeys(r["family"] for r in every)] + \
+                 [(f"level {l}", lambda r, l=l: r["level"] == l) for l in sorted({r["level"] for r in every})] + \
+                 [("all", lambda r: True)]
         for label, pick in groups:
             cells = []
             for rows in runs:
-                for m in MODES:
+                for m in modes:
                     mine = [r for r in rows if r["mode"] == m and pick(r)]
                     n = len({(r["puzzle"]) for r in mine}) or 1
                     cells.append(f"{sum(r['pass'] for r in mine) / max(1, len(mine)) * n:.1f} of {n}"
@@ -714,7 +738,7 @@ def main():
                           ("cut off at the limit", lambda xs: sum(r.get("finish") == "length" for r in xs)),
                           ("no ANSWER line", lambda xs: sum(r["got"] is None for r in xs))):
             cells = [str(fn([r for r in rows if r["mode"] == m]) if any(r["mode"] == m for r in rows) else "-")
-                     for rows in runs for m in MODES]
+                     for rows in runs for m in modes]
             print(f"| {label} | " + " | ".join(cells) + " |")
         return
     sys.exit(__doc__)
