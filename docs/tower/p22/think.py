@@ -704,8 +704,12 @@ def main():
             for line in Path(runs).read_text().splitlines():
                 r = json.loads(line)
                 t = json.loads((tasks / r["id"] / "task.json").read_text())
-                got = final_answer(r["content"])
-                ok = right(t["answer_kind"], t["answer"], got)
+                if t["answer_kind"] == "json":            # long.py: the whole reply is the answer
+                    import long
+                    got, ok = r["content"][:300], long.json_right(json.loads(t["answer"]), r["content"])
+                else:
+                    got = final_answer(r["content"])
+                    ok = right(t["answer_kind"], t["answer"], got)
                 out.append({k: v for k, v in r.items() if k not in ("content", "reasoning")} |
                            {"puzzle": t["puzzle"], "family": t["family"], "level": t["level"], "mode": t["mode"],
                             "want": t["answer"], "got": got, "pass": ok, "think_chars": len(r["reasoning"])})

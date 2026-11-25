@@ -2128,6 +2128,84 @@ The test configs are copies in `/data/config/p22-*`. Neither model's config was 
 - The trial's 7 of 10 for Inkling came from 2 of these 5 pictures with thinking off and one 2K run that hit its
   budget. Over all 35 pictures that run (bug5, 2K) was right.
 
+### Pass 22, long context and stability (2026-11-24)
+
+**The tasks.** `p22/long.py` builds them on the Mac from the repository.
+- **Long context.** The document is PolyStrata's own Python: `terminal/serve` and `terminal/strata_control` at
+  `f6bc1acf1`, the commit the test image was built from, with tests left out.
+  - Files are picked at random until the document reaches a size: about 50K, 100K or 150K characters. A fourth
+    size, about 400K, is for Cyber-Tiel only, because Inkling's config stops at 65,536 tokens.
+  - Notes are put in as comments at set depths:
+    - 18 lines saying which depot a unit is kept at;
+    - 6 saying which town each depot is in;
+    - 4 to 6 changes to each of two queues' retry limits.
+  - Six questions follow the code. Each is asked on its own, with the code first so the engine can reuse it:
+    - q1: one note 10-30% in;
+    - q2: one note 70-95% in;
+    - q3: two notes, the town of a unit's depot;
+    - q4: how many units are at one depot (3 to 6 notes);
+    - q5: the last of one queue's changes, with the other queue's changes in between;
+    - q6: the value of a real constant in the code, the only assignment of that name.
+- **JSON.** 10 short texts about a person, written as a JSON object of 5 fields:
+  - `free`: with only the instruction, "Reply with only the JSON object";
+  - `schema`: with a `response_format` JSON schema, which the server's grammar enforces.
+  - The texts have traps: a town the person moved away from, and a brother who lives elsewhere.
+- **Settings.** All tasks use a 2,048-token thinking budget, up to 4,096 tokens, with the same sampling as the
+  rest of Pass 22.
+- **Checks.** `python3 long.py selftest` finds every answer again in the finished document. Notes are read back
+  with a pattern, and the constant with Python's `ast`, file by file. All 4 sizes pass.
+  - The JSON grader takes the whole reply, with or without a code fence, and needs every field equal and of the
+    right type.
+- Prompt hash `5484d97ec0927b99`.
+
+**Run (tag `lfull1`).** Cyber-Tiel ran 21:17-21:27 and Inkling 21:27-21:42; live came back at 21:42.
+
+| | Cyber-Tiel | Inkling |
+|---|---|---|
+| prompt, 50K / 100K / 150K characters | 14,781 / 26,039 / 39,044 tokens | 17,377 / 32,560 / 49,002 tokens |
+| right at 50K (of 6) | 5 | 5 |
+| right at 100K | 6 | 6 |
+| right at 150K | 6 | 6 |
+| right at 400K (99,933 tokens) | 4 | not asked: turned away with 400, as expected |
+| first question at each size, s (reads the code) | 10 / 16 / 20 / 52 | 38 / 96 / 73 / - |
+| later questions, median s | 8 | 26 |
+| JSON, `free` / `schema` (of 10) | 10 / 10 | 10 / 10 |
+| `free` replies that are the bare object (no code fence) | 7 | 10 |
+
+The misses, all read:
+- At 50K, both miscounted the units at Teller (q4): Cyber-Tiel said 5 and Inkling 7, for 6.
+- At 400K, Cyber-Tiel:
+  - counted 3 units for 4 (q4);
+  - gave the other queue's last change, 39, for 9 (q5).
+- Every note question at 100K and 150K was right on both, and every constant.
+- Inkling's thinking ran to the 2,048 budget on 7 of these questions, mostly q4 and q5, and still answered all
+  but one of them right.
+
+What this says, from one sample:
+- Up to 49,000 tokens, both find single notes, chains of two and constants anywhere in the code. Counting notes
+  spread through the code (q4) is the weak spot for both.
+- Inkling's tokenizer makes the same code about 18-25% more tokens: 49,002 against 39,044 at 150K characters.
+  Its 65,536-token limit therefore holds about 200K characters of this code.
+- Inkling reads long prompts about 3 times slower, as in Pass 21.
+- Cyber-Tiel still answers most questions right at 100,000 tokens, but made its two worst mistakes there.
+- With JSON, both got all 20 right with and without the schema. Cyber-Tiel put 3 of its 10 `free` answers in a
+  code fence, which a strict parser would refuse.
+
+**Stability, every reply in Pass 22.** `python3 long.py loops RUNS...` counts:
+- loops: the same line of 20 or more characters 4 times in a row, or an ending that repeats 4 times;
+- replies cut off at the token limit;
+- failed requests.
+
+| | coding (37) | puzzles (108) | pictures (70) | long + JSON (44) |
+|---|---|---|---|---|
+| Cyber-Tiel: loops / cut off / failed | 0 / 1 / 0 | 0 / 3 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| Inkling: loops / cut off / failed | 0 / 2 / 0 | 0 / 5 / 0 | 0 / 0 / 0 | 0 / 0 / 6 (the 400K prompts, turned away by design) |
+
+- I read the last part of each reply that hit the limit. All were still working, not stuck: some were mid-proof,
+  some still searching a schedule.
+- Cyber-Tiel's cut-off coding reply ended "Let me read", reaching for a tool it wasn't given.
+- The engine ran 259 requests per model across the four sections with no error, and loaded 7 times.
+
 ## Shared-load changes (2026-10-17)
 
 With Plex, Deluge and Duplicati running again, the GGUF (22.7 GB) has to stay cached next to them, and about 22.5 GB
