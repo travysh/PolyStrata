@@ -1897,16 +1897,27 @@ void Inkling2::load_extra(const uint8_t* src, int64_t pos) {
 }
 
 // The full slots' rows of the whole context, keys then values a slot.
+// With the index, a full slot's rows are its leaves (pinned RAM): a parked conversation keeps them, as it keeps the
+// card's rows without the index, since the leaves are by position and the next conversation writes over them.
 size_t Inkling2::card_row_bytes() const {
     size_t n = 0;
-    for (const Slot& s : slots_) n += blocks_[(size_t) s.il].swa || zha_on_ ? 0 : 1;   // the index's: in RAM
-    return n * 2 * kv_row();
+    for (const Slot& s : slots_) n += blocks_[(size_t) s.il].swa ? 0 : 1;
+    return n * (zha_on_ ? zha_leaf_row() : 2 * kv_row());
 }
 
 void Inkling2::save_card_rows(int64_t first, int64_t n, uint8_t* dst) {
     if (first < 0 || n < 0 || first + n > opt_.max_context)
         throw std::logic_error("save_rows: the rows are outside the context");
     ck(cudaStreamSynchronize(cs(st_)), "save rows");
+    if (zha_on_) {   // the leaves, a slot's key codes, key scales, value codes, value scales (zha_rows())
+        for (ZSlot& z : zs_)
+            for (auto [p, b] : zha_rows(z)) {
+                if (!z.kc) break;
+                std::memcpy(dst, p + (size_t) first * b, (size_t) n * b);
+                dst += (size_t) n * b;
+            }
+        return;
+    }
     const size_t row = kv_row();
     for (const Slot& s : slots_) {
         if (blocks_[(size_t) s.il].swa || !s.keys || n == 0) continue;
@@ -1923,8 +1934,18 @@ void Inkling2::load_card_rows(const uint8_t* src, int64_t from, int64_t count, i
     if (from < 0 || first < from || n < 0 || first + n > from + count || first + n > opt_.max_context)
         throw std::logic_error("load_rows: the rows are outside what was saved");
     cover(first + n);
-    for (ZSlot& z : zs_) z.zpos = -1;   // the index's ring and summaries again from its leaves
     ck(cudaStreamSynchronize(cs(st_)), "load rows");
+    const uint8_t* at = src;   // the slots one after the other, as save_card_rows() wrote them
+    for (ZSlot& z : zs_) {   // the index's ring and summaries again from its leaves, the chunks from `first` on
+        z.zpos = -1;
+        z.zbuilt = std::min(z.zbuilt, (int) (first / zha_.C));
+        if (!z.kc) continue;
+        for (auto [p, b] : zha_rows(z)) {
+            std::memcpy(p + (size_t) first * b, at + (size_t) (first - from) * b, (size_t) n * b);
+            at += (size_t) count * b;
+        }
+    }
+    if (zha_on_) return;
     const size_t row = kv_row();
     for (const Slot& s : slots_) {
         if (blocks_[(size_t) s.il].swa || !s.keys || n == 0) continue;

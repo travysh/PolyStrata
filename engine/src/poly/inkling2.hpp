@@ -18,6 +18,7 @@
 #include "inkling2_kernels.hpp"
 #include "inkling2_zha.hpp"
 
+#include <array>
 #include <functional>
 #include <utility>
 #include <vector>
@@ -270,6 +271,13 @@ private:
     const void* zw_owner_ = nullptr;
     int64_t zw_next_ = -1;
     bool zha_full(const Block& B) const { return zha_on_ && !B.swa; }
+    /// a position's leaf bytes in one slot, keys and values: 4-bit codes and fp16 scales a 32 values (1,152 B)
+    size_t zha_leaf_row() const { return 2 * ((size_t) n_kv_ * head_dim_ / 2 + (size_t) n_kv_ * head_dim_ / 32 * sizeof(uint16_t)); }
+    /// a slot's leaf arrays with their bytes a position, in the order a parked conversation keeps them
+    std::array<std::pair<uint8_t*, size_t>, 4> zha_rows(ZSlot& z) const {
+        const size_t c = (size_t) n_kv_ * head_dim_ / 2, sc = (size_t) n_kv_ * head_dim_ / 32 * sizeof(uint16_t);
+        return {{{(uint8_t*) z.kc, c}, {(uint8_t*) z.ksc, sc}, {(uint8_t*) z.vc, c}, {(uint8_t*) z.vsc, sc}}};
+    }
     size_t zha_q8n(int cap) const {
         return ink::zha_q8n_make((size_t) n_kv_ * cap * zha_.R, cap, true);   // 4-bit summaries
     }
