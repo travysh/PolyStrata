@@ -2204,7 +2204,8 @@ What this says, from one sample:
 - I read the last part of each reply that hit the limit. All were still working, not stuck: some were mid-proof,
   some still searching a schedule.
 - Cyber-Tiel's cut-off coding reply ended "Let me read", reaching for a tool it wasn't given.
-- The engine ran 259 requests per model across the four sections with no error, and loaded 7 times.
+- Across Pass 22 each model answered every request it was sent with no error: 259 per model in the four full
+  runs, plus the trials and Inkling's two extra image rounds. Cyber-Tiel loaded 7 times and Inkling 9.
 
 ## Shared-load changes (2026-10-17)
 
