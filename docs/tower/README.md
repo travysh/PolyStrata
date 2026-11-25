@@ -2044,12 +2044,21 @@ first to the fifth.
 
 **What the image limit means for each model.** Both configs have the same `"vision": {"max_tokens": 300}`, which
 the image reader gets as `--max-tokens`. Each model's own reader decides how many tokens a picture takes.
-- Cyber-Tiel: the trial's prompts were 507 to 534 tokens. The chart question without its picture is 229 tokens
-  (measured on live). So a picture takes about 280 to 300 tokens, whatever its shape.
-- Inkling: the prompts were 265 to 340 tokens in total, so its pictures take fewer, and fewer still for square
-  ones. The 540×540 grid made a prompt of 265 tokens.
-- So at this same setting Inkling sees each picture in less detail. I haven't measured Inkling's prompt without a
-  picture yet.
+- Measured with the same questions sent without their picture (`PROBE=` in `model.sh`):
+  - the chart question is 229 tokens for Cyber-Tiel and 54 for Inkling;
+  - the grid question is 242 and 66.
+- So a picture takes:
+
+| picture | Cyber-Tiel | Inkling |
+|---|---|---|
+| 800×560 (charts, counting, reading, the window) | about 280 | about 280 |
+| 540×540 (grid of shapes) | about 290 | about 200 |
+| 800×260 (smallest table) | about 200 | about 140 |
+
+- Inkling's reader doesn't reach 300 on any of these pictures, so the limit doesn't bind it. Raising it to 1,024
+  left every Inkling prompt the same size (below).
+- An earlier version of this note said Inkling sees every picture in less detail. That was wrong: only the square
+  and short pictures get fewer tokens.
 
 **Trial run (5 pictures × 2 settings: chart5, read5, ui3, space3, bug5).**
 - It ran right after the thinking run: Cyber-Tiel 20:03-20:05, Inkling 20:05-20:08. Live came back at 20:08.
@@ -2067,8 +2076,57 @@ the image reader gets as `--max-tokens`. Each model's own reader decides how man
 - With 2K, Inkling's thinking ran to the budget on bug5 and it answered line 14. Cyber-Tiel found line 15 in 283
   tokens.
 
-**Not done yet: the full run.** At the trial's pace, all 70 requests take about 15 minutes per model, or about 40
-minutes with live down.
+**All 35 pictures, and three Inkling settings (tag `ivar1`, 2026-11-24 20:29-21:02).** `p22/inkvar.sh` ran four
+rounds, each with 1 sample of all 35 pictures × 2 settings:
+1. Cyber-Tiel with its config.
+2. Inkling with setup's config.
+3. Inkling with a picture limit of 1,024 (`configs/p22-ink-v1024.json`).
+4. Inkling with that limit and without the three small-card settings (`configs/p22-ink-acc1024.json`, which is
+   Pass 21's `acc.json` with the limit raised).
+
+The test configs are copies in `/data/config/p22-*`. Neither model's config was changed.
+
+| pictures right, of 35 | Cyber-Tiel | Inkling, setup's | Inkling, limit 1,024 | Inkling, 1,024, no small-card settings |
+|---|---|---|---|---|
+| thinking off | 31 | 27 | 27 | 27 |
+| 2K budget | 33 | **34** | **34** | **34** |
+| output tokens, median (off / 2k) | 30 / 123 | 6 / 163 | 6 / 166 | 6 / 190 |
+| time for all 70 | 5.8 min | 7.7 min | 7.0 min | 8.8 min |
+
+| by kind, right of 5: off / 2k | Cyber-Tiel | Inkling (all three settings) |
+|---|---|---|
+| charts | 5 / 5 | 4 / 5 |
+| counting | 3 / 5 | 2 / 5 |
+| reading | 4 / 4 | 5 / 5 |
+| tables | 5 / 5 | 3 / 5 |
+| code with a bug | 4 / 4 | 3 / 4 |
+| settings window | 5 / 5 | 5 / 5 |
+| grid of shapes | 5 / 5 | 5 / 5 |
+
+**Every failure, read:**
+- Both models, both settings: `bug3` (the vowel counter), which both answered as line 9 for line 8.
+- Cyber-Tiel: read3 copied `HRWYYMMHVC` as `HRWYYMHVC` (one M short) in both settings. With thinking off it also
+  missed counting 2 and 3, by one each.
+- Inkling with thinking off, the same 7 misses in all three settings:
+  - charts: 7 months for 8;
+  - counting: three counts one too high or low;
+  - tables: a row sum of 2,444 (2,697 without the small-card settings) for 3,247, and 11 values over 500 for 8;
+  - the merge bug: line 9, 14 or 10 for 15.
+  - It answered each in about 6 tokens, with no working.
+
+**What this says:**
+- With thinking on, Inkling reads these pictures at least as well as Cyber-Tiel: 34 against 33. Inkling thinks on
+  a plain request with no thinking setting, which is the default, so this is what it does out of the box.
+- With thinking off, Inkling falls to 27 and Cyber-Tiel to 31. Inkling's misses there are counting and arithmetic
+  done with no working. It gets the same pictures right when it thinks, so seeing them is not the problem.
+- Neither setting helped:
+  - A picture limit of 1,024 changed nothing: Inkling's reader never reached 300 here.
+  - Turning the small-card settings off changed no score and was 14% slower.
+- So the best setting for Inkling on images is the one it already has, with thinking on.
+- Not tried: `"min_tokens"`, which scales a picture up so it takes more tokens. These failures aren't about
+  detail, so it would need harder pictures to show anything.
+- The trial's 7 of 10 for Inkling came from 2 of these 5 pictures with thinking off and one 2K run that hit its
+  budget. Over all 35 pictures that run (bug5, 2K) was right.
 
 ## Shared-load changes (2026-10-17)
 

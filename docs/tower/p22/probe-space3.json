@@ -1,0 +1,1 @@
+{"model": "strata", "messages": [{"role": "user", "content": "In which row and column is the orange star? Count rows from the top and columns from the left, starting at 1.\n\nLook at the picture, then end your reply with one last line of the form\nANSWER: row R, column C"}], "max_tokens": 1, "chat_template_kwargs": {"enable_thinking": true}}

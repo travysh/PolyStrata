@@ -1,0 +1,1 @@
+{"model": "strata", "messages": [{"role": "user", "content": "In how many months is North (blue) higher than South (orange)?\n\nLook at the picture, then end your reply with one last line of the form\nANSWER: a whole number"}], "max_tokens": 1, "chat_template_kwargs": {"enable_thinking": true}}
