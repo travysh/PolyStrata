@@ -2207,6 +2207,166 @@ What this says, from one sample:
 - Across Pass 22 each model answered every request it was sent with no error: 259 per model in the four full
   runs, plus the trials and Inkling's two extra image rounds. Cyber-Tiel loaded 7 times and Inkling 9.
 
+## Pass 23: more context for Inkling 2 Mini (2026-11-25)
+
+**Why 64K.** Inkling's config stops at 65,536 tokens because of the card, not RAM:
+- 8 of its 48 layer runs look at the whole context and keep 32,768 bytes a token on the card (17,408 with
+  `--kv q8_0`). At 128K that is 4 GiB (2.1 GiB in Q8_0), at 1M 32 GiB.
+- The engine can keep a cache in host RAM (`--kv-resident`) only for qwen35moe, so the RAM the newer engine freed
+  does not help Inkling.
+- The cache grows on the card as a conversation grows, taking VRAM from the expert cache. So a config of 256K or
+  512K loads with the same experts on the card as 64K (checked: 1,126 and 1,124 of 3,072), and runs out of room only
+  when a conversation gets long.
+
+**What fixes it.** Open upstream PR #336 (`STRATA_INK_ZHA`, opt-in):
+- It moves those 8 runs' keys and values to pinned RAM as 4-bit leaves, 9,216 bytes a token.
+- The card keeps a summary of every 64 keys (592 bytes a token) and the last 1,024 keys.
+- A token reads exactly:
+  - chunk 0;
+  - its last 1,024 keys;
+  - the 16% of far chunks whose summaries score best.
+  The rest it reads through the summaries, so the answers move a little.
+- It merged cleanly onto `tower-next` (f6bc1acf1): branch `tower-ctx`, image `polystrata:ctx-a583121c`, built in 6
+  minutes with the same Dockerfile.
+
+The other open PRs about Inkling were read for this question:
+- #300, #224, #299 and #271 each measured 0.5-3% or worse on long prompts.
+- #320 (the prompt batch picked from free VRAM) conflicts with #336, because both size the prompt buffers and #336
+  sizes its ring from a fixed `--prompt-batch`. A fixed batch was tested instead (below).
+
+**Setup.**
+- Configs in `/data/config`, copies of `strata-inkling2-mini.json` (live's, untouched) with `--max-context` changed:
+  - `p23-ink-zha-1m.json`: the config's `"env"` sets `STRATA_INK_ZHA=/opt/strata/terminal/data/zha/inkling-2-mini-refs-c64-r4.bin`;
+  - `p23-ink-zha-1m-pb2048.json` and `-pb4096.json`: the same with `--prompt-batch`;
+  - `p23-ink-zha-512k-pb2048.json`;
+  - `p23-ink-q8-128k.json`: no index, `--kv q8_0`, the control.
+- Tasks: `p23/ctx.py`, Pass 22's long-context questions (`p22/long.py`) at four more sizes. Files that hold a
+  planted name (Swift, Wren, ...) are left out at these sizes. The sizes are 400K, 750K, 1.5M and 3M characters of
+  PolyStrata's Python: 127,956, 249,741, 476,742 and 934,351 Inkling tokens.
+  - q1, q2: one note early or late;
+  - q3: two notes;
+  - q4: a count of notes;
+  - q5: the last of a queue's changes;
+  - q6: a constant in the code.
+  Thinking on, 2,048-token budget, one sample.
+- Runs: `p23/run.sh LABEL CONFIG [IDS]` (through `p22/model.sh`, port 5003, live stopped and started again after)
+  and `p23/chain*.sh`.
+
+**The ladder: index on, 1M context, default prompt batch (1,024).** 1,028 of 3,072 experts on the card at load (4.3
+GiB), against 1,126 without the index.
+
+| Level | Prompt | Read | First question | Written after | Right |
+|---|---|---|---|---|---|
+| 5 | 127,956 tokens | 828 tok/s | 2.6 min | 43.8 tok/s | 5 of 6 |
+| 6 | 249,741 | 800 | 5.2 min | 39.4 | 4 |
+| 7 | 476,742 | 763 | 10.4 min | 39.2 | 5 |
+| 8 | 934,351 | 702 | 22.2 min | 38.5 | 3 |
+
+- Every later question reused the prompt (126,976 to 933,888 tokens) and answered in 8-62 s.
+- The misses:
+  - q4 (the count) at 250K, 477K and 934K;
+  - q5 (the last change) at 128K, 250K and 934K;
+  - q3 (two notes) at 934K.
+  Pass 22 found q4 the weak spot for both models already at 50K, and Cyber-Tiel missed q4 and q5 at 100K.
+- VRAM peaked at 7,741 MiB. Pinned RAM: loading the 1M config took 9.4 GB more than live's (the leaves are pinned
+  for the whole context at load). At least 16.9 GB of RAM stayed available through the 934K level.
+
+**The control: no index, `--kv q8_0`, 128K.** Same image, same 128K level:
+- read at 695 tok/s and wrote 30.0-31.2 tok/s;
+- right on 4 of 6, missing q4 (said 4 for 5) and q5 (20 for 3).
+
+So at 128K the index read 19% faster and wrote 45% faster than full attention. It got as many questions right or
+more: 5 against 4, one sample.
+
+**Prompt batch.** 128K level, index on:
+
+| `--prompt-batch` | Experts on the card at load | Read | Written after | q1, q2 |
+|---|---|---|---|---|
+| 1,024 (default) | 1,028 | 828 tok/s | 43.8 tok/s | right |
+| 2,048 | 852 | 986 | 44.1 | right |
+| 4,096 | 488 | 465 | 43.0 | right |
+
+**Short prompts.** Three prompts of 36-50 tokens, thinking off, up to 512 tokens written, on the fixed image. The
+first request after a load is slow in every config.
+
+| Config | 1st: read, written | 2nd | 3rd |
+|---|---|---|---|
+| live's (64K, no index) | 15.6 s, 42.5 tok/s | 0.9 s, 50.3 tok/s | 470 tokens in 10.2 s (log cut short) |
+| index, 1M, batch 2,048 | 18.9 s, 32.3 | 1.8 s, 41.6 | 2.0 s, 42.5 |
+| index, 512K, batch 2,048 | 18.6 s, 32.4 | 1.8 s, 41.9 | 1.8 s, 43.0 |
+| index, 1M, batch 1,024 | 19.8 s, 28.7 | 1.9 s, 42.1 | 2.3 s, 41.6 |
+
+With the index a short chat writes about 15% slower (42 against 46-50 tok/s), and a short prompt takes about a
+second longer to read. The read maps the index's prompt buffers at their full size, sized for `--max-context`, and
+takes the VRAM from the expert cache. After the read it gives the VRAM back.
+
+**A bug in #336, fixed on `tower-ctx`.**
+- **The bug.** With the index on, a parked conversation kept none of its full layers' rows (`card_row_bytes()` was 0
+  for them). The leaves are stored by position, so the next conversation writes over them. Bringing the first
+  conversation back rebuilt its ring from the other conversation's leaves, and kept the other conversation's chunk
+  summaries.
+- **The test.** `p23/ctx.py swap`: two different ~128K-token texts, asked A, B, A, A, B. On image `ctx-a583121c`
+  (#336 as it is):
+  - A's two later questions were wrong. The model quoted notes that are only in text B ("unit LINNET-52 is kept at
+    depot Mirel"), said A's unit "is not stated in the provided files", and named the wrong town.
+  - The engine reported no error.
+- **The fix.** Commit `e20f5264` on `tower-ctx`:
+  - a parked conversation keeps the leaves (9,216 bytes a token, less than the 32,768 the card's rows take without
+    the index);
+  - bringing it back writes the leaves back and rebuilds the summaries from the first row it loads.
+  - A first version (13bf34f6) read every slot's leaves from the first slot's place. It made the answers nonsense
+    (the model looked for an image in the prompt) and was replaced.
+- **With the fix.** All 5 answers were right.
+  - A 128K conversation parks in 0.9-1.3 s as 2.2 GB (1.0 GB before).
+  - Coming back to it costs 11-16 s for the summaries' rebuild, against 3.5 s when nothing is rebuilt.
+
+**The ladder again: the fixed image (`ctx-e20f5264`), 1M, `--prompt-batch 2048`.** 850 experts on the card at load.
+
+| Level | Read | First question | Written after | Right |
+|---|---|---|---|---|
+| 5 (127,956 tokens) | 993 tok/s | 2.1 min | 44.0 tok/s | 5 of 6 |
+| 6 (249,741) | 782 | 5.3 min | 41.9 | 4 |
+| 7 (476,742) | 744 | 10.7 min | 38.6 | 5 |
+| 8 (934,351) | 676 | 23.0 min | 33.4 | 3 |
+
+- The same questions were missed as in the first ladder, except at 128K: this time q4 was wrong (said 2 for 5) and
+  q5 right.
+- Batch 2,048 reads faster only at 128K (993 against 828 tok/s). At 250K and longer it reads 2-4% slower than
+  1,024, and it keeps 178 fewer experts on the card.
+- After the first read at 128K, the first follow-up question re-read 21,459 tokens (26 s). With 1,024 the follow-up
+  reused 126,976 tokens, so that difference is probably the checkpoint spacing.
+- At 477K (level 7), in both ladders, q1's reply had part of the thinking in the answer, with a raw `<|end_message|>`
+  between them. The final `ANSWER:` line was right both times. That document holds PolyStrata's own Inkling reply
+  parser, whose code has the template's tags in its strings. The model quoted that code while it thought, and the
+  server's split between thinking and answer went wrong. This comes from the test text, not from the index.
+
+**What this says.**
+- With #336 and the fix, Inkling 2 Mini reads and answers about 934,000 tokens on the RTX 3070. Context costs about
+  9 KB of pinned RAM a token, not VRAM.
+- It finds single notes and constants at every size. Two-note chains hold up to 477K. Counting notes and the last of
+  several changes were already weak at 50K and stay weak.
+- Up to 477K it gets as many right as at 128K. At 934K it gets 3 of 6.
+- On long prompts the index is faster than full attention:
+  - at 128K, 828 against 695 tok/s read and 44 against 30 tok/s written;
+  - written speed stays at 38-44 tok/s up to 934K tokens.
+- What it costs:
+  - about 15% of the writing speed on short chats;
+  - a second more on a short prompt's read;
+  - pinned RAM for the whole `--max-context` at load: 9.4 GB measured at 1M; at 512K it should be about 4.5 GiB (9,216 bytes × 524,288, not measured);
+  - 11-16 s when an older parked conversation comes back;
+  - #336 itself is an open PR, and had the bug above.
+- The default prompt batch (1,024) is the better setting.
+
+**Not done.**
+- Nothing changed on live: config, template and image are untouched, and `polystrata:tower` still runs Cyber-Tiel.
+- `tower-ctx` (`tower-next` + #336 + the fix) is not merged into `tower-next`.
+- Nothing was posted upstream. The bug is #336's own, so the PR's thread is where to report it.
+- Not measured:
+  - more than one sample a question;
+  - a real agent conversation with tool calls;
+  - images with the index on;
+  - Cyber-Tiel at these sizes.
+
 ## Shared-load changes (2026-10-17)
 
 With Plex, Deluge and Duplicati running again, the GGUF (22.7 GB) has to stay cached next to them, and about 22.5 GB

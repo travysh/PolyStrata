@@ -1,0 +1,45 @@
+{
+  "exe": "/opt/strata/terminal/engine-poly/strata-poly",
+  "args": [
+    "--model",
+    "/gguf/inkling/Inkling-2-Mini-UD-Q4_K_XL.gguf",
+    "--max-context",
+    "262144",
+    "--expert-profile",
+    "/data/packs/inkling-ud-q4_k_xl/expert-profile.txt",
+    "--conversation-cache-mib",
+    "auto",
+    "--vram-reserve-mib",
+    "512",
+    "--attn-requant",
+    "q5_0",
+    "--loop-bf16",
+    "--tail-skip",
+    "4"
+  ],
+  "cwd": "/opt/strata/terminal",
+  "tokenizer": "/data/packs/inkling-ud-q4_k_xl/tokenizer",
+  "model_name": "inkling-2-mini-ud-q4_k_xl",
+  "display_name": "Inkling 2 Mini UD-Q4_K_XL",
+  "log": "/opt/strata/terminal/strata-inkling-ud-q4_k_xl.log",
+  "lib_dirs": [
+    "/usr/local/cuda/bin",
+    "/usr/local/cuda/lib64"
+  ],
+  "port": 8080,
+  "gpu": 0,
+  "gpus_asked": true,
+  "host": "0.0.0.0",
+  "vision": {
+    "exe": "/opt/strata/terminal/engine-poly/strata-vision",
+    "mmproj": "/gguf/inkling/mmproj-F16.gguf",
+    "model": "/gguf/inkling/Inkling-2-Mini-UD-Q4_K_XL.gguf",
+    "gpu": false,
+    "max_tokens": 300,
+    "threads": 6
+  },
+  "constrained_decoding": true,
+  "env": {
+    "STRATA_INK_ZHA": "/opt/strata/terminal/data/zha/inkling-2-mini-refs-c64-r4.bin"
+  }
+}
