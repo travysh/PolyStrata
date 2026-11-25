@@ -13,9 +13,10 @@ MAX_TOKENS = 16384                  # thinking and answer together
 THINK_BUDGET = 12288                # thinking stops here, so an answer always has room
 
 
-def ask(prompt, seed):
+def ask(prompt, seed, extra=None):
     body = {"model": "strata", "messages": [{"role": "user", "content": prompt}], "max_tokens": MAX_TOKENS,
-            "reasoning_budget_tokens": THINK_BUDGET, "seed": seed, "stream": False, **SAMPLING}
+            "reasoning_budget_tokens": THINK_BUDGET, "seed": seed, "stream": False, **SAMPLING,
+            **(extra or {})}          # a task's own settings (think.py: thinking off, budgets)
     req = urllib.request.Request(BASE + "/v1/chat/completions", json.dumps(body).encode(), {"Content-Type": "application/json"})
     t0 = time.time()
     r = json.load(urllib.request.urlopen(req, timeout=3600))
@@ -38,7 +39,7 @@ def main():
             if (t["id"], s) in done:
                 continue
             try:
-                r = ask(t["prompt"], seed=1000 + s)
+                r = ask(t["prompt"], seed=1000 + s, extra=t.get("request"))
             except Exception as e:                   # a failed request is an answer of its own: it scores 0
                 r = {"content": "", "reasoning": "", "finish": "error: " + str(e)[:200]}
             r.update(id=t["id"], kind=t["kind"], sample=s, model=model)

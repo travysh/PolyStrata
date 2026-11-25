@@ -1878,6 +1878,72 @@ less is noise):**
 **Not covered:** the agent loop (read, patch, run tests, try again), tool calls, CUDA code, Inkling without the
 small-card settings, and greedy decoding.
 
+### Pass 22, thinking: generated puzzles, three thinking settings (2026-11-24)
+
+**The puzzles.** `p22/think.py` makes 36 puzzles from fixed seeds: 6 families, 3 levels each, 2 puzzles per level.
+They are new, so no model can have seen them. Each has one exact answer, which a program computes.
+
+| family | level 1 | level 2 | level 3 |
+|---|---|---|---|
+| logic grid (houses in a row) | 3 houses, 3 kinds | 4 houses, 4 kinds | 5 houses, 4 kinds |
+| scheduling (tasks, prerequisites) | any number of workers, 6 tasks | 2 workers, 6 tasks | 3 workers, 8 tasks |
+| shortest path (roads as text) | 6 towns | 10 towns | 14 towns, a closed road, a town to pass through |
+| dates | days after a date, with weekday; days between | working days with holidays | a flight across time zones near a daylight-time change |
+| word problems | rolls left; days to read a book | pipes and a drain (fraction); sugar mix (fraction) | shop profit (exact dollars); cyclists meeting (HH:MM:SS) |
+| unit conversions | mpg to km/L; feet and inches to cm | mpg to L/100 km; psi to kPa | pump power in W; average speed in m/s |
+
+- Every grid clue that the answer doesn't need is removed, and a grid whose answer is stated in a clue is rejected.
+- A scheduling puzzle with workers is rejected if the simple lower bound already gives its answer.
+- Daylight-time rules and unit definitions are written in the prompt, so the task is the arithmetic, not
+  remembering rules.
+- No prompt contains either model's control tokens.
+
+**Checks.** `python3 think.py selftest` computes every answer a second way:
+- grids: the solver confirms exactly one solution;
+- scheduling: brute force over every start order;
+- shortest path: Floyd-Warshall against Dijkstra;
+- time zones: from the rule text in the prompt against the tz database;
+- dates, words and units: a separate formula.
+
+It also confirms the grader accepts each right answer and rejects a reply with no answer. All 36 pass, plus 9
+grader cases (for example, `41 2/3` is not `125/3`, and `-$1,234.50` matches `-1234.5`).
+
+**Asking and grading.**
+- Each puzzle is asked three ways, so 108 requests per model:
+  - `off`: thinking off (`chat_template_kwargs.enable_thinking: false`), up to 4,096 tokens;
+  - `2k`: a 2,048-token thinking budget, up to 4,096 tokens;
+  - `big`: a 12,288-token budget, up to 16,384 tokens.
+- Sampling is the same as the coding set: temperature 0.6, top_p 0.95, top_k 20, seed 1000.
+- Only the reply's last `ANSWER:` line counts. Numbers are compared exactly, as fractions. Rounded answers must
+  round to the right digit, and dates and times must match exactly.
+- Prompt hash: `cat think-tasks/*/task.json | sha256` = `3b7cc2b76bb3ce8f`.
+
+**Scripts.**
+- `run_bench.py` now takes a task's own `request` settings. Coding tasks have none, so their requests are as before.
+- `model.sh` takes `TASKS=think-tasks`.
+- `think.sh TAG SAMPLES [ids]` runs both models, then starts live again.
+- Grading needs only python3: `think.py grade think-tasks runs/TAG-*.jsonl`, then `think.py score`.
+
+**Trial run (4 level 2-3 puzzles × 3 settings, 1 sample each: grid3a, sched2a, date3a, word3b).** It checks the
+pipeline; 12 answers per model mean little.
+- Time: Cyber-Tiel 9 min (17:41-17:50), Inkling 9.5 min (17:50-18:00). Live was down 20 minutes.
+- Thinking off worked on both models: no thinking text. A 2K budget ended the thinking where it should.
+
+| | Cyber-Tiel off / 2k / big | Inkling off / 2k / big |
+|---|---|---|
+| grid3a (5 houses) | P P P | P . P |
+| sched2a (2 workers) | L P P | P P P |
+| date3a (Sydney to New York, the day after Sydney's change) | . P . | . P P |
+| word3b (cyclists) | . P P | P P P |
+
+- Cyber-Tiel wrote 21:00 on date3a with 12K and with thinking off, which misses Sydney's change to UTC+11 the day
+  before. With 2K it got it right, which shows that one sample is noise.
+- Inkling with 2K answered "Ben" on the grid. Its thinking ended at the budget, 11 characters before the answer.
+- Cyber-Tiel with thinking off wrote its working into the answer and ran out of its 4,096 tokens on sched2a.
+
+**Not done yet: the full run.** At the trial's pace, all 108 requests take about 1.2 h per model, or about 2.5 h
+with live down. The trial's puzzles were harder than the average.
+
 ## Shared-load changes (2026-10-17)
 
 With Plex, Deluge and Duplicati running again, the GGUF (22.7 GB) has to stay cached next to them, and about 22.5 GB

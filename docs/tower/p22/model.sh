@@ -1,6 +1,7 @@
 #!/bin/sh
 # p22/model.sh MODEL LABEL SAMPLES [ids...]: start MODEL (cybertiel or inkling) in the test container (port 5003, live's
 # environment, image $IMAGE) and run run_bench.py on the tasks: answers in p22/runs/LABEL.jsonl, log in p22/runs/LABEL.log.
+# TASKS: the task folder under p22 (default tasks; think.sh uses think-tasks).
 # Stops live PolyStrata first (one card); does not start it again (all.sh does).
 M=$1; L=$2; N=$3; shift 3; D=/mnt/user/appdata/polystrata; I=${IMAGE:-polystrata:next-f6bc1acf}
 case $M in
@@ -18,6 +19,6 @@ until curl -s -m 5 localhost:5003/health | grep -q "\"loaded\": true"; do
   sleep 5; docker ps -q -f name=polystrata-next | grep -q . || { echo "container exited" >> $D/p22/runs/$L.log; exit 1; }
 done
 echo "== $L: $M on $I, $(date)" >> $D/p22/runs/$L.log
-docker exec polystrata-next sh -c "cd /opt/strata/terminal && .venv/bin/python /p22/run_bench.py /p22/tasks /p22/runs/$L.jsonl $N $*" >> $D/p22/runs/$L.log 2>&1
+docker exec polystrata-next sh -c "cd /opt/strata/terminal && .venv/bin/python /p22/run_bench.py /p22/${TASKS:-tasks} /p22/runs/$L.jsonl $N $*" >> $D/p22/runs/$L.log 2>&1
 echo "== done $(date)" >> $D/p22/runs/$L.log
 docker rm -f polystrata-next >/dev/null
