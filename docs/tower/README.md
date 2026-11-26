@@ -2626,6 +2626,118 @@ and its answer was written at 46.1 tok/s (Pass 24: 834 and 46.0). The parked con
 - The 477K run, the pictures and Cyber-Tiel were not repeated on fd6d84bc. Cyber-Tiel does not use these kernels.
 - Nothing posted upstream.
 
+## Pass 26: where Inkling's token goes, and two changes that take some of it back (2026-11-26)
+
+**Question.** Inkling 2 Mini writes about 57 tok/s on live (512K, ZHA) and Cyber-Tiel about 90. Where does an
+Inkling token's time go on Tower, and which of it can be taken back without changing the answers?
+
+**Setup.** Tower as in Pass 25: RTX 3070 8 GB, Ryzen 5 2600X, 32 GB. Every run is ZHA 512K with live's settings.
+Images:
+- `polystrata:tower` (live, `tower-513eceb1-ink`);
+- `polystrata:ctx-fd6d84bc` (Pass 25);
+- `polystrata:ctx-d200e08b` (`tower-ctx` d200e08bc: fd6d84bc and changes 1 and 2 below).
+
+`ctx-defer`, `ctx-poll` and `ctx-lanes` were the steps on the way. Scripts are in `p26/`:
+- `cupti_trace.cpp`: a CUPTI tracer loaded with `CUDA_INJECTION64_PATH`. It writes every kernel, copy and runtime
+  call to a CSV. It slows decode by about 8%, so traced tok/s are lower than untraced ones.
+- `tr.py`: the per-token summary. `seq.py`: one token's GPU work in order.
+- `ggufinfo.py`: a GGUF's tensors and types.
+- `bench.sh`: p25's, writing to `p26/`.
+- `chain1.sh`-`chain6.sh`: the runs below.
+
+Live was stopped for each chain and started again at its end.
+
+**1. Where the time goes** (CUPTI, 100 tokens at the end of a run; µs a token, traced):
+
+| | fd6d84bc, 21-token prompt | d200e08b, 21-token prompt | d200e08b, 4,521-token prompt |
+|---|---|---|---|
+| A token | 19,075 | 16,780 | 17,576 |
+| GPU busy | 15,910 (83%) | 15,696 (94%) | 16,371 (93%) |
+| GPU idle | 3,166 | 1,084 | 1,205 |
+
+One 4,521-token token on d200e08b, by kernel family (µs):
+
+| Kernels | Time | Calls | Notes |
+|---|---|---|---|
+| routed experts (NVFP4) | 4,364 | 88 | about 360 GB/s |
+| dense projections (q, gate, k, v, rel; output; Q5_0) | 2,500 | 97 | about 350-400 GB/s |
+| output head (Q8_0, 492 MB) | 1,176 | 1 | 418 GB/s |
+| late layers' experts in another format | 444 | 4 | about 400 GB/s |
+| `bell_add`: the card waits for the CPU's experts | 1,360 | 48 | 6 waits of 140-390 µs, the rest none |
+| attention over the window (score, softmax, value, join) | 910 | 160 | |
+| the index (ZHA) | 600 | 64 | |
+| about 400 other small kernels | 2,700 | | 2-8 µs each |
+
+- Plain 64K's layers are recorded as one graph a token. Under the index a full layer's head is not recorded, so
+  `run()` went layer by layer and `bell_serve()` waited for the card after each one. The card then idled while the
+  host handed over the next layer: 190 graph launches and about 2,000 `cudaEventQuery` calls a token.
+- The NVFP4 expert kernel gave a row a warp. A 2304-value gate or up row is 72 calls of the dot, so the third pass
+  over the lanes had 8 of 32 busy. An 1152-value down row is 36 calls, so the second pass had 4 of 32.
+- The big kernels now run at 80-93% of the card's 448 GB/s. What is left is the CPU's experts, many small kernels and
+  idle time.
+- A missed expert costs the card 140-390 µs. The CPU computes one (4.48 MB) at about 15-18 GB/s, while an expert
+  swap (4.48 MB, about 360 µs) reads the same RAM over PCIe.
+
+**2. The changes** (`tower-ctx`):
+- 36726f4e6 (`engine.cpp`, `inkling2.cpp`): the rings are answered between the layers' launches (`bell_poll()`) and
+  the rest once after the last layer, as the whole pass does. A layer whose head might wait for the card first gets
+  its owed rings answered: a recording to make, or an index that has to pin, grow or refill
+  (`head_leaves_bells()`). `STRATA_BELL_DEFER=0` keeps a layer at a time.
+  - Without the poll (`ctx-defer`) nothing was gained. The host then answered the first ring only after handing
+    over every layer, so the card waited for the bell instead of for the launches.
+- d200e08bc (`iq_kernels.cu`): NVFP4 expert rows 8 a warp, laid out like the IQ3 lanes kernel. A shuffle hands each
+  lane's sum back before the same `warp_sum`, so the bits are the old kernel's. The down kernel went from 42 to
+  33 µs a call. It is on by default on sm_86 only, the card it was checked on; `STRATA_NVFP4_LANES=0/1`.
+
+**3. Engine by itself** (`chain6.sh`, two rounds in turn; tok/s writing):
+
+| Prompt | live | fd6d84bc | d200e08b |
+|---|---|---|---|
+| 21 tokens, 800 written | 57.01 / 57.32 | 57.65 / 58.33 | 59.55 / 59.79 |
+| 4,521 tokens, 400 written | 53.80 / 53.65 | 54.22 / 54.27 | 55.42 / 55.45 |
+
+- Short prompt: +4.4% on live (59.67 against 57.17), +2.9% on fd6d84bc.
+- 4,521-token prompt: +3.2% on live (55.44 against 53.73), +2.2% on fd6d84bc.
+- All six 4,521-token runs wrote the same 400 tokens, as did every 4,521-token run in chains 2-5. Those include the
+  kernel switched off and on, so the new kernel gives the old one's bits.
+- 1,500 tokens on d200e08b: 60.74 tok/s.
+- Each change in a round of its own (chains 3 and 4): the poll was +1% short and level at 4.5K. The lanes kernel was
+  +2.6% short and +1.9% at 4.5K.
+
+**4. Through the server** (`p25/probe.sh`, three short chats of 400 tokens; rounds 2 and 3): d200e08b wrote
+53.9 / 54.3. Pass 25 measured fd6d84bc at 51.3 / 51.9, live at 50.1 / 51.9 and plain 64K at 53.5 / 54.1, on another
+day.
+
+**5. Answers** (ctx-d200e08b, live's Inkling config, `p22/trim-tasks` via `p24/runm.sh`): both 128K answers right
+(Varn, Mirel). The 127,956-token read went at 840 tok/s. Its answer (864 tokens) was written at 45.5 tok/s, against
+Pass 25's 46.1 for a 1,382-token answer: the lengths differ, so this is no comparison. There were no errors in the
+engine logs.
+
+**6. Tried and not kept.**
+- Q5_0/Q8_0 rows a warp in `native_small_mmvq` (bit-exact): no gain (37.0 against 37.4 µs). Those kernels already
+  ran at about 350 GB/s.
+- `STRATA_FREEZE_EXPERTS=1`, which holds the split still so no swaps compete with the CPU: 25.7 and 29.6 tok/s.
+  The swaps are what keeps the misses down.
+- `--threads 11` (8 is the default): +1.7% / +2.5% short and +0.9% at 4.5K in chain 5, but level short (59.62) and
+  +0.8% at 4.5K in chain 6. That is not enough to change a default. `--threads 6` was slower.
+
+**What this says.**
+- Inkling's gap to Cyber-Tiel is not in a few slow kernels any more: the big ones are within 7-20% of the card's
+  bandwidth. A token reads about 3.7 GB (experts 1.7 GB, dense 0.9 GB, output head 0.5 GB, the rest), so even at full
+  bandwidth one token is about 8.3 ms, or 120 tok/s. Cyber-Tiel gets to 90 with its MTP head, guessing tokens that
+  one read of the weights checks together.
+- Inkling's engine has the same idea in `--draft-model` (a DSpark `dflash` drafter). It does not run with the ZHA
+  index yet (`inkling2.cpp`: "the ZHA index runs without --draft-model"), and Tower has no drafter file.
+- Inside one token what is left is the CPU's experts (about 1.4 ms at 4.5K, more on short prompts) and about 400
+  small kernels (about 2.7 ms). Joining the small kernels would take several more passes for a few percent each.
+
+**Not done.**
+- Live is unchanged: going live with d200e08b is the user's call (build as in Pass 24 part 8 with Inkling's CMD).
+- No drafter downloaded and no drafter run.
+- The 477K run, the pictures and Cyber-Tiel were not repeated. The NVFP4 kernel is Inkling's; Cyber-Tiel was not
+  measured with this image.
+- Nothing posted upstream.
+
 ## Shared-load changes (2026-10-17)
 
 With Plex, Deluge and Duplicati running again, the GGUF (22.7 GB) has to stay cached next to them, and about 22.5 GB
