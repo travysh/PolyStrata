@@ -1256,6 +1256,25 @@ void Inkling2::layer_head(Layer& L, int il, int n) {
     head_part(L, il, n, 3);
 }
 
+// The doorbell's rings may be answered after this layer's head (Engine::head_leaves_bells()) when nothing it does waits
+// for the card: a layer the engine replays (a recording it has still to make it makes after answering them), or a full
+// layer under the index whose two parts are recorded and that grows nothing (zha_attention(): no pinning, no larger
+// summaries or chunk cache, no jump in the sequence, no widened work buffers).
+bool Inkling2::head_leaves_bells(int il, int n) const {
+    const Block& B = blocks_[(size_t) il];
+    if (!zha_full(B)) return layers_[(size_t) il].fixed;
+    if (n != 1 || il == lo_ || zgraph_.empty()) return false;
+    const size_t at = (size_t) slot_of(il, pass_of(il)) * 2;
+    if (!zgraph_[at] || !zgraph_[at + 1]) return false;
+    const ZSlot& S = zs_[(size_t) slot_of(il, pass_of(il))];
+    const int done = (int) ((pos_ + n) / zha_.C);
+    if (pos_ != S.zpos) return false;
+    if (zlazy_ && std::min<int64_t>(opt_.max_context, pos_ + n) > zpinned_) return false;
+    if (zgrow_ && (done > S.zcap || (zha_pool_ > 0 && S.zcache.P < zha_pool_for(done)))) return false;
+    if (zlend_ && zha_pool_ <= 0 && !zwide_) return false;
+    return true;
+}
+
 // Engine::record()'s capture (a template of engine.cpp's): what `work` hands to the stream, as a graph.
 void* Inkling2::grab(const std::function<void()>& work) {
     cudaGraph_t g = nullptr;

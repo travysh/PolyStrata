@@ -5683,6 +5683,22 @@ void Engine::bell_serve() {
 #endif
 }
 
+// The rings already rung, answered, and back without waiting for the card: between run()'s layers while their rings
+// are owed, so the card's waits for the host's experts do not last until every layer is handed over.
+void Engine::bell_poll() {
+#if !defined(STRATA_GPU_METAL) && !defined(STRATA_USE_HIP)
+    for (;;) {
+        const uint32_t r = h_bell_->ring;
+        if (r == bell_seen_) return;
+        std::atomic_thread_fence(std::memory_order_acquire);
+        bell_seen_ = r;
+        bell_job();   // a failure here: run()'s owed rings are ended by its catch
+        std::atomic_thread_fence(std::memory_order_release);
+        h_bell_->ack = r;
+    }
+#endif
+}
+
 void Engine::bell_job() {
     const int il = h_bell_->layer, n = std::min<int>(h_bell_->n, kBellJobs);
     const Layer& L = layers_[(size_t) il];
@@ -6996,9 +7012,18 @@ void Engine::run(const int32_t* tokens, int n) {
     bool replay = opt_.graphs && n <= opt_.window && (windowed_ || block_pass_ || n == 1) && !opt_.dump &&
                   !prompt_scratch_;
     for (int t = 0; t < n && replay; ++t) replay = !image_at(pos_ + t);
+    // Rings handed over and not answered yet (the layer-by-layer path below): answered before this thread may wait.
+    bool owed = false;
+    const auto pay = [&] {
+        if (owed) bell_serve();
+        owed = false;
+    };
     const auto replayed = [&](std::vector<void*>& made, size_t key, auto&& work) {
         if (made.size() <= key) made.resize(key + 1, nullptr);
-        if (!made[key]) made[key] = record(work);
+        if (!made[key]) {
+            pay();
+            made[key] = record(work);
+        }
         ck(cudaGraphLaunch((cudaGraphExec_t) made[key], cs(st_)), "layer graph");
     };
     if (replay) {   // a pair a token: a window's tokens may go one by one, each from its own
@@ -7207,10 +7232,23 @@ void Engine::run(const int32_t* tokens, int n) {
         if (bell_) bell_serve();
         return;
     }
+    // A family whose heads say they cannot wait for the card (head_leaves_bells(): Inkling 2's full layers under the
+    // index, which decide on the host what they launch) has its rings answered once the layers are handed over, as the
+    // whole pass does, and not a layer at a time, where the card waited on this thread for each layer's launches.
+    // STRATA_BELL_DEFER=0: a layer at a time.
+    static const bool defer_env = [] {
+        const char* e = std::getenv("STRATA_BELL_DEFER");
+        return !e || std::strcmp(e, "0") != 0;
+    }();
+    try {
     for (int il = lo_; il < hi_; il = next_layer(il)) {
         Layer& L = layers_[(size_t) il];
+        if (owed && !head_leaves_bells(il, n)) pay();
         up(il, n, (size_t) n - 1);
+        if (owed) bell_poll();
         if (!L.moe) continue;
+        const bool rec = replay && card && L.card == 1 && L.card_moe.size() > (size_t) n - 1 && L.card_moe[(size_t) n - 1];
+        if (!rec) pay();
         if (batched(L, n)) {
             moe_rows(L, il, n);
         } else if (!on_card(il, n, (size_t) n - 1)) {
@@ -7218,10 +7256,22 @@ void Engine::run(const int32_t* tokens, int n) {
         } else if (bell_) {
             // Layer by layer (the first tokens, before the whole pass is recorded): the ring is answered here, since
             // what this thread does next (a recording, a moe() that waits for the router) may wait for the card.
-            bell_serve();
+            if (rec && defer_env && defers_bells()) owed = true;
+            else bell_serve();
         }
         tail(il, n, (size_t) n - 1);
+        if (owed) bell_poll();
     }
+    } catch (...) {
+        if (owed) {   // the card's waits end, as bell_serve()'s failure ends them
+            h_bell_->abort = 1;
+            cudaStreamSynchronize(cs(st_));
+            h_bell_->abort = 0;
+            bell_seen_ = h_bell_->ring;
+        }
+        throw;
+    }
+    pay();
 }
 
 // A row a sequence.  A layer's head is the sequence's own: its row of the buffers (shift_rows()) with the sequence

@@ -557,6 +557,11 @@ protected:
     virtual void save_run(int il, int64_t pos, uint8_t* dst) { save_layer(il, pos, dst); }
     /// Optional host hook called before layer_head (including when layer_head is graph-replayed).
     virtual void prefetch_layer(int il, int n) { (void) il; (void) n; }
+    /// run()'s layer-by-layer path with the doorbell: true when layer il's head (its launches up to the router) cannot
+    /// wait for the card, so the rings of the layers before it may be answered after it is handed over.  False: they
+    /// are answered first, as before.
+    virtual bool head_leaves_bells(int il, int n) const { (void) il; (void) n; return false; }
+    virtual bool defers_bells() const { return false; }   ///< the family has heads that may (above)
     /// The model's output for `rows` tokens from row `first` of the call, normed: what the output matrix takes.
     virtual void output_rows(int first, int rows, float* h) = 0;
     /// A token's experts and their weights from its scores at layer il's router.  `token` is the token the row is
@@ -1217,6 +1222,7 @@ protected:
     bool bell_counts_ = false;                    ///< a call since follow() last read d_use_ rang: picks to read
     bool bell_on(int n) const;
     void bell_serve();
+    void bell_poll();   ///< the rings the card has rung so far, answered without waiting for more
     void bell_job();
     uint8_t* stage_ = nullptr;                    ///< experts that are not cached, on their way through VRAM
     uint8_t* h_stage_[2] = {};                    ///< pinned; filled in turn

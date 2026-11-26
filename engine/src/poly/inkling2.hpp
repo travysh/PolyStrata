@@ -56,6 +56,8 @@ protected:
     int widest() const override;
     int streams() const override { return 1; }
     void layer_head(Layer& L, int il, int n) override;
+    bool head_leaves_bells(int il, int n) const override;
+    bool defers_bells() const override { return zha_on_; }
     void layer_tail(Layer& L, int il, int n) override;
     int next_layer(int il) override;
     // a layer is some 20 launches: the card has 4 layers' work while the host launches the other 44
