@@ -38,6 +38,7 @@ void zha_attend(void*, const Zha&, const float*, const ZhaKv&, const ZhaKv&, lon
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 
 namespace strata::poly::ink {
 namespace {
@@ -826,7 +827,8 @@ __global__ void __launch_bounds__(128) zha_exact_dec_kernel(const float* __restr
                                                             ZhaKv ring, long long n_ring, int max_chunks, long long pos,
                                                             int n_head, int kv, int C, int recent,
                                                             const float* __restrict__ rr, const float* __restrict__ table,
-                                                            int extent, int nrel, float* __restrict__ part, int seg_total) {
+                                                            int extent, int nrel, float* __restrict__ part, int seg_total,
+                                                            int nl_fix) {
     __shared__ float qs[kZhaDim], rv[32], wm[4], wl[4], wo[4][kZhaDim];
     const int head = blockIdx.x, seg = blockIdx.y, segs = gridDim.y, lane = threadIdx.x & 31, w = threadIdx.x >> 5;
     const int g = head / (n_head / kv);
@@ -838,7 +840,7 @@ __global__ void __launch_bounds__(128) zha_exact_dec_kernel(const float* __restr
     long long fr;
     zha_far(own, C, recent, &fr);
     const int* gl = glist + (size_t) g * (max_chunks + 1);
-    const int nl = gl[0];
+    const int nl = nl_fix >= 0 ? nl_fix : gl[0];   // nl_fix: every key in the ring, the list not read
     const int rc0 = (int) (fr / C), last = (int) (own / C), nr = last - rc0 + 1;
     const int items = nl + nr;
     const int per_seg = (items + segs - 1) / segs, i0 = seg * per_seg, i1 = min(items, i0 + per_seg);
@@ -848,6 +850,7 @@ __global__ void __launch_bounds__(128) zha_exact_dec_kernel(const float* __restr
         int c;
         bool from_ring;
         if (it < nl) {
+            if (nl_fix >= 0) continue;
             c = gl[1 + it];
             if ((long long) c * C >= fr) continue;   // a recent chunk: the ring's
             from_ring = false;
@@ -1041,7 +1044,7 @@ __global__ void __launch_bounds__(128) zha_exact_dec_group_kernel(const float* _
                                                                   int n_head, int C, int recent,
                                                                   const float* __restrict__ rr,
                                                                   const float* __restrict__ table, int extent, int nrel,
-                                                                  float* __restrict__ part, int seg_total) {
+                                                                  float* __restrict__ part, int seg_total, int nl_fix) {
     constexpr int PER = 3, KPS = 4;   // KPS: keys a step of the values (8 lanes a key, 16 values a lane)
     __shared__ float qs[PER][kZhaDim], rv[PER][16], wm[4][PER], wl[4][PER], wo[4][PER][kZhaDim];
     const int g = blockIdx.x, seg = blockIdx.y, segs = gridDim.y, lane = threadIdx.x & 31, w = threadIdx.x >> 5;
@@ -1055,7 +1058,7 @@ __global__ void __launch_bounds__(128) zha_exact_dec_group_kernel(const float* _
     long long fr;
     zha_far(own, C, recent, &fr);
     const int* gl = glist + (size_t) g * (max_chunks + 1);
-    const int nl = gl[0];
+    const int nl = nl_fix >= 0 ? nl_fix : gl[0];   // nl_fix: every key in the ring, the list not read
     const int rc0 = (int) (fr / C), last = (int) (own / C), nr = last - rc0 + 1;
     const int items = nl + nr;
     const int per_seg = (items + segs - 1) / segs, i0 = seg * per_seg, i1 = min(items, i0 + per_seg);
@@ -1073,6 +1076,7 @@ __global__ void __launch_bounds__(128) zha_exact_dec_group_kernel(const float* _
         int c;
         bool from_ring;
         if (it < nl) {
+            if (nl_fix >= 0) continue;
             c = gl[1 + it];
             if ((long long) c * C >= fr) continue;
             from_ring = false;
@@ -2277,6 +2281,24 @@ void zha_attend(void* blas, const Zha& z, const float* q, const ZhaKv& leaves, c
     const int segs = few ? 32 : 1;
     // an answer's token through the cache with its own kernels (groups of 2 or 3 heads, selections that fit kSmem)
     const bool dec = cached && per > 1 && per <= 3 && (size_t) max_chunks * sizeof(float) <= kSmem;
+    // An answer's token whose keys are all still in the ring (no far chunk, chunk 0 recent: zha_far()'s first recent
+    // key 0): the exact part alone.  The path below would select nothing, fetch nothing and add an empty tail; its
+    // list would hold chunk 0 only, read from the ring, so the same segments give the same sums.
+    // STRATA_INK_ZHA_SHORT=0 takes the path below anyway.
+    static const bool short_ok = [] { const char* e = std::getenv("STRATA_INK_ZHA_SHORT"); return !e || *e != '0'; }();
+    if (dec && short_ok && pos + 1 - z.recent < z.C) {
+        const int nl = built > 0 ? 1 : 0;
+        if (per == 3 && nrel <= 16)
+            zha_exact_dec_group_kernel<<<dim3(kv_heads, kSegExact), 128, 0, cs(stream)>>>(
+                q, cache->pool, wk.cmap, wk.glist, ring, n_ring, max_chunks, pos, n_head, z.C, z.recent, r, table,
+                extent, nrel, wk.S, kSegExact, nl);
+        else
+            zha_exact_dec_kernel<<<dim3(n_head, kSegExact), 128, 0, cs(stream)>>>(
+                q, cache->pool, wk.cmap, wk.glist, ring, n_ring, max_chunks, pos, n_head, kv_heads, z.C, z.recent, r,
+                table, extent, nrel, wk.S, kSegExact, nl);
+        zha_join_kernel<<<dim3(rows, n_head), 32, 0, cs(stream)>>>(wk.S, kSegExact, n_head, 0, sinks, out);
+        return;
+    }
     if (dec && built > 0) {
         zha_score_dec_kernel<<<dim3(grid(nch, 32), kv_heads), 128, 0, cs(stream)>>>(
             q, (const int8_t*) khat, q8n, bhat, nch, max_chunks, n_head, per, wk.score, wk.rstar, hs);
@@ -2360,11 +2382,11 @@ void zha_attend(void* blas, const Zha& z, const float* q, const ZhaKv& leaves, c
         if (per == 3 && nrel <= 16)   // a group's three heads in one launch
             zha_exact_dec_group_kernel<<<dim3(kv_heads, kSegExact), 128, 0, cs(stream)>>>(
                 q, cache->pool, wk.cmap, wk.glist, ring, n_ring, max_chunks, pos, n_head, z.C, z.recent, r, table,
-                extent, nrel, wk.S, segs_all);
+                extent, nrel, wk.S, segs_all, -1);
         else
             zha_exact_dec_kernel<<<dim3(n_head, kSegExact), 128, 0, cs(stream)>>>(
                 q, cache->pool, wk.cmap, wk.glist, ring, n_ring, max_chunks, pos, n_head, kv_heads, z.C, z.recent, r,
-                table, extent, nrel, wk.S, segs_all);
+                table, extent, nrel, wk.S, segs_all, -1);
         zha_join_kernel<<<dim3(rows, n_head), 32, 0, cs(stream)>>>(wk.S, segs_all, n_head, 0, sinks, out);
         return;
     }
