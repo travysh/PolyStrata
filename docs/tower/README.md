@@ -2367,6 +2367,80 @@ takes the VRAM from the expert cache. After the read it gives the VRAM back.
   - images with the index on;
   - Cyber-Tiel at these sizes.
 
+## Pass 24: one Inkling config for short chats and long documents (2026-11-25)
+
+**Question.** Can one ZHA config at 1M tokens also serve short chats, so Inkling needs no second config and no
+engine reload to switch between them? Pass 23 measured short chats about 15% slower under the index (42 against
+50 tok/s through the server). This pass finds where that time goes and removes the part that was not needed.
+
+**Setup.** Tower as in Pass 23. Images `polystrata:ctx-e20f5264` (Pass 23's) and `polystrata:ctx-97665a39`
+(`tower-ctx` 97665a39: the change below). Scripts in `p24/`:
+- `bench.sh`: strata-poly by itself on a 21-token prompt, 400 or 800 tokens at temperature 0;
+- `chain1.sh`-`chain5.sh`: the runs below;
+- `probe.sh`: the server with three short chats at temperature 0, asking the engine for its expert cache after each
+  (`POST /v1/vram {}`).
+
+**1. The engine by itself, short prompt** (one run each; `CPU experts` is the engine's own ms a token):
+
+| Run | Experts on the card | Writes (tok/s) | CPU experts |
+|---|---|---|---|
+| plain 64K, after Cyber-Tiel ran | 1,120 | 58.7 / 57.6 | 6.3 / 6.1 ms |
+| ZHA 64K | 1,031 | 52.8 | 6.8 ms |
+| ZHA 1M, all RAM pinned at load | 1,025 | 49.6 / 47.6 | 10.9 / 11.4 ms |
+| plain 64K, warm file cache | 1,120 | 61.5 | 3.7 ms |
+| ZHA 512K, warm | 1,028 | 56.5 | 4.5 ms |
+| ZHA 1M, warm | 1,025 | 55.2 | 4.9 ms |
+
+- With the model file in the file cache, the index costs 1.4-1.8 ms a token (61.5 against 55-56.5 tok/s).
+- Right after Cyber-Tiel, the 1M config's CPU experts took twice as long. Pinning 9.4 GB of leaves at load left the
+  17.6 GB model file too little file cache; the 64K configs did not have that problem.
+- `STRATA_INK_ZHA_POOL=0`, which #336 allows, stopped the engine with `an illegal memory access was encountered`.
+  Not looked into.
+
+**2. The change** (`tower-ctx` 97665a39, `inkling2.cpp`). The leaves' RAM is reserved address space at load (mmap)
+and pinned 64K positions at a time as a read or an answer reaches them. A conversation under a quarter of what is
+pinned gives the rest back (unpinned, `MADV_DONTNEED`). The conversation cache's automatic size still leaves the
+whole context's leaves out, so it is the same 6,400 MiB as before. `STRATA_INK_ZHA_PIN_ALL=1` pins everything at
+load, as before.
+- The 1M engine loads in 7-20 s instead of 17-30 s.
+- RAM used at rest with a short chat: about the 64K config's, not 9.4 GB more.
+
+**3. Through the server, short chats** (`probe.sh`, image ctx-97665a39, the same three prompts at temperature 0):
+
+| Config | Experts on the card after a request | Writes (tok/s) | Short follow-up read |
+|---|---|---|---|
+| plain 64K | 1,246 | 55.0 / 55.8 | 0.31-0.35 s |
+| ZHA 1M | 1,157 | 49.6 / 49.5 | 0.35-0.43 s |
+
+- The index costs 2.1 ms a token here, 11%.
+- About half of it is VRAM: the index's chunk cache (600 chunks for each of the 8 full layers, about 350 MB) and its
+  ring keep 89 fewer experts on the card. The other half is the index's own kernels, 8 layers a token.
+- Pass 23's short-chat runs (`short-tasks`, through `run_bench.py`) gave 42-43 against 49-51 tok/s, and the same
+  tasks on the new image gave the same: 42.1-42.6 with RAM pinned as it grows, 41.5-44.3 with all of it pinned at
+  load. The page-cache effect of part 1 did not show up through the server in those runs.
+
+**4. Long conversations still work.** On image ctx-97665a39, 1M config:
+- 128K question, two short chats, a second 128K question: both answers right (Varn, Mirel). The 128K
+  conversation was parked (2.2 GB) and restored in 0.16 s.
+- 477K question (read at 761 tok/s, written at 39.5 tok/s), a short chat, a second 477K question: both right (Quorn,
+  Mirel). The short chat gave the long conversation's pinned RAM back: its 49-token read took 5.1 s instead of
+  1-2 s, and RAM in use peaked at 12.8 GB against about 15 GB with the leaves kept (an estimate: 4.8 GB of leaves
+  plus the 5.4 GB parked copy). The parked 475,136 tokens came back in 2.75 s and pinned again.
+
+**What this says.**
+- Through the server, a single Inkling config at 1M costs 11% of the writing speed on short chats (49.5 against
+  55.5 tok/s) and about 0.05 s more on a short read. It no longer holds 9.4 GB of RAM when the chats are short.
+- Switching between two configs costs an engine reload (20-30 s), and a long conversation started on one is read
+  again on the other. One 1M config is the simpler setup if the 11% is acceptable.
+- What is left is VRAM for the chunk cache and the index's kernels. A chunk cache that is only allocated when a
+  conversation passes a few thousand tokens would give most of the experts back on short chats; not tried.
+
+**Not done.**
+- Nothing changed on live. `tower-ctx` has the change on top of Pass 23's; it is not in `tower-next`.
+- One run a configuration; no answers graded on short chats.
+- Nothing posted upstream. The #336 author pushed the parking fix independently (96a1a1180, 2026-11-25); the
+  `STRATA_INK_ZHA_POOL=0` crash and this change are not reported.
+
 ## Shared-load changes (2026-10-17)
 
 With Plex, Deluge and Duplicati running again, the GGUF (22.7 GB) has to stay cached next to them, and about 22.5 GB
