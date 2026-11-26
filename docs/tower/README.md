@@ -2413,8 +2413,8 @@ load, as before.
 | ZHA 1M | 1,157 | 49.6 / 49.5 | 0.35-0.43 s |
 
 - The index costs 2.1 ms a token here, 11%.
-- About half of it is VRAM: the index's chunk cache (600 chunks for each of the 8 full layers, about 350 MB) and its
-  ring keep 89 fewer experts on the card. The other half is the index's own kernels, 8 layers a token.
+- 89 fewer experts are on the card: the index's chunk cache (600 chunks for each of the 8 full layers, about 350 MB)
+  and its ring. Part 5 shows that this is only a small part of the 2.1 ms.
 - Pass 23's short-chat runs (`short-tasks`, through `run_bench.py`) gave 42-43 against 49-51 tok/s, and the same
   tasks on the new image gave the same: 42.1-42.6 with RAM pinned as it grows, 41.5-44.3 with all of it pinned at
   load. The page-cache effect of part 1 did not show up through the server in those runs.
@@ -2427,16 +2427,35 @@ load, as before.
   1-2 s, and RAM in use peaked at 12.8 GB against about 15 GB with the leaves kept (an estimate: 4.8 GB of leaves
   plus the 5.4 GB parked copy). The parked 475,136 tokens came back in 2.75 s and pinned again.
 
+**5. The chunk cache grows with the context** (`tower-ctx` 513eceb1, image `polystrata:ctx-513eceb1`). The cache
+starts at 64 chunks a KV head and doubles as the conversation's chunks pass it, up to `STRATA_INK_ZHA_POOL` (600). It
+takes the VRAM from the expert cache as the summaries do, and a much shorter conversation shrinks it and gives the
+VRAM back. `zha_attend()` now reads through the cache when a selection over the chunks built so far fits, not one
+over the whole `--max-context`.
+
+| Config (`probe.sh`, image ctx-513eceb1) | Experts on the card after a request | Writes (tok/s) | Short follow-up read |
+|---|---|---|---|
+| plain 64K | 1,244 | 55.2 / 56.0 | 0.31-0.35 s |
+| ZHA 1M | 1,234 | 49.9 / 50.7 | 0.36-0.41 s |
+
+- 77 of the 89 experts came back, but writing went up by less than 1 tok/s. The gap left, about 1.9 ms a token
+  (9.5%), is the index's own kernels: about 15 launches for each of the 8 full layers, each token.
+- 128K question, two short chats, a second 128K question: both answers right (Varn, Mirel). The 128K read went at
+  830 tok/s and its answer was written at 46.0 tok/s. The cache grew to 600 for it, shrank for the short chats and
+  grew again when the 128K conversation was restored (0.16 s).
+
 **What this says.**
-- Through the server, a single Inkling config at 1M costs 11% of the writing speed on short chats (49.5 against
-  55.5 tok/s) and about 0.05 s more on a short read. It no longer holds 9.4 GB of RAM when the chats are short.
+- Through the server, a single Inkling config at 1M cost 11% of the writing speed on short chats (49.5 against
+  55.5 tok/s) before part 5 and about 0.05 s more on a short read. It no longer holds 9.4 GB of RAM when the chats are short.
 - Switching between two configs costs an engine reload (20-30 s), and a long conversation started on one is read
   again on the other. One 1M config is the simpler setup if the 11% is acceptable.
-- What is left is VRAM for the chunk cache and the index's kernels. A chunk cache that is only allocated when a
-  conversation passes a few thousand tokens would give most of the experts back on short chats; not tried.
+- With the chunk cache growing (part 5) the cost is 9.5%: 50.3 against 55.6 tok/s. What is left is the index's
+  per-token kernels; fewer launches for short contexts would be the next thing to try.
 
 **Not done.**
-- Nothing changed on live. `tower-ctx` has the change on top of Pass 23's; it is not in `tower-next`.
+- Nothing changed on live. `tower-ctx` has both changes (97665a39, 513eceb1) on top of Pass 23's; it is not in
+  `tower-next`.
+- The 477K run was not repeated on image ctx-513eceb1.
 - One run a configuration; no answers graded on short chats.
 - Nothing posted upstream. The #336 author pushed the parking fix independently (96a1a1180, 2026-11-25); the
   `STRATA_INK_ZHA_POOL=0` crash and this change are not reported.
