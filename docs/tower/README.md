@@ -2458,6 +2458,46 @@ over the whole `--max-context`.
 - Under 1M the conversation cache keeps its full 8 GiB: the leaves still to pin (4.5 GiB at 512K) leave enough.
 - At 512K the gap to plain 64K is about 7% (51.7 against 55.6 tok/s).
 
+**7. Before going live at 512K** (image ctx-513eceb1 unless named; `chain8.sh`-`chain11.sh`, `probe2.sh`):
+- Inkling 512K, a 128K question, two short chats, a second 128K question: both right (Varn, Mirel); read at 834 tok/s,
+  written at 46.0 tok/s, the parked 128K conversation restored in 0.17 s.
+- Fresh prompts (nothing reused, three rounds; the first round is the engine's first request), rounds 2 and 3:
+
+  | Prompt | Inkling 64K | Inkling ZHA 512K |
+  |---|---|---|
+  | 102 tokens | 1.6-1.8 s | 1.3-1.5 s |
+  | 685 tokens | 1.9-2.1 s | 1.9-2.0 s |
+  | 4,512 tokens | 6.8 s | 6.8-7.3 s |
+  | 17,967 tokens | 18.9-19.1 s | 18.9-19.0 s |
+
+- Pass 22's 35 pictures with thinking off, the same evening:
+
+  | Image, config | Right | Median s an answer |
+  |---|---|---|
+  | live `polystrata:tower` (9172f75e), Inkling 64K | 28 of 35 | 5.8 |
+  | ctx-513eceb1, Inkling 64K | 27 of 35 | 5.8 |
+  | ctx-513eceb1, Inkling ZHA 512K | 28 of 35 | 5.9 |
+
+  Pass 22's run of the same pictures on the live config took 2.4 s an answer; today's live image took 5.8 s too, so
+  that difference is not the image or the index (not looked into).
+- Cyber-Tiel's live config (`strata-cybertiel-next.json`), 105K-token question and two short chats: right on both
+  images; the 105K read went at 1,940 tok/s on the live image and 2,021 on ctx-513eceb1. #336 changes
+  `read_groups()` for every model; this is the one Cyber-Tiel check.
+
+**8. Live since 2026-11-25 20:55** (the user's choice: one Inkling config at 512K).
+- `polystrata:tower` = `tower-513eceb1` = `ctx-513eceb1` with the old live image's start command (Cyber-Tiel's
+  config; `p24/Dockerfile.live-513eceb1`). The first swap used `ctx-513eceb1` itself, whose command starts Inkling;
+  it was replaced within minutes.
+- `strata-inkling2-mini.json`: `--max-context 524288` and `STRATA_INK_ZHA`; the 64K one is
+  `strata-inkling2-mini.json.pre-zha`.
+- `strata-cybertiel-next.json` touched (contents unchanged): three configs carry Cyber-Tiel's model name and the
+  server lists the newest file, which was the 0.1.45-era `strata-cybertiel-ud-q4_k_xl.json` with an engine path the
+  image does not have. Switching from Inkling back to Cyber-Tiel failed with it; now Cyber-Tiel -> Inkling -> Cyber-Tiel
+  works on live.
+- Branch `tower-next` fast-forwarded to `tower-ctx` 513eceb1.
+- Rollback: `docker tag polystrata:tower-9172f75e polystrata:tower`, `rebuild_container PolyStrata`, and
+  `strata-inkling2-mini.json.pre-zha` back to `strata-inkling2-mini.json`.
+
 **What this says.**
 - Through the server, a single Inkling config at 1M cost 11% of the writing speed on short chats (49.5 against
   55.5 tok/s) before part 5 and about 0.05 s more on a short read. It no longer holds 9.4 GB of RAM when the chats are short.
@@ -2467,8 +2507,7 @@ over the whole `--max-context`.
   per-token kernels; fewer launches for short contexts would be the next thing to try.
 
 **Not done.**
-- Nothing changed on live. `tower-ctx` has both changes (97665a39, 513eceb1) on top of Pass 23's; it is not in
-  `tower-next`.
+- Live changed only in part 8.
 - The 477K run was not repeated on image ctx-513eceb1.
 - One run a configuration; no answers graded on short chats.
 - Nothing posted upstream. The #336 author pushed the parking fix independently (96a1a1180, 2026-11-25); the

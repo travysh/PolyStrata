@@ -1,0 +1,3 @@
+# polystrata:tower-513eceb1: tower-ctx 513eceb1 (polystrata:ctx-513eceb1, ZHA for Inkling 2) starting Cyber-Tiel, as the live image did.
+FROM polystrata:ctx-513eceb1
+CMD [".venv/bin/python", "serve/server.py", "--engine", "strata", "--config", "/data/config/strata-cybertiel-next.json", "--port", "8080", "--gpu", "0"]
