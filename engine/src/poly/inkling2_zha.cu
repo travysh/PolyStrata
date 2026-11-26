@@ -2257,7 +2257,7 @@ void zha_attend(void* blas, const Zha& z, const float* q, const ZhaKv& leaves, c
     const int per = n_head / kv_heads;
     // a token at a time with the cache: its chunks from the VRAM it keeps, only the misses over the bus (a KV group's
     // heads choose together: one selection a group)
-    const bool cached = cache && cache->P > 0 && rows == 1 && 1 + std::min(z.max_sel, max_chunks) <= cache->P;
+    const bool cached = cache && cache->P > 0 && rows == 1 && 1 + std::min(z.max_sel, std::max(built, 1)) <= cache->P;
     if (!cached && (!kept_stage || !keep)) {
         zha_fill_int_kernel<<<grid((size_t) wk.heads * max_chunks, 256), 256, 0, cs(stream)>>>(
             wk.cmap, (size_t) wk.heads * max_chunks, -1);

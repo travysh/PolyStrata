@@ -285,6 +285,8 @@ private:
     int zcap0_ = 0;        ///< a slot's first room
     void zha_recap(ZSlot& S, int cap);
     void zha_room(ZSlot& S, int need);
+    int zha_pool_for(int chunks) const;
+    void zha_repool(ZSlot& S, int P);
     void zha_room_all(int64_t end);
     bool zread_full_ = false;   ///< the read under way is max_read()'s: the prompt goes on, the room is whole
     void zha_load();

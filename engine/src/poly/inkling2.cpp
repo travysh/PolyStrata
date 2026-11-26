@@ -916,6 +916,11 @@ Inkling2::~Inkling2() {
     for (ZSlot& z : zs_) {   // the summaries and the leaves are the slots' own
         for (void* p : {(void*) z.zk, (void*) z.zv, (void*) z.zb})
             if (p) cudaFree(p);
+        if (zgrow_)   // zha_repool()'s
+            for (void* p : {(void*) z.zcache.pool.kc, (void*) z.zcache.pool.vc, (void*) z.zcache.pool.ks,
+                            (void*) z.zcache.pool.vs, (void*) z.zcache.owner, (void*) z.zcache.stamp,
+                            (void*) z.zcache.aux})
+                if (p) cudaFree(p);
         for (auto [p, b] : zha_rows(z)) {
             if (!p) continue;
             if (!zlazy_) {
@@ -2099,7 +2104,14 @@ void Inkling2::zha_alloc(int slot, int il, int pass) {
     S.rks = (uint16_t*) dmalloc((size_t) zring_ * scales, "the index's ring");
     S.rvc = (int8_t*) dmalloc((size_t) zring_ * codes, "the index's ring");
     S.rvs = (uint16_t*) dmalloc((size_t) zring_ * scales, "the index's ring");
-    if (zha_pool_ > 0) {
+    if (zcap0_ == 0) {   // the summaries' room grows with the context where VRAM can come from the expert cache
+        zgrow_ = vmm_ && !pool_on_ && !freeze_experts_;
+        zcap0_ = zgrow_ ? std::min(zha_max_chunks_, 1024) : zha_max_chunks_;   // 64K tokens first
+    }
+    if (zha_pool_ > 0 && zgrow_) {   // an answer's chunk cache grows with the context too (zha_repool())
+        S.zcache.pmap = (int*) dmalloc((size_t) n_kv_ * zha_max_chunks_ * sizeof(int), "the index's chunk cache");
+        zha_repool(S, zha_pool_for(0));
+    } else if (zha_pool_ > 0) {
         ink::ZhaCache& Z = S.zcache;
         const size_t keys = (size_t) n_kv_ * zha_pool_ * zha_.C, per_key = head_dim_ / 2;
         Z.P = zha_pool_;
@@ -2124,10 +2136,6 @@ void Inkling2::zha_alloc(int slot, int il, int pass) {
     const size_t refs = (size_t) n_kv_ * zha_.R * head_dim_;
     S.zrefs = (float*) dmalloc(refs * sizeof(float), "the index");
     ck(cudaMemcpy(S.zrefs, zha_refs_.data() + k * refs, refs * sizeof(float), cudaMemcpyHostToDevice), "the index");
-    if (zcap0_ == 0) {   // the summaries' room grows with the context where VRAM can come from the expert cache
-        zgrow_ = vmm_ && !pool_on_ && !freeze_experts_;
-        zcap0_ = zgrow_ ? std::min(zha_max_chunks_, 1024) : zha_max_chunks_;   // 64K tokens first
-    }
     S.zcap = 0;
     S.zbuilt = 0;
     S.zpos = -1;
@@ -2188,6 +2196,58 @@ void Inkling2::zha_recap(ZSlot& S, int cap) {
     if (had && exp_ && bytes_old > bytes_new + kArenaPiece) grow_cache(bytes_old - bytes_new, true);
 }
 
+// The chunk cache an answer over `chunks` chunks needs: all of them and chunk 0 (zha_attend() reads through the cache
+// only when a selection fits), 64 at least and twice the room at a time, at most STRATA_INK_ZHA_POOL.
+int Inkling2::zha_pool_for(int chunks) const {
+    int P = std::min(zha_pool_, 64);
+    while (P < chunks + 1 && P < zha_pool_) P = std::min(zha_pool_, 2 * P);
+    return P;
+}
+
+// A slot's chunk cache at P chunks a KV head, empty: the old one's VRAM back first, then from the expert cache what the
+// card has not free, as zha_recap() does; a smaller one gives the difference back to the experts.
+void Inkling2::zha_repool(ZSlot& S, int P) {
+    ink::ZhaCache& Z = S.zcache;
+    if (P == Z.P) return;
+    const size_t keys = (size_t) n_kv_ * P * zha_.C, code = keys * head_dim_ / 2, scale = keys * head_dim_ / 32 * 2;
+    const auto bytes = [&](int p) {
+        return p ? (size_t) n_kv_ * p * zha_.C * (head_dim_ + head_dim_ / 8) + (size_t) n_kv_ * (3 * p + 2) * 4 : 0;
+    };
+    const size_t b_new = bytes(P), b_old = bytes(Z.P);
+    ck(cudaStreamSynchronize(cs(st_)), "the index's chunk cache");
+    for (void* o : {(void*) Z.pool.kc, (void*) Z.pool.vc, (void*) Z.pool.ks, (void*) Z.pool.vs, (void*) Z.owner,
+                    (void*) Z.stamp, (void*) Z.aux})
+        if (o) cudaFree(o);
+    if (exp_ && b_new > b_old) {
+        size_t free_b = 0, total_b = 0;
+        ck(cudaMemGetInfo(&free_b, &total_b), "cudaMemGetInfo");
+        const size_t quarter = (size_t(std::max(reserve_mib_, 0)) << 20) / 4;
+        if (free_b < b_new + quarter) {
+            shrink_cache(b_new + quarter - free_b);
+            held_is_budget();
+        }
+    }
+    void* p[7] = {};
+    const size_t sizes[7] = {code, code, scale, scale, (size_t) n_kv_ * P * 4, (size_t) n_kv_ * P * 4,
+                             (size_t) n_kv_ * (P + 2) * 4};
+    for (int i = 0; i < 7; ++i)
+        if (cudaMalloc(&p[i], sizes[i]) != cudaSuccess) {
+            cudaGetLastError();
+            for (int k = 0; k < i; ++k) cudaFree(p[k]);
+            Z.P = 0, Z.pool.kc = Z.pool.vc = nullptr, Z.pool.ks = Z.pool.vs = nullptr, Z.owner = Z.stamp = Z.aux = nullptr;
+            throw std::runtime_error("no VRAM for the index's chunk cache (" + std::to_string(P) + " chunks a head)");
+        }
+    Z.P = P;
+    Z.pool.row = head_dim_;
+    Z.pool.headed = 0;
+    Z.pool.q4 = 1;
+    Z.pool.kc = (int8_t*) p[0], Z.pool.vc = (int8_t*) p[1];
+    Z.pool.ks = (uint16_t*) p[2], Z.pool.vs = (uint16_t*) p[3];
+    Z.owner = (int*) p[4], Z.stamp = (int*) p[5], Z.aux = (int*) p[6];
+    ink::zha_cache_clear(Z, n_kv_, zha_max_chunks_, st_);
+    if (exp_ && b_old > b_new + kArenaPiece) grow_cache(b_old - b_new, true);
+}
+
 // A prompt's read starts (prompt_begins()): every slot's room for the chunks up to the read's end, now, while the
 // expert cache still has VRAM to give: inside a long prompt the cache has lent all of it to the read's buffers.  A
 // read of max_read() rows is a prompt that goes on past it (its later reads would find no VRAM to grow into): the
@@ -2200,8 +2260,9 @@ void Inkling2::zha_room_all(int64_t end) {
         if (S.zk) zha_room(S, need);
 }
 
-// Room for need chunks: twice the room until it holds them (at most max_chunks).
+// Room for need chunks: twice the room until it holds them (at most max_chunks); the chunk cache as zha_pool_for().
 void Inkling2::zha_room(ZSlot& S, int need) {
+    if (zgrow_ && zha_pool_ > 0 && S.zcache.P < zha_pool_for(need)) zha_repool(S, zha_pool_for(need));
     if (!zgrow_ || need <= S.zcap) return;
     int cap = S.zcap;
     while (cap < need && cap < zha_max_chunks_) cap = std::min(zha_max_chunks_, cap * 2);
@@ -2368,6 +2429,7 @@ void Inkling2::zha_attention(int il, int n) {
             while (cap < want) cap *= 2;
             zha_recap(S, std::min(cap, zha_max_chunks_));
         }
+        if (zgrow_ && zha_pool_ > 0 && 4 * zha_pool_for(want) <= S.zcache.P) zha_repool(S, zha_pool_for(want));
         zha_room(S, (int) (pos_ / C));
         ink::zha_build(S.zrefs, leaves, (int64_t) opt_.max_context + 1, S.zbuilt, (int) (pos_ / C), C, zha_.R, n_kv_,
                        zha_max_chunks_, S.zk, S.zv, S.zb, st_, zha_q8n(S.zcap));
