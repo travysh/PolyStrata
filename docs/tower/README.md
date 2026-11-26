@@ -2639,7 +2639,7 @@ Images:
 
 `ctx-defer`, `ctx-poll` and `ctx-lanes` were the steps on the way. Scripts are in `p26/`:
 - `cupti_trace.cpp`: a CUPTI tracer loaded with `CUDA_INJECTION64_PATH`. It writes every kernel, copy and runtime
-  call to a CSV. It slows decode by about 8%, so traced tok/s are lower than untraced ones.
+  call to a CSV. It slows decode, so traced tok/s are lower than untraced ones.
 - `tr.py`: the per-token summary. `seq.py`: one token's GPU work in order.
 - `ggufinfo.py`: a GGUF's tensors and types.
 - `bench.sh`: p25's, writing to `p26/`.
