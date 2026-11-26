@@ -2495,6 +2495,10 @@ over the whole `--max-context`.
   image does not have. Switching from Inkling back to Cyber-Tiel failed with it; now Cyber-Tiel -> Inkling -> Cyber-Tiel
   works on live.
 - Branch `tower-next` fast-forwarded to `tower-ctx` 513eceb1.
+- 2026-11-26: Inkling is the model live starts with (the user's choice; Cyber-Tiel is switched to from the model list).
+  `polystrata:tower` = `tower-513eceb1-ink`, the same image with Inkling's config in its start command
+  (`p24/Dockerfile.live-513eceb1-ink`); `tower-513eceb1` (starting Cyber-Tiel) is kept. Checked on live: starts at
+  524,288 with the index, Inkling -> Cyber-Tiel -> Inkling, an answer from each.
 - Rollback: `docker tag polystrata:tower-9172f75e polystrata:tower`, `rebuild_container PolyStrata`, and
   `strata-inkling2-mini.json.pre-zha` back to `strata-inkling2-mini.json`.
 

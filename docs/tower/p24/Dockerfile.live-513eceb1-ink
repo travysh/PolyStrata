@@ -1,0 +1,4 @@
+# polystrata:tower-513eceb1-ink: tower-next 513eceb1 (polystrata:ctx-513eceb1, ZHA for Inkling 2) starting Inkling 2 Mini
+# at 512K, the default since 2026-11-26; Cyber-Tiel is switched to from the model list.
+FROM polystrata:ctx-513eceb1
+CMD [".venv/bin/python", "serve/server.py", "--engine", "strata", "--config", "/data/config/strata-inkling2-mini.json", "--port", "8080", "--gpu", "0"]
