@@ -2444,6 +2444,20 @@ over the whole `--max-context`.
   830 tok/s and its answer was written at 46.0 tok/s. The cache grew to 600 for it, shrank for the short chats and
   grew again when the 128K conversation was restored (0.16 s).
 
+**6. A smaller ceiling** (`chain7.sh`, image ctx-513eceb1, `probe.sh`, the same three prompts):
+
+| Config | Experts on the card | Writes (tok/s) | Conversation cache (auto) |
+|---|---|---|---|
+| plain 64K | 1,244 | 55.2 / 56.0 | 8,192 MiB |
+| ZHA 256K | 1,236 | 50.6 / 51.5 | 8,192 MiB |
+| ZHA 512K | 1,236 | 51.2 / 52.1 | 8,192 MiB |
+| ZHA 1M | 1,234 | 49.9 / 50.7 | 6,400-6,656 MiB |
+
+- 256K and 512K write about 1 tok/s faster than 1M on short chats (some of the index's per-token work is sized by
+  `--max-context`); between them the difference is within one run's spread.
+- Under 1M the conversation cache keeps its full 8 GiB: the leaves still to pin (4.5 GiB at 512K) leave enough.
+- At 512K the gap to plain 64K is about 7% (51.7 against 55.6 tok/s).
+
 **What this says.**
 - Through the server, a single Inkling config at 1M cost 11% of the writing speed on short chats (49.5 against
   55.5 tok/s) before part 5 and about 0.05 s more on a short read. It no longer holds 9.4 GB of RAM when the chats are short.
