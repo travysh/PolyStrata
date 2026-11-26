@@ -5937,6 +5937,55 @@ __global__ void __launch_bounds__(128) mmvq_slots_iq3_kernel(S slots, size_t row
 #endif
 
 #if !defined(__HIPCC__)
+// NVFP4 rows for MmvqSlots::lanes / MmvqIds::lanes (Inkling 2 Mini's experts; CUDA only), laid out as
+// mmvq_slots_iq3_kernel's: a warp takes R rows as one run of R x C calls (C = 2 calls a 64-value block), lane p
+// taking call 32 i + p.  mmvq_slots_kernel gives a row a warp: a 2304-value gate or up row is 72 calls, three passes
+// over the lanes with the third 8 of 32 busy, and an 1152-value down row 36, two passes with the second 4 of 32.
+// With R = 8 every pass is full.  Row r's lane-L terms of row_dot land on lane (L + r C) mod 32 in its order, and a
+// shuffle takes them back to lane L before the same warp_sum: mmvq_slots_kernel's bits where the compiler contracts
+// both alike (checked by the tokens on sm_86).  STRATA_NVFP4_LANES=0 keeps mmvq_slots_kernel, =1 takes this one on
+// every card; unset, on sm_86 only.
+bool nvfp4_lanes_on() {
+    static const bool on = [] {
+        if (const char* v = std::getenv("STRATA_NVFP4_LANES"); v && *v) return v[0] != '0';
+        int dev = 0, major = 0, minor = 0;
+        if (cudaGetDevice(&dev) != cudaSuccess ||
+            cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess ||
+            cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev) != cudaSuccess)
+            return false;
+        return major == 8 && minor == 6;
+    }();
+    return on;
+}
+template<int R, typename S>
+__global__ void __launch_bounds__(128) mmvq_slots_nvfp4_kernel(S slots, size_t row_bytes, int n_in, int n_out) {
+    using F = Fmt<40>;
+    const int row0 = (blockIdx.x * 4 + threadIdx.y) * R;
+    if (row0 >= n_out) return;
+    const SlotPtrs at = slot_ptrs(slots, int(blockIdx.y));
+    const int lane = threadIdx.x, C = (n_in / F::qk) * F::ipb, rows = min(R, n_out - row0);
+    const uint8_t* w = (const uint8_t*) at.w + (size_t) row0 * row_bytes;
+    const block_q8_1* x = (const block_q8_1*) at.x;
+    float acc[R];
+#pragma unroll
+    for (int q = 0; q < R; ++q) acc[q] = 0.0f;
+    for (int f = lane; f < rows * C; f += 32) {
+        const int r = f / C, c = f - r * C, kbx = c / F::ipb, iqs = F::step * (c % F::ipb);
+        const float v = F::dot(w + (size_t) r * row_bytes, x + kbx * (F::qk / 32), kbx, iqs);
+#pragma unroll
+        for (int q = 0; q < R; ++q)
+            if (q == r) acc[q] += v;
+    }
+#pragma unroll
+    for (int q = 0; q < R; ++q) {
+        float v = __shfl_sync(0xffffffffu, acc[q], (lane + q * C) & 31);
+        v = warp_sum(v);
+        if (q < rows && lane == 0) at.y[row0 + q] = v;
+    }
+}
+#endif
+
+#if !defined(__HIPCC__)
 // mmvq_slots_kernel for MmvqSlots::lanes / MmvqIds::lanes (Inkling 2's cached experts, CUDA) in the formats whose
 // codebook stage_iq_grid puts in shared memory (IQ2_XXS, IQ2_XS, IQ2_S, IQ1_S, IQ1_M).  mmvq_slots_kernel reads the
 // codebook from global memory and gives a block 4 rows; here a block of 4 warps stages it once and each warp takes
@@ -5994,6 +6043,13 @@ void slots_of(int t, const S& slots, int count, int n_in, int n_out, void* strea
     }
 #endif
 #if !defined(__HIPCC__)
+    if (t == 40 && slots.lanes && !g_old_kernels && nvfp4_lanes_on()) {
+        constexpr int R = 8;   // 72 or 36 calls a row: 8 rows are 18 or 9 full passes over the lanes
+        const dim3 g8((unsigned) ((n_out + 4 * R - 1) / (4 * R)), (unsigned) count);
+        mmvq_slots_nvfp4_kernel<R, S><<<g8, block, 0, (cudaStream_t) stream>>>(slots, rb, n_in, n_out);
+        check("iq_mmvq_slots");
+        return;
+    }
     if ((t == 16 || t == 17 || t == 22 || t == 29 || t == 19) && slots.lanes && !g_old_kernels && g_stage_grid &&
         slot_lanes_on()) {
         const dim3 g8((unsigned) ((n_out + 4 * kLaneRows - 1) / (4 * kLaneRows)), (unsigned) count);
