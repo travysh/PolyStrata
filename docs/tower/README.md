@@ -2738,6 +2738,108 @@ engine logs.
   measured with this image.
 - Nothing posted upstream.
 
+## Pass 27: guessing ahead with Inkling's drafter, and the bench against the server (2026-11-26)
+
+**Question.** Cyber-Tiel gets to about 90 tok/s because its MTP head guesses tokens that one read of the weights
+then checks. Inkling 2 Mini's file has no such head. Can Unsloth's DSpark drafter (`--draft-model`) do the same job
+on Tower, at 512K with the ZHA index? A second question: why does the bench write about 57-60 tok/s while chats
+through the server write about 48?
+
+**Setup.** Tower as in Pass 26, ZHA 512K with live's settings unless a row says otherwise. Images:
+- `polystrata:ctx-d200e08b` (Pass 26);
+- `polystrata:ctx-ds14`, `ctx-ds15`, `ctx-ds16`: the steps to `tower-ctx` 6e1b0c34e (changes 1 and 2 below).
+
+The drafter is `dspark-Inkling-2-Mini-Q8_0_Old.gguf` (402,278,560 bytes, sha256 `2ec78510…f3773`). The newer
+`dspark-Inkling-2-Mini-Q8_0.gguf` (503,889,952 bytes) has another layout (no `dspark.markov_rank`, adds `ctx_mix`
+and `markov_w2`), and the engine refuses it. Scripts are in `p26/`:
+- `chain7.sh`-`chain15.sh`: the runs below.
+- `chats.py`: six short chats (code, explanation, story, table, bash, history) through the server, 400 tokens each.
+- `encode.py`: those chats' prompts as the server encodes them, for `strata-poly --tokens`.
+- `why400.py`: sends one bench task the way `run_bench.py` does and prints the reply, an error's too.
+
+Live was stopped for each chain and started again at its end.
+
+**1. Changes** (opt-in: without `--draft-model` and `--window` the path is the one Pass 26 measured).
+- 3e3dc7514, "Inkling 2's DSpark drafter under the ZHA index". The engine refused `--draft-model` with ZHA. Now:
+  - the drafter's full-attention layer keeps a ring of `STRATA_INK_DS_SPAN` positions (32,768 by default, 1,024 or
+    more), not the whole 512K;
+  - a verify window's rows go through ZHA's VRAM chunk cache one row at a time (it took the uncached prompt path
+    before);
+  - a wrong guess takes the index back a few positions, where it was treated as a jump that refilled the ring and
+    cleared the cache;
+  - a lone token in window mode keeps the ZHA graph path (it lost it before, 8% slower on short prompts).
+- 6e1b0c34e lends the drafter's prompt scratch to the expert cache as well. With the drafter loaded the cache had
+  945 slots against 1,242 without; this brings it to 1,046.
+
+**2. Guesses from the conversation itself** (`--lookup`, `--window 2` and `4`, no drafter, chain 7): no gain. Short
+prompt 59.4 tok/s at window 1, 55.7-56.8 at 2, 59.7-59.8 at 4. The 4,521-token runs were 34.9-54.2 and moved more
+with the round than with the window.
+
+**3. The drafter in the bench** (`strata-poly` alone, temperature 0, two rotation rounds; tok/s):
+
+| | without | with the drafter |
+|---|---|---|
+| 64K, no ZHA (ctx-d200e08b), 4,521-token prompt | 57.2 | 76.9 |
+| 64K, no ZHA (ctx-d200e08b), short prompt | 60.9 | 82.1 |
+| 512K ZHA (d200e08b against ctx-ds16), 4,521-token prompt | 55.5 / 55.7 | 79.0 / 80.1 |
+| 512K ZHA (d200e08b against ctx-ds16), short prompt | 58.8 / 59.9 | 83.5 / 83.3 |
+
+At 4,521 tokens the drafter wrote the same tokens as the run without it. Through the server with the drafter config,
+both 128K needle answers were right (Varn, Mirel).
+
+**4. The drafter in chats** (ctx-ds16 through the server, `chats.py`, six chats, two rounds a setting, chain 14;
+tok/s, the mean of the chats):
+
+| | live's config | with the drafter |
+|---|---|---|
+| temperature 0 | 48.7 | 44 |
+| temperature 0.6 | 47.8 | 43.5 |
+
+The drafter is about 10% slower in chats. Its gate asked for guesses in only a few rounds, because guesses were
+accepted less often in these chats than in the bench prompt, and a round that asks and loses costs more than one
+that does not ask.
+
+**5. What a guess costs on this card.** Each extra token in a verify window costs about 0.6 of a lone token: a
+window of 8 is about 101 ms against 17 ms. A window reads more of the experts than one token does, and on Tower many
+of them come from the CPU. So the gain depends on how often a guess is right:
+
+| guesses accepted | gain |
+|---|---|
+| 80% | +12% |
+| 90% | +23% |
+| 95% | +33% |
+
+The bench prompt gets into the 90s; the chats did not. With one-hot (greedy) drafts, accepting exact matches is
+already the same as speculative sampling, so a different acceptance rule gains nothing. DFlash2's reported
+acceptance length (4.8-5.0 tokens against DSpark's 3.5) would give about +10% at most here, so it was not tried.
+
+**6. The bench against the server** (ctx-ds16, the six chats, 400 tokens, chain 15; tok/s):
+- The bench prompt's answer repeats itself, so the experts it needs stay on the GPU: its CPU experts cost about
+  4.3 ms a token, and it writes 59.9.
+- The chats' own prompts through `strata-poly` alone: 50.5-56.2 (about 53), with CPU experts at 6.4-9.0 ms a token.
+  With the server's `--conversation-cache-mib auto` too: 51.1-58.1.
+- The same chats through the server: 46.3-51.9 (about 48.9).
+
+About 12 points of the gap is the content (which experts a text needs), and 5-10% is the server. Neither part is a
+30% lever.
+
+**7. Not explained.** The first 128K needle request with the drafter config got HTTP 400 once (chain 11). It did not
+happen again alone (chain 12), in chain 13's needle run, or in 96 chat requests.
+
+**8. Live.** Live is now `polystrata:tower-d200e08b-ink`: `tower-next` d200e08bc (Pass 26's changes), Inkling's
+config unchanged, without the drafter. Health was ok at 524,288, a chat answered right, and the engine log had no
+errors. Rollback: `docker tag polystrata:tower-513eceb1-ink polystrata:tower`, then rebuild the container.
+
+**What this says.**
+- The drafter pays on repetitive text (+40% in the bench) and loses about 10% on ordinary chats, on this card. It
+  stays opt-in and is not in live's config.
+- The drafter files, the drafter config and the `ctx-ds14`-`16` images were deleted from Tower afterwards. The code
+  stays on `tower-ctx`.
+
+**Not done.**
+- No llama.cpp builds and nothing posted upstream.
+- Cyber-Tiel was not measured with these images.
+
 ## Shared-load changes (2026-10-17)
 
 With Plex, Deluge and Duplicati running again, the GGUF (22.7 GB) has to stay cached next to them, and about 22.5 GB
