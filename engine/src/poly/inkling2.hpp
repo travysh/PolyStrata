@@ -302,7 +302,7 @@ private:
         return zlazy_ ? (uint64_t) (opt_.max_context - zpinned_) * card_row_bytes() : 0;
     }
     void zha_scratch();
-    void zha_attention(int il, int n);
+    bool zha_attention(int il, int n, const float* gate = nullptr);
     // the prompt buffers lent (with the driver's virtual memory): score, rstar, sel, stage kc, vc, ks, vs, S
     Mapped zmap_[8];          // 0-6: zha_scratch()'s p[], 7: S
     size_t zfull_[8] = {};

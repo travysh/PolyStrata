@@ -1248,8 +1248,7 @@ void Inkling2::layer_head(Layer& L, int il, int n) {
         const size_t at = (size_t) slot_of(il, pass_of(il)) * 2;
         if (!zgraph_[at]) zgraph_[at] = grab([&] { head_part(L, il, n, 1); });
         ck(cudaGraphLaunch((cudaGraphExec_t) zgraph_[at], cs(st_)), "layer graph");
-        zha_attention(il, n);
-        ink_mul_sigmoid(att_, gate_, (size_t) n_head_ * head_dim_, st_);
+        if (!zha_attention(il, n, gate_)) ink_mul_sigmoid(att_, gate_, (size_t) n_head_ * head_dim_, st_);
         if (!zgraph_[at + 1]) zgraph_[at + 1] = grab([&] { head_part(L, il, n, 2); });
         ck(cudaGraphLaunch((cudaGraphExec_t) zgraph_[at + 1], cs(st_)), "layer graph");
         return;
@@ -2388,12 +2387,15 @@ void Inkling2::zha_narrow() {
 
 
 // A full layer's call under the index: its rows' keys and values (k_, v_) into the leaves and the ring, the chunks
-// they complete summarized, the attention into att_ (before the output gate).
-void Inkling2::zha_attention(int il, int n) {
+// they complete summarized, the attention into att_ (before the output gate; with gate, true if it was applied).
+bool Inkling2::zha_attention(int il, int n, const float* gate) {
     const Block& B = blocks_[(size_t) il];
     ZSlot& S = zs_[(size_t) slot_of(il, pass_of(il))];
     const int hk = n_kv_ * head_dim_, C = zha_.C;
     zha_pin(pos_ + n, false);
+    if (n == 1) {   // an answer's token: the leaves and the ring in one launch
+        ink::store_token(k_, v_, hk, S.kc, S.ksc, S.vc, S.vsc, pos_, S.rkc, S.rks, S.rvc, S.rvs, pos_ % zring_, st_);
+    } else {
     ink::store_q4(k_, S.kc, S.ksc, hk, pos_, n, 0, st_);   // the leaves: 4-bit
     ink::store_q4(v_, S.vc, S.vsc, hk, pos_, n, 0, st_);
     {   // and the recent rows' ring in VRAM
@@ -2405,6 +2407,7 @@ void Inkling2::zha_attention(int il, int n) {
             store_q8(k_ + (size_t) head * hk, S.rkc, S.rks, hk, 0, n - head, st_);
             store_q8(v_ + (size_t) head * hk, S.rvc, S.rvs, hk, 0, n - head, st_);
         }
+    }
     }
     ink::ZhaKv leaves, ring;
     leaves.kc = S.kc, leaves.ks = S.ksc, leaves.vc = S.vc, leaves.vs = S.vsc;
@@ -2450,10 +2453,12 @@ void Inkling2::zha_attention(int il, int n) {
     const ink::ZhaWork& wk = small ? zwd_ : wkp;
     // a prompt call that goes on from this slot's last one keeps what it staged
     const bool keep = n >= kStageRows && zw_owner_ == &S && zw_next_ == pos_;
-    ink::zha_attend(blas_, zha_, q_, leaves, ring, n_ring, S.zk, S.zv, S.zb, S.zbuilt, zha_max_chunks_, pos_, n, n_head_,
-                    n_kv_, rr_, fp(B.rel_bias), B.extent, n_rel_, sink_, wk, att_, st_, &S.zcache, keep, S.zcap);
+    const bool gated = ink::zha_attend(blas_, zha_, q_, leaves, ring, n_ring, S.zk, S.zv, S.zb, S.zbuilt,
+                                       zha_max_chunks_, pos_, n, n_head_, n_kv_, rr_, fp(B.rel_bias), B.extent, n_rel_,
+                                       sink_, wk, att_, st_, &S.zcache, keep, S.zcap, gate);
     zw_owner_ = &S;
     zw_next_ = n >= kStageRows ? pos_ + n : -1;
+    return gated;
 }
 
 }  // namespace strata::poly

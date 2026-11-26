@@ -88,10 +88,17 @@ void zha_build(const float* refs, const ZhaKv& ring, long long n_ring, int c0, i
 /// layer's slot through its summaries (chunks [0, built)): chunk 0 and the selected far chunks from the leaves (staged
 /// into wk.stage a KV head at a time), the recent keys from the ring, the bias by distance (r [rows][n_head][nrel]
 /// times table [extent][nrel]) and each token's sink.  out [rows][n_head][128].
-void zha_attend(void* blas, const Zha& z, const float* q, const ZhaKv& leaves, const ZhaKv& ring, long long n_ring,
+/// An answer's token's keys and values (k, v: n values each) to the 4-bit leaves at row pos and to the ring's Q8_0 at
+/// row ring_row, in one launch: what store_q4() and store_q8() write for one row.
+void store_token(const float* k, const float* v, int n, int8_t* kc, uint16_t* ks, int8_t* vc, uint16_t* vs,
+                 long long pos, int8_t* rkc, uint16_t* rks, int8_t* rvc, uint16_t* rvs, long long ring_row,
+                 void* stream);
+
+bool zha_attend(void* blas, const Zha& z, const float* q, const ZhaKv& leaves, const ZhaKv& ring, long long n_ring,
                 const uint16_t* khat, const uint16_t* vhat, const float* bhat, int built, int max_chunks, long long pos,
                 int rows, int n_head, int kv_heads, const float* r, const float* table, int extent, int nrel,
                 const float* sinks, const ZhaWork& wk, float* out, void* stream, ZhaCache* cache = nullptr,
-                bool keep = false, int sum_cap = 0);   // sum_cap: the summaries' chunks a KV head (0: max_chunks)
+                bool keep = false, int sum_cap = 0,   // sum_cap: the summaries' chunks a KV head (0: max_chunks)
+                const float* gate = nullptr);   // an answer's token: out times sigmoid(gate) if it returns true
 
 }  // namespace strata::poly::ink

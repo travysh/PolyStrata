@@ -23,9 +23,13 @@ void zha_build(const float*, const ZhaKv&, long long, int, int, int, int, int, i
                size_t) {
     nvidia_only();
 }
-void zha_attend(void*, const Zha&, const float*, const ZhaKv&, const ZhaKv&, long long, const uint16_t*, const uint16_t*,
+void store_token(const float*, const float*, int, int8_t*, uint16_t*, int8_t*, uint16_t*, long long, int8_t*,
+                 uint16_t*, int8_t*, uint16_t*, long long, void*) {
+    nvidia_only();
+}
+bool zha_attend(void*, const Zha&, const float*, const ZhaKv&, const ZhaKv&, long long, const uint16_t*, const uint16_t*,
                 const float*, int, int, long long, int, int, int, const float*, const float*, int, int, const float*,
-                const ZhaWork&, float*, void*, ZhaCache*, bool, int) {
+                const ZhaWork&, float*, void*, ZhaCache*, bool, int, const float*) {
     nvidia_only();
 }
 }  // namespace strata::poly::ink
@@ -230,8 +234,9 @@ __global__ void zha_build_kernel(const float* __restrict__ refs, ZhaKv ring, lon
 
 // A 32-value block of a row a warp's 8 lanes (4 values each): its largest magnitude / 7 the scale, codes
 // round(x / scale) + 8 in [0, 15]; the block's 16 bytes go out in one store (the codes may be in RAM over PCIe).
-__global__ void store_q4_kernel(const float* __restrict__ x, int8_t* __restrict__ codes, uint16_t* __restrict__ scales,
-                                int n, long long pos, int rows, long long ring) {
+__device__ __forceinline__ void store_q4_rows(const float* __restrict__ x, int8_t* __restrict__ codes,
+                                              uint16_t* __restrict__ scales, int n, long long pos, int rows,
+                                              long long ring) {
     const size_t i = ((size_t) blockIdx.x * blockDim.x + threadIdx.x) / 8, per = n / 32;
     const int sub = threadIdx.x & 7;   // the lane's 4 values of the block
     const bool live = i < (size_t) rows * per;
@@ -253,6 +258,39 @@ __global__ void store_q4_kernel(const float* __restrict__ x, int8_t* __restrict_
     if (ring > 0) row %= ring;
     *reinterpret_cast<uint4*>(codes + (size_t) row * (n / 2) + 16 * b) = make_uint4(w0, w1, w2, w3);
     scales[(size_t) row * per + b] = __half_as_ushort(__float2half(d));
+}
+
+__global__ void store_q4_kernel(const float* __restrict__ x, int8_t* __restrict__ codes, uint16_t* __restrict__ scales,
+                                int n, long long pos, int rows, long long ring) {
+    store_q4_rows(x, codes, scales, n, pos, rows, ring);
+}
+
+// An answer's token in one launch (blockIdx.y): K and V to the 4-bit leaves at row pos (store_q4_rows), K and V to
+// the ring's Q8_0 at row ring_row, a thread a 32-value block (the codes of kernels.cu's store_q8_kernel).
+__global__ void store_token_kernel(const float* __restrict__ k, const float* __restrict__ v, int n,
+                                   int8_t* __restrict__ kc, uint16_t* __restrict__ ks, int8_t* __restrict__ vc,
+                                   uint16_t* __restrict__ vs, long long pos, int8_t* __restrict__ rkc,
+                                   uint16_t* __restrict__ rks, int8_t* __restrict__ rvc, uint16_t* __restrict__ rvs,
+                                   long long ring_row) {
+    const int y = blockIdx.y;
+    const float* x = (y & 1) ? v : k;
+    if (y < 2) return store_q4_rows(x, y ? vc : kc, y ? vs : ks, n, pos, 1, 0);
+    const int nb = n / 32, blk = blockIdx.x * blockDim.x + threadIdx.x;
+    if (blk >= nb) return;
+    const float* xr = x + blk * 32;
+    float amax = 0.f;
+#pragma unroll
+    for (int j = 0; j < 32; ++j) amax = fmaxf(amax, fabsf(xr[j]));
+    const float d = amax / 127.0f;
+    const float id = d > 0.f ? 1.0f / d : 0.0f;
+    (y == 2 ? rks : rvs)[(size_t) ring_row * nb + blk] = __half_as_ushort(__float2half(d));
+    int8_t* cr = (y == 2 ? rkc : rvc) + (size_t) ring_row * n + blk * 32;
+#pragma unroll
+    for (int j = 0; j < 32; ++j) {
+        float q = rintf(xr[j] * id);
+        q = fminf(fmaxf(q, -127.0f), 127.0f);
+        cr[j] = (int8_t) q;
+    }
 }
 
 // A block of 32 values a thread: 4-bit codes back to values, then to Q8_0 (scale = largest magnitude / 127).
@@ -1295,7 +1333,8 @@ __global__ void __launch_bounds__(128) zha_tail_dec_kernel(const float* __restri
 
 // The parts of zha_attend_kernel's segments for a token's head (blockIdx.x, blockIdx.y + head0), with its sink.
 __global__ void zha_join_kernel(const float* __restrict__ part, int segs, int n_head, int head0,
-                                const float* __restrict__ sinks, float* __restrict__ out) {
+                                const float* __restrict__ sinks, float* __restrict__ out,
+                                const float* __restrict__ gate = nullptr) {
     const int t = blockIdx.x, head = head0 + blockIdx.y, lane = threadIdx.x;
     const float* pp = part + ((size_t) t * n_head + head) * segs * (kZhaDim + 2);
     const float sink = sinks ? sinks[(size_t) t * n_head + head] : -INFINITY;
@@ -1310,9 +1349,14 @@ __global__ void zha_join_kernel(const float* __restrict__ part, int segs, int n_
 #pragma unroll
         for (int i = 0; i < 4; ++i) o[i] += x[4 * lane + i] * f;
     }
-    float* y = out + ((size_t) t * n_head + head) * kZhaDim + 4 * lane;
+    const size_t at = ((size_t) t * n_head + head) * kZhaDim + 4 * lane;
+    float* y = out + at;
 #pragma unroll
-    for (int i = 0; i < 4; ++i) y[i] = o[i] / Z;
+    for (int i = 0; i < 4; ++i) {   // and times the output gate's sigmoid, as ink_mul_sigmoid() would after
+        float a = o[i] / Z;
+        if (gate) a *= 1.0f / (1.0f + expf(-gate[at + i]));
+        y[i] = a;
+    }
 }
 
 // The partials of a group's heads (part [rows][per][segs][130], natural-log tops) joined with each head's sink.
@@ -2045,6 +2089,87 @@ __global__ void __launch_bounds__(256) zha_fill_q4_kernel(ZhaKv leaves, const in
     }
 }
 
+// zha_step_reset_kernel, zha_union_kernel (one selection, one row), zha_lookup_kernel and zha_assign_par_kernel of an
+// answer's step in one launch: a block a group (P <= blockDim), each part's body as it is, __syncthreads() between.
+__global__ void __launch_bounds__(1024) zha_step_kernel(const uint8_t* __restrict__ sel, size_t hs, int max_chunks,
+                                                        int nch, int* __restrict__ cmap, int* __restrict__ count,
+                                                        int* __restrict__ glist, int P, int now,
+                                                        int* __restrict__ owner, int* __restrict__ stamp,
+                                                        int* __restrict__ pmap, int* __restrict__ aux) {
+    __shared__ int sums[32];
+    const int g = blockIdx.x, tid = threadIdx.x, nt = blockDim.x;
+    sel += (size_t) g * hs;
+    cmap += (size_t) g * max_chunks;
+    count += g;
+    glist += (size_t) g * (max_chunks + 1);
+    int* a = aux + (size_t) g * (P + 2);
+    // the reset
+    for (int i = tid; i < max_chunks; i += nt) cmap[i] = -1;
+    if (tid == 0) *count = 0, glist[0] = 0, a[1] = 0;
+    __syncthreads();
+    // the union: chunk 0 and the selection's chunks, a thread a word of 32
+    const int base = g * max_chunks;
+    for (int wi = tid; 32 * wi < max_chunks; wi += nt) {
+        uint4 acc0 = make_uint4(0, 0, 0, 0), acc1 = acc0;
+        if (32 * wi < nch) {
+            const uint4* r = reinterpret_cast<const uint4*>(sel + 32 * (size_t) wi);
+            acc0 = r[0], acc1 = r[1];
+        }
+        const uint32_t v[8] = {acc0.x, acc0.y, acc0.z, acc0.w, acc1.x, acc1.y, acc1.z, acc1.w};
+        for (int k = 0; k < 32; ++k) {
+            const int c = 32 * wi + k;
+            const bool any = c < nch && (c == 0 || ((v[k >> 2] >> (8 * (k & 3))) & 0xffu));
+            if (!any || cmap[c] >= 0) continue;
+            cmap[c] = base + atomicAdd(count, 1);
+            glist[1 + atomicAdd(&glist[0], 1)] = c;
+        }
+    }
+    __syncthreads();
+    // the lookup: hits stamped and mapped to the pool, misses listed
+    int* st = stamp + (size_t) g * P;
+    int* pm = pmap + (size_t) g * max_chunks;
+    for (int c = tid; c < nch; c += nt) {
+        if (cmap[c] < 0) continue;
+        const int s = pm[c];
+        if (s >= 0) {
+            st[s] = now;
+            cmap[c] = g * P + s;
+        } else {
+            const int i = atomicAdd(&a[1], 1);
+            if (i < P) a[2 + i] = c;
+        }
+    }
+    __syncthreads();
+    // the misses' places (zha_assign_par_kernel)
+    int* own = owner + (size_t) g * P;
+    const int n = min(a[1], P), hand = a[0];
+    if (n == 0) return;
+    const int k = tid, lane = k & 31, w = k >> 5;
+    const int h = (hand + k) % P;
+    const bool open = k < P && st[h] != now;
+    const unsigned m = __ballot_sync(0xffffffffu, open);
+    if (lane == 0) sums[w] = __popc(m);
+    __syncthreads();
+    if (w == 0) {
+        int v = lane < (int) (blockDim.x >> 5) ? sums[lane] : 0;
+        for (int o = 1; o < 32; o <<= 1) {
+            const int t = __shfl_up_sync(0xffffffffu, v, o);
+            if (lane >= o) v += t;
+        }
+        sums[lane] = v;
+    }
+    __syncthreads();
+    const int i = __popc(m & ((1u << lane) - 1)) + (w ? sums[w - 1] : 0);
+    if (!open || i >= n) return;
+    const int c = a[2 + i];
+    if (own[h] >= 0) pm[own[h]] = -1;
+    own[h] = c;
+    pm[c] = h;
+    st[h] = now;
+    cmap[c] = (g * P + h) | kZhaMiss;
+    if (i == n - 1) a[0] = (h + 1) % P;
+}
+
 __global__ void zha_fill_int_kernel(int* __restrict__ p, size_t n, int v) {
     const size_t i = (size_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) p[i] = v;
@@ -2215,6 +2340,14 @@ void store_q4(const float* x, int8_t* codes, uint16_t* scales, int n, long long 
     store_q4_kernel<<<grid(blocks * 8, 256), 256, 0, cs(stream)>>>(x, codes, scales, n, pos, rows, ring);
 }
 
+void store_token(const float* k, const float* v, int n, int8_t* kc, uint16_t* ks, int8_t* vc, uint16_t* vs,
+                 long long pos, int8_t* rkc, uint16_t* rks, int8_t* rvc, uint16_t* rvs, long long ring_row,
+                 void* stream) {
+    if (n % 32) throw std::invalid_argument("ink::store_token: rows of 32-value blocks");
+    store_token_kernel<<<dim3(grid((size_t) (n / 32) * 8, 256), 4), 256, 0, cs(stream)>>>(
+        k, v, n, kc, ks, vc, vs, pos, rkc, rks, rvc, rvs, ring_row);
+}
+
 void q4_to_q8(const int8_t* src_codes, const uint16_t* src_scales, long long from, int8_t* dst_codes,
               uint16_t* dst_scales, long long to, long long ring, int n, int rows, void* stream) {
     if (rows <= 0) return;
@@ -2241,11 +2374,12 @@ void zha_build(const float* refs, const ZhaKv& ring, long long n_ring, int c0, i
                                                                         (__half*) khat, (__half*) vhat, bhat, q8n);
 }
 
-void zha_attend(void* blas, const Zha& z, const float* q, const ZhaKv& leaves, const ZhaKv& ring, long long n_ring,
+bool zha_attend(void* blas, const Zha& z, const float* q, const ZhaKv& leaves, const ZhaKv& ring, long long n_ring,
                 const uint16_t* khat, const uint16_t* vhat, const float* bhat, int built, int max_chunks, long long pos,
                 int rows, int n_head, int kv_heads, const float* r, const float* table, int extent, int nrel,
-                const float* sinks, const ZhaWork& wk, float* out, void* stream, ZhaCache* cache, bool keep, int sum_cap) {
-    if (rows <= 0) return;
+                const float* sinks, const ZhaWork& wk, float* out, void* stream, ZhaCache* cache, bool keep, int sum_cap,
+                const float* gate) {
+    if (rows <= 0) return false;
     if (z.C != kZhaKeys || z.R != 4 || !leaves.q4 || !ring.kc || ring.q4)
         throw std::logic_error("ink::zha_attend: chunks of 64, 4 references, 4-bit leaves and a Q8_0 ring");
     // a selection's chunks in shared memory: a score each (zha_pick_select_dec_kernel, zha_select_tile2/3_kernel)
@@ -2296,8 +2430,8 @@ void zha_attend(void* blas, const Zha& z, const float* q, const ZhaKv& leaves, c
             zha_exact_dec_kernel<<<dim3(n_head, kSegExact), 128, 0, cs(stream)>>>(
                 q, cache->pool, wk.cmap, wk.glist, ring, n_ring, max_chunks, pos, n_head, kv_heads, z.C, z.recent, r,
                 table, extent, nrel, wk.S, kSegExact, nl);
-        zha_join_kernel<<<dim3(rows, n_head), 32, 0, cs(stream)>>>(wk.S, kSegExact, n_head, 0, sinks, out);
-        return;
+        zha_join_kernel<<<dim3(rows, n_head), 32, 0, cs(stream)>>>(wk.S, kSegExact, n_head, 0, sinks, out, gate);
+        return gate != nullptr;
     }
     if (dec && built > 0) {
         zha_score_dec_kernel<<<dim3(grid(nch, 32), kv_heads), 128, 0, cs(stream)>>>(
@@ -2332,6 +2466,11 @@ void zha_attend(void* blas, const Zha& z, const float* q, const ZhaKv& leaves, c
             zha_select_kernel<<<dim3(rows, n_head), 128, 0, cs(stream)>>>(wk.score, max_chunks, pos, z.C, z.recent,
                                                                           z.budget, z.min_chunks, z.max_sel, wk.sel, hs);
         }
+        if (dec && cache->P <= 1024) {
+            zha_step_kernel<<<kv_heads, 1024, 0, cs(stream)>>>(wk.sel, hs, max_chunks, built, wk.cmap, wk.count,
+                                                               wk.glist, cache->P, cache->now, cache->owner,
+                                                               cache->stamp, cache->pmap, cache->aux);
+        } else {
         zha_step_reset_kernel<<<64, 256, 0, cs(stream)>>>(wk.cmap, (size_t) kv_heads * max_chunks, wk.count, wk.glist,
                                                           max_chunks, cache->aux, cache->P, kv_heads);
         zha_union_kernel<<<dim3(grid(words, 64), kv_heads), 64, 0, cs(stream)>>>(wk.sel, sels, hs, rows, max_chunks,
@@ -2344,6 +2483,7 @@ void zha_attend(void* blas, const Zha& z, const float* q, const ZhaKv& leaves, c
         else
             zha_assign_kernel<<<kv_heads, 1, 0, cs(stream)>>>(wk.cmap, -1, cache->P, max_chunks, cache->now,
                                                              cache->owner, cache->stamp, cache->pmap, cache->aux);
+        }
         const auto fill = [&](cudaStream_t s) {
             zha_fill_q4_kernel<<<dim3(kFillBlocks, kv_heads), 256, 0, s>>>(leaves, wk.cmap, cache->aux, cache->P,
                                                                            cache->pool, max_chunks);
@@ -2355,7 +2495,7 @@ void zha_attend(void* blas, const Zha& z, const float* q, const ZhaKv& leaves, c
                 pos, n_head, kv_heads, 0, z.R, z.C, z.recent, 1, r, table, extent, nrel, sinks, out, hs, sels, wk.S, 1,
                 0, segs, n_head, 1, q8n);
             zha_join_kernel<<<dim3(rows, n_head), 32, 0, cs(stream)>>>(wk.S, segs, n_head, 0, sinks, out);
-            return;
+            return false;
         }
         // the misses cross the bus (the fill waits on PCIe) while the tail reads VRAM: on a stream of their own
         static cudaStream_t side = nullptr;
@@ -2387,8 +2527,8 @@ void zha_attend(void* blas, const Zha& z, const float* q, const ZhaKv& leaves, c
             zha_exact_dec_kernel<<<dim3(n_head, kSegExact), 128, 0, cs(stream)>>>(
                 q, cache->pool, wk.cmap, wk.glist, ring, n_ring, max_chunks, pos, n_head, kv_heads, z.C, z.recent, r,
                 table, extent, nrel, wk.S, segs_all, -1);
-        zha_join_kernel<<<dim3(rows, n_head), 32, 0, cs(stream)>>>(wk.S, segs_all, n_head, 0, sinks, out);
-        return;
+        zha_join_kernel<<<dim3(rows, n_head), 32, 0, cs(stream)>>>(wk.S, segs_all, n_head, 0, sinks, out, gate);
+        return gate != nullptr;
     }
     for (int g = 0; g < kv_heads; ++g) {
         float* sc = few ? wk.score + (size_t) g * per * hs : wk.score;   // the group's heads' scores, hs apart
@@ -2506,6 +2646,7 @@ void zha_attend(void* blas, const Zha& z, const float* q, const ZhaKv& leaves, c
             q8n);
         zha_join_kernel<<<dim3(rows, per), 32, 0, cs(stream)>>>(wk.S, segs, n_head, g * per, sinks, out);
     }
+    return false;
 }
 
 }  // namespace strata::poly::ink
