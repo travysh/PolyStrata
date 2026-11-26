@@ -19,6 +19,9 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#ifndef _WIN32
+#include <sys/mman.h>
+#endif
 
 namespace strata::poly {
 namespace {
@@ -913,8 +916,17 @@ Inkling2::~Inkling2() {
     for (ZSlot& z : zs_) {   // the summaries and the leaves are the slots' own
         for (void* p : {(void*) z.zk, (void*) z.zv, (void*) z.zb})
             if (p) cudaFree(p);
-        for (void* p : {(void*) z.kc, (void*) z.ksc, (void*) z.vc, (void*) z.vsc})
-            if (p) cudaFreeHost(p);
+        for (auto [p, b] : zha_rows(z)) {
+            if (!p) continue;
+            if (!zlazy_) {
+                cudaFreeHost(p);
+                continue;
+            }
+#ifndef _WIN32
+            for (int64_t at = 0; at < zpinned_; at += kZhaPiece) cudaHostUnregister(p + (size_t) at * b);
+            munmap(p, (size_t) opt_.max_context * b);
+#endif
+        }
     }
     for (void* e : {side_go_, side_done_})
         if (e) cudaEventDestroy((cudaEvent_t) e);
@@ -2015,8 +2027,48 @@ void Inkling2::zha_load() {
     zring_ = (int64_t) zha_.recent + 2 * zha_.C + std::max(opt_.prompt_batch, 64) + 64;
     zha_max_chunks_ = (int) ((opt_.max_context + zha_.C - 1) / zha_.C + 31) / 32 * 32;   // words of 32 chunks
     zha_on_ = true;
+#ifndef _WIN32
+    int same = 0;
+    cudaDeviceGetAttribute(&same, cudaDevAttrCanUseHostPointerForRegisteredMem, device_);
+    zlazy_ = same && opt_.max_context > kZhaPiece && env_num("STRATA_INK_ZHA_PIN_ALL", 0) == 0;
+#endif
     std::fprintf(stderr, "strata-poly: ZHA index: chunks of %d, %d references, budget %.3f (at most %d), a pool of %d "
-                 "chunks a KV head\n", zha_.C, zha_.R, zha_.budget, zha_.max_sel, zha_pool_);
+                 "chunks a KV head, its RAM pinned %s\n", zha_.C, zha_.R, zha_.budget, zha_.max_sel, zha_pool_,
+                 zlazy_ ? "as the context grows" : "at the start");
+#endif
+}
+
+// The leaves pinned up to position `end`, kZhaPiece positions a registration, at the host's addresses (the card reads
+// them there); with `trim`, a context far shorter than what is pinned gives the pieces past it back to the system.
+void Inkling2::zha_pin(int64_t end, bool trim) {
+#ifndef _WIN32
+    if (!zlazy_) return;
+    const int64_t want = std::min<int64_t>(opt_.max_context, (end + kZhaPiece - 1) / kZhaPiece * kZhaPiece);
+    const auto piece = [&](int64_t at) { return (size_t) std::min(kZhaPiece, opt_.max_context - at); };
+    if (trim && zpinned_ > std::max(kZhaPiece, 4 * want)) {
+        const int64_t keep = std::max(kZhaPiece, want);
+        ck(cudaStreamSynchronize(cs(st_)), "the index's leaves");
+        for (ZSlot& z : zs_)
+            for (auto [p, b] : zha_rows(z)) {
+                if (!p) break;
+                for (int64_t at = keep; at < zpinned_; at += kZhaPiece) {
+                    ck(cudaHostUnregister(p + (size_t) at * b), "the index's leaves");
+                    madvise(p + (size_t) at * b, piece(at) * b, MADV_DONTNEED);
+                }
+            }
+        zpinned_ = keep;
+    }
+    if (want <= zpinned_) return;
+    for (ZSlot& z : zs_)
+        for (auto [p, b] : zha_rows(z)) {
+            if (!p) break;
+            for (int64_t at = zpinned_; at < want; at += kZhaPiece)
+                ck(cudaHostRegister(p + (size_t) at * b, piece(at) * b, cudaHostRegisterPortable | cudaHostRegisterMapped),
+                   "the index's leaves (pinned RAM)");
+        }
+    zpinned_ = want;
+#else
+    (void) end, (void) trim;
 #endif
 }
 
@@ -2029,6 +2081,13 @@ void Inkling2::zha_alloc(int slot, int il, int pass) {
     const size_t rows = (size_t) opt_.max_context;
     const auto host = [&](size_t bytes) {
         void* p = nullptr;
+#ifndef _WIN32
+        if (zlazy_) {   // the addresses only: zha_pin() pins it
+            p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+            if (p == MAP_FAILED) throw std::runtime_error("the index's leaves: no address space for them");
+            return p;
+        }
+#endif
         ck(cudaHostAlloc(&p, bytes, cudaHostAllocMapped | cudaHostAllocPortable), "the index's leaves (pinned RAM)");
         return p;
     };
@@ -2273,6 +2332,7 @@ void Inkling2::zha_attention(int il, int n) {
     const Block& B = blocks_[(size_t) il];
     ZSlot& S = zs_[(size_t) slot_of(il, pass_of(il))];
     const int hk = n_kv_ * head_dim_, C = zha_.C;
+    zha_pin(pos_ + n, false);
     ink::store_q4(k_, S.kc, S.ksc, hk, pos_, n, 0, st_);   // the leaves: 4-bit
     ink::store_q4(v_, S.vc, S.vsc, hk, pos_, n, 0, st_);
     {   // and the recent rows' ring in VRAM

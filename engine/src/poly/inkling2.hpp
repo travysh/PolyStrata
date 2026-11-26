@@ -289,6 +289,16 @@ private:
     bool zread_full_ = false;   ///< the read under way is max_read()'s: the prompt goes on, the room is whole
     void zha_load();
     void zha_alloc(int slot, int il, int pass);
+    // The leaves' RAM reserved for the whole context at the start and pinned a piece at a time as the context
+    // reaches it, let go again when a far shorter one follows (zha_pin()); STRATA_INK_ZHA_PIN_ALL=1 pins it all at the
+    // start.  Where the card reads registered memory at the host's addresses (Linux) and the context is over a piece.
+    static constexpr int64_t kZhaPiece = 65536;
+    bool zlazy_ = false;
+    int64_t zpinned_ = 0;   ///< the positions pinned
+    void zha_pin(int64_t end, bool trim);
+    uint64_t host_growth_bytes() const override {
+        return zlazy_ ? (uint64_t) (opt_.max_context - zpinned_) * card_row_bytes() : 0;
+    }
     void zha_scratch();
     void zha_attention(int il, int n);
     // the prompt buffers lent (with the driver's virtual memory): score, rstar, sel, stage kc, vc, ks, vs, S
@@ -302,6 +312,7 @@ private:
     void zha_widen(bool keep);
     void zha_narrow();
     void prompt_begins() override {
+        zha_pin(std::max<int64_t>(pos_, read_end_), true);
         if (zgrow_) zha_room_all(std::max<int64_t>(pos_, read_end_));   // before the read takes the VRAM
         if (zlend_) zha_widen(std::max<int64_t>(pos_, read_end_) >= zkeep_from_);
     }

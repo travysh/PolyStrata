@@ -1998,6 +1998,7 @@ int main(int argc, char** argv) {
             // the card's experts' pages, let go to the standby list, as the RAM budget counts them (Engine::load())
             if (free_b) free_b = *free_b - std::min<uint64_t>(*free_b, engine.cached_file_bytes());
 #endif
+            if (free_b) free_b = *free_b - std::min<uint64_t>(*free_b, engine.host_growth_bytes());
             cache.o.park_mib = strata::core::auto_conversation_cache_mib(free_b, cache.min_free_mib);
             if (cache.o.park_mib > 0)
                 std::fprintf(stderr, "strata-poly: conversation cache sized from the free RAM: %lld MiB for up to %d "
