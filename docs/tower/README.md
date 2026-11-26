@@ -2517,6 +2517,115 @@ over the whole `--max-context`.
 - Nothing posted upstream. The #336 author pushed the parking fix independently (96a1a1180, 2026-11-25); the
   `STRATA_INK_ZHA_POOL=0` crash and this change are not reported.
 
+## Pass 25: Inkling's answer step under the index in fewer launches (2026-11-25)
+
+**Question.** Live runs Inkling 2 Mini at 512K through the ZHA index (Pass 24). It writes about 7% slower than the
+plain 64K config on short chats. Can that gap get smaller without changing the answers?
+
+**Setup.** Tower as in Pass 24: RTX 3070 8 GB, Ryzen 5 2600X, 32 GB. Images:
+- `polystrata:tower` (live, `tower-513eceb1-ink`);
+- `polystrata:ctx-e3331820` (`tower-ctx` e3331820: change 1 below);
+- `polystrata:ctx-fd6d84bc` (`tower-ctx` fd6d84bc: changes 1 and 2).
+
+The test images are `ctx-513eceb1` with the changed Inkling 2 files built again. Scripts are in `p25/`:
+- `bench.sh`: p24's, plus `IDS` (a prompt file);
+- `ids-4k.txt` (on Tower only): a 4,521-token prompt (p24's 21 tokens and three copies of a 1,500-token answer);
+- `probe.sh`: p24's three short chats through the server;
+- `chain1.sh`-`chain6.sh`: the runs below;
+- `timer.patch`: the profile-only timers (images `ctx-time`, `ctx-time2`; not on any branch).
+
+Every run is ZHA 512K with live's settings unless named. Plain 64K is `strata-inkling2-mini.json.pre-zha`, copied to
+`p25-ink-64k.json`. Live was stopped for each chain and started again at its end.
+
+**1. Where the time goes.** These are GPU times between the two recorded halves of a full layer's head (`timer.patch`).
+They are averages over 2,048 or more layer calls. The event syncs make them a few µs high.
+
+| Run | The index's part of a layer | Host time to enqueue the whole head |
+|---|---|---|
+| 21-token prompt, 800 tokens, full step | 76.7 µs | 60.3 µs |
+| 4,521-token prompt, 400 tokens, full step | 105.5 µs | 66.3 µs |
+
+The same part, kernel by kernel (µs per layer):
+
+| Kernel | 21-token prompt | 4,521-token prompt |
+|---|---|---|
+| score + select (2 kernels) | 13.3 | 19.4 |
+| reset / union / lookup / assign | 3.7 / 4.8 / 3.6 / 3.4 | 5.4 / 9.0 / 4.3 / 4.4 |
+| tail | 11.0 | 15.2 |
+| wait for the fill | 1.7 | 1.9 |
+| exact | 26.7 | 27.5 |
+| join | 6.3 | 12.8 |
+
+- The host keeps ahead of the GPU, so what costs time is the GPU running small kernels one after another, about 3.5-5 µs each.
+- Under position 1,087 no chunk is far yet and chunk 0 is still in the ring (zha_far(): recent 1,024 + C 64 - 1).
+  Selection, lookup, fill and tail then have nothing to do but still run. With the plain path's layer recorded whole,
+  this is where most of the short-chat gap is.
+- No single kernel is big. The exact part (26 µs) has few warps busy at these lengths: a warp a 64-key chunk, about
+  7 chunks at 400 tokens.
+
+**2. The changes** (`tower-ctx`, `inkling2_zha.cu`, `inkling2.cpp`):
+- e3331820: below position 1,087 an answer's token runs only the exact part and the join (2 launches instead of 10).
+  The exact kernels get the list's count (chunk 0, read from the ring) without reading it, so the segments and sums
+  are the same. `STRATA_INK_ZHA_SHORT=0` takes the full step anyway.
+- fd6d84bc: three groups now share a launch, each part's code as it was:
+  - an answer's keys and values to the 4-bit leaves and the Q8_0 ring (4 launches, now 1);
+  - the join and the output gate's sigmoid (2, now 1);
+  - the step's reset, union, lookup and the misses' places, a block a KV group when the pool is at most 1,024 chunks
+    (4, now 1; the pool is at most 600 on Tower).
+
+**3. Engine by itself** (`chain6.sh`, three rounds in turn; tok/s writing):
+
+| Prompt | live | e3331820 | fd6d84bc |
+|---|---|---|---|
+| 21 tokens, 800 written, round 2 | 56.03 | 57.10 | 57.22 |
+| 21 tokens, 800 written, round 3 | 56.90 | 58.27 | 58.64 |
+| 4,521 tokens, 400 written, rounds 1 / 2 / 3 | 53.68 / 53.70 / 53.68 | - | 54.27 / 54.33 / 54.64 |
+
+- Short prompt: +2.6% (57.9 against 56.5 tok/s, rounds 2 and 3). Round 1 is left out: live's run came first after
+  live stopped and wrote at 45.65; e3331820 and fd6d84bc wrote 57.05 and 57.23.
+- 4,521-token prompt: +1.4% (54.41 against 53.69). Only fd6d84bc's fused step counts here: past position 1,087 the
+  ring-only step does not apply.
+- In each round the three images wrote the same 800 tokens (the same hash, the same 1,449 or 1,381 experts
+  swapped in). All 4,521-token runs wrote the same 400 tokens on every image, plain 64K's too (chain2.sh, chain5.sh).
+- Which tokens a run writes depends on which experts were on the card when, so runs whose swap counts differ can
+  part ways. In chain1.sh one run of the full step (`STRATA_INK_ZHA_SHORT=0`) swapped 1,392 instead of 1,400 and
+  parted from its twin at token 94. That is the expert cache, not the index.
+- Plain 64K was not in chain6. In `chain1.sh` and `chain2.sh` it wrote 60.55 / 60.90 (short) and 56.32 / 56.34
+  (4.5K), against live's 57.46 / 57.73 and 53.99 / 53.94: gaps of 5.1% and 4.2%. With part 3's gains about 2.6%
+  and 2.8% would be left. That is an estimate across chains, not a measurement.
+
+**4. Through the server** (`probe.sh`, three short chats of 400 tokens at temperature 0; the first is the engine's
+first request, so rounds 2 and 3):
+
+| Run | Writes (tok/s) |
+|---|---|
+| plain 64K, live image | 53.5 / 54.1 |
+| ZHA 512K, live image (chain2) | 49.7 / 51.6 |
+| ZHA 512K, e3331820 | 50.4 / 52.3 |
+| ZHA 512K, live image (chain5) | 50.1 / 51.9 |
+| ZHA 512K, fd6d84bc | 51.3 / 51.9 |
+
+These single runs spread more than the change. They show no loss, but they do not measure the gain well; part 3
+does.
+
+**5. Answers** (image ctx-fd6d84bc, live's Inkling config, `p22/trim-tasks` via `p24/runm.sh`): 128K question, two
+short chats, a second 128K question. Both answers right (Varn, Mirel). The 127,956-token read went at 841 tok/s
+and its answer was written at 46.1 tok/s (Pass 24: 834 and 46.0). The parked conversation (2.2 GB) was restored in
+88 ms. There were no errors in the engine log.
+
+**What this says.**
+- The index's per-token cost was small kernels in a row, not their work. Taking out the ones with nothing to do and
+  joining the others gives +2.6% on short chats and +1.4% at 4.5K, with the same tokens.
+- At 128K the writing speed did not change (46.1 against 46.0).
+- What is left of the gap is mostly the exact part's low occupancy (26 µs a layer) and the layer's head recorded in
+  two halves instead of one. Splitting a chunk over a block's 4 warps would be the next thing to try. It changes the
+  order of the sums, so the tokens would no longer be the same as live's.
+
+**Not done.**
+- Live is unchanged: going live with fd6d84bc is the user's call (build as in Pass 24 part 8 with Inkling's CMD).
+- The 477K run, the pictures and Cyber-Tiel were not repeated on fd6d84bc. Cyber-Tiel does not use these kernels.
+- Nothing posted upstream.
+
 ## Shared-load changes (2026-10-17)
 
 With Plex, Deluge and Duplicati running again, the GGUF (22.7 GB) has to stay cached next to them, and about 22.5 GB

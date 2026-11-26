@@ -1,0 +1,169 @@
+diff -ru a/engine/src/poly/inkling2.cpp b/engine/src/poly/inkling2.cpp
+--- a/engine/src/poly/inkling2.cpp	2026-11-25 23:41:18
++++ b/engine/src/poly/inkling2.cpp	2026-11-25 23:41:18
+@@ -1233,6 +1233,33 @@
+ }
+ 
+ // A layer from its input to its router's copy: the attention, the block's residual, and the experts' input.
++// PROFILE ONLY (not committed): STRATA_INK_TIME=1 times a token's layer heads on the GPU (events) and the host
++// (rdtsc), printed every 2048 heads.
++namespace {
++struct HeadTimer {
++    bool on = std::getenv("STRATA_INK_TIME") != nullptr;
++    cudaEvent_t e[4] = {};
++    double gpu[2][3] = {}, host[2] = {};
++    long cnt[2] = {};
++    unsigned long long t0 = 0;
++    void rec(int i, void* st) {
++        if (!e[0]) for (auto& x : e) cudaEventCreate(&x);
++        cudaEventRecord(e[i], (cudaStream_t) st);
++    }
++    void done(int kind, int last) {   // kind 0 plain, 1 index; events 0..last
++        const unsigned long long t1 = __builtin_ia32_rdtsc();
++        cudaEventSynchronize(e[last]);
++        host[kind] += (double) (t1 - t0);
++        for (int i = 0; i < last; ++i) { float ms = 0; cudaEventElapsedTime(&ms, e[i], e[i + 1]); gpu[kind][i] += ms; }
++        if (++cnt[kind] % 2048 == 0)
++            std::fprintf(stderr, "headtime %s n=%ld gpu us: %.1f %.1f %.1f host enqueue us: %.1f (at 3.6 GHz)\n",
++                         kind ? "zha" : "plain", cnt[kind], 1e3 * gpu[kind][0] / cnt[kind], 1e3 * gpu[kind][1] / cnt[kind],
++                         1e3 * gpu[kind][2] / cnt[kind], host[kind] / 3.6e3 / cnt[kind]);
++    }
++};
++HeadTimer g_ht;
++}  // namespace
++
+ void Inkling2::layer_head(Layer& L, int il, int n) {
+     // A call starts at its card's first layer.  A card that starts at the loop's first layer comes back to it for
+     // each later pass, so it keeps the pass there: next_layer() leaves it 0 after the last pass.
+@@ -1247,11 +1274,16 @@
+         if (zgraph_.empty()) zgraph_.assign(slots_.size() * 2, nullptr);
+         const size_t at = (size_t) slot_of(il, pass_of(il)) * 2;
+         if (!zgraph_[at]) zgraph_[at] = grab([&] { head_part(L, il, n, 1); });
++        const bool T = g_ht.on && zgraph_[at + 1];
++        if (T) g_ht.t0 = __builtin_ia32_rdtsc(), g_ht.rec(0, st_);
+         ck(cudaGraphLaunch((cudaGraphExec_t) zgraph_[at], cs(st_)), "layer graph");
++        if (T) g_ht.rec(1, st_);
+         zha_attention(il, n);
+         ink_mul_sigmoid(att_, gate_, (size_t) n_head_ * head_dim_, st_);
++        if (T) g_ht.rec(2, st_);
+         if (!zgraph_[at + 1]) zgraph_[at + 1] = grab([&] { head_part(L, il, n, 2); });
+         ck(cudaGraphLaunch((cudaGraphExec_t) zgraph_[at + 1], cs(st_)), "layer graph");
++        if (T) g_ht.rec(3, st_), g_ht.done(1, 3);
+         return;
+     }
+     head_part(L, il, n, 3);
+diff -ru a/engine/src/poly/inkling2_zha.cu b/engine/src/poly/inkling2_zha.cu
+--- a/engine/src/poly/inkling2_zha.cu	2026-11-25 23:41:18
++++ b/engine/src/poly/inkling2_zha.cu	2026-11-25 23:41:18
+@@ -38,6 +38,7 @@
+ 
+ #include <algorithm>
+ #include <cmath>
++#include <cstdio>
+ #include <cstdlib>
+ 
+ namespace strata::poly::ink {
+@@ -2241,6 +2242,32 @@
+                                                                         (__half*) khat, (__half*) vhat, bhat, q8n);
+ }
+ 
++
++// PROFILE ONLY (not committed): STRATA_INK_TIME=1 times zha_attend's answer step a kernel at a time.
++struct ZT {
++    bool on = std::getenv("STRATA_INK_TIME") != nullptr;
++    cudaEvent_t e[16] = {};
++    double t[16] = {};
++    long n = 0;
++    const char* nm[16] = {};
++    void rec(int i, const char* name, void* st) {
++        if (!on) return;
++        if (!e[0]) for (auto& x : e) cudaEventCreate(&x);
++        nm[i] = name;
++        cudaEventRecord(e[i], (cudaStream_t) st);
++    }
++    void end(int k) {
++        if (!on) return;
++        cudaEventSynchronize(e[k]);
++        for (int i = 1; i <= k; ++i) { float ms = 0; cudaEventElapsedTime(&ms, e[i - 1], e[i]); t[i] += ms; }
++        if (++n % 2048 == 0) {
++            std::fprintf(stderr, "zhatime n=%ld k=%d us:", n, k);
++            for (int i = 1; i <= k; ++i) std::fprintf(stderr, " %s %.1f", nm[i], 1e3 * t[i] / n);
++            std::fprintf(stderr, "\n");
++        }
++    }
++};
++static ZT g_zt;
+ void zha_attend(void* blas, const Zha& z, const float* q, const ZhaKv& leaves, const ZhaKv& ring, long long n_ring,
+                 const uint16_t* khat, const uint16_t* vhat, const float* bhat, int built, int max_chunks, long long pos,
+                 int rows, int n_head, int kv_heads, const float* r, const float* table, int extent, int nrel,
+@@ -2288,6 +2315,7 @@
+     static const bool short_ok = [] { const char* e = std::getenv("STRATA_INK_ZHA_SHORT"); return !e || *e != '0'; }();
+     if (dec && short_ok && pos + 1 - z.recent < z.C) {
+         const int nl = built > 0 ? 1 : 0;
++        g_zt.rec(0, "start", stream);
+         if (per == 3 && nrel <= 16)
+             zha_exact_dec_group_kernel<<<dim3(kv_heads, kSegExact), 128, 0, cs(stream)>>>(
+                 q, cache->pool, wk.cmap, wk.glist, ring, n_ring, max_chunks, pos, n_head, z.C, z.recent, r, table,
+@@ -2296,9 +2324,12 @@
+             zha_exact_dec_kernel<<<dim3(n_head, kSegExact), 128, 0, cs(stream)>>>(
+                 q, cache->pool, wk.cmap, wk.glist, ring, n_ring, max_chunks, pos, n_head, kv_heads, z.C, z.recent, r,
+                 table, extent, nrel, wk.S, kSegExact, nl);
++        g_zt.rec(1, "exact", stream);
+         zha_join_kernel<<<dim3(rows, n_head), 32, 0, cs(stream)>>>(wk.S, kSegExact, n_head, 0, sinks, out);
++        g_zt.rec(2, "join", stream); g_zt.end(2);
+         return;
+     }
++    if (dec) g_zt.rec(0, "start", stream);
+     if (dec && built > 0) {
+         zha_score_dec_kernel<<<dim3(grid(nch, 32), kv_heads), 128, 0, cs(stream)>>>(
+             q, (const int8_t*) khat, q8n, bhat, nch, max_chunks, n_head, per, wk.score, wk.rstar, hs);
+@@ -2321,6 +2352,7 @@
+                 wk.score, per, hs, max_chunks, pos, z.C, z.recent, z.budget, z.min_chunks, z.max_sel, wk.sel,
+                 cache->pmap, 1.f);
+             sels = 1;
++            g_zt.rec(1, "score", stream);   // score + pick_select (both)
+         } else if (per > 1) {
+             zha_pick_kernel<<<dim3(rows, kv_heads), 128, 0, cs(stream)>>>(wk.score, per, hs, max_chunks, pos, z.C,
+                                                                           z.recent, wk.score + (size_t) n_head * hs);
+@@ -2334,10 +2366,13 @@
+         }
+         zha_step_reset_kernel<<<64, 256, 0, cs(stream)>>>(wk.cmap, (size_t) kv_heads * max_chunks, wk.count, wk.glist,
+                                                           max_chunks, cache->aux, cache->P, kv_heads);
++        if (dec) g_zt.rec(2, "reset", stream);
+         zha_union_kernel<<<dim3(grid(words, 64), kv_heads), 64, 0, cs(stream)>>>(wk.sel, sels, hs, rows, max_chunks,
+                                                                                  built, wk.cmap, wk.count, 0, wk.glist);
++        if (dec) g_zt.rec(3, "union", stream);
+         zha_lookup_kernel<<<dim3(grid(std::max(built, 1), 128), kv_heads), 128, 0, cs(stream)>>>(
+             wk.cmap, built, -1, cache->P, max_chunks, cache->now, cache->stamp, cache->pmap, cache->aux);
++        if (dec) g_zt.rec(4, "lookup", stream);
+         if (cache->P <= 1024)
+             zha_assign_par_kernel<<<kv_heads, (cache->P + 31) / 32 * 32, 0, cs(stream)>>>(
+                 wk.cmap, cache->P, max_chunks, cache->now, cache->owner, cache->stamp, cache->pmap, cache->aux);
+@@ -2368,6 +2403,7 @@
+                 cudaEventCreateWithFlags(&filled, cudaEventDisableTiming) != cudaSuccess)
+                 throw std::runtime_error("ink::zha_attend: the fill's stream");
+         }
++        g_zt.rec(5, "assign", stream);
+         cudaEventRecord(ready, cs(stream));
+         cudaStreamWaitEvent(side, ready, 0);
+         fill(side);
+@@ -2378,7 +2414,9 @@
+         zha_tail_dec_kernel<<<dim3(n_head, kSegTail), 128, 0, cs(stream)>>>(
+             wk.score, wk.rstar, wk.sel, (const __half*) vhat, q8n, max_chunks, pos, n_head, kv_heads, z.R, z.C,
+             z.recent, hs, sels, wk.S, kSegExact, segs_all);
++        g_zt.rec(6, "tail", stream);
+         cudaStreamWaitEvent(cs(stream), filled, 0);
++        g_zt.rec(7, "fillwait", stream);
+         if (per == 3 && nrel <= 16)   // a group's three heads in one launch
+             zha_exact_dec_group_kernel<<<dim3(kv_heads, kSegExact), 128, 0, cs(stream)>>>(
+                 q, cache->pool, wk.cmap, wk.glist, ring, n_ring, max_chunks, pos, n_head, z.C, z.recent, r, table,
+@@ -2387,7 +2425,9 @@
+             zha_exact_dec_kernel<<<dim3(n_head, kSegExact), 128, 0, cs(stream)>>>(
+                 q, cache->pool, wk.cmap, wk.glist, ring, n_ring, max_chunks, pos, n_head, kv_heads, z.C, z.recent, r,
+                 table, extent, nrel, wk.S, segs_all, -1);
++        g_zt.rec(8, "exact", stream);
+         zha_join_kernel<<<dim3(rows, n_head), 32, 0, cs(stream)>>>(wk.S, segs_all, n_head, 0, sinks, out);
++        g_zt.rec(9, "join", stream); g_zt.end(9);
+         return;
+     }
+     for (int g = 0; g < kv_heads; ++g) {
